@@ -548,100 +548,420 @@ Different components use different patterns:
 
 ## Workload Types
 
-### 1. Deployment
+Kubernetes has three main ways to manage and run your applications (pods):
 
-Stateless applications with replicas.
+---
+
+### 1. Deployment (Stateless Applications)
+
+A Deployment manages **stateless** applications - apps that don't need to remember anything between restarts.
+
+#### Characteristics
+
+| Feature | Description |
+|---------|-------------|
+| **Stateless** | No persistent identity or storage |
+| **Interchangeable** | Any pod can handle any request |
+| **Random names** | Pods get random suffixes like `nginx-7d8f9-abc` |
+| **Easy scaling** | Scale up/down instantly |
+| **Rolling updates** | Update without downtime |
+
+#### Visual Representation
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      DEPLOYMENT                                 │
+│                      (Stateless)                                │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│   Deployment: "web-frontend"                                    │
+│   Replicas: 3                                                   │
+│                                                                 │
+│   ┌──────────────┐  ┌──────────────┐  ┌──────────────┐         │
+│   │ web-frontend │  │ web-frontend │  │ web-frontend │         │
+│   │ -7d8f9-abc   │  │ -7d8f9-def   │  │ -7d8f9-ghi   │         │
+│   │              │  │              │  │              │         │
+│   │  (Random ID) │  │  (Random ID) │  │  (Random ID) │         │
+│   └──────────────┘  └──────────────┘  └──────────────┘         │
+│          │                 │                 │                  │
+│          └─────────────────┴─────────────────┘                  │
+│                            │                                    │
+│                    All are IDENTICAL                            │
+│                    All share same Service                       │
+│                    Any can be killed/replaced                   │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Pod Behavior on Failure
+
+```
+SCENARIO: Pod dies
+
+Before:
+  web-frontend-7d8f9-abc  ← Dies
+  web-frontend-7d8f9-def
+  web-frontend-7d8f9-ghi
+
+After:
+  web-frontend-7d8f9-xyz  ← NEW pod with NEW random name
+  web-frontend-7d8f9-def
+  web-frontend-7d8f9-ghi
+
+• Old pod is GONE forever
+• New pod has NO memory of old pod
+• Traffic just goes to remaining/new pods
+```
+
+#### Example Use Cases
+- Web servers (nginx, apache)
+- REST APIs
+- Frontend applications
+- Microservices that don't store data
+
+#### Example YAML
 
 ```yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: web-app
+  name: web-frontend
 spec:
   replicas: 3
   selector:
     matchLabels:
-      app: web
+      app: web-frontend
   template:
     metadata:
       labels:
-        app: web
+        app: web-frontend
     spec:
       containers:
       - name: nginx
-        image: nginx:latest
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
 ```
 
-**Characteristics:**
-- Pods are interchangeable
-- No persistent identity
-- Can scale up/down easily
+---
 
-### 2. StatefulSet
+### 2. StatefulSet (Stateful Applications)
 
-Stateful applications with stable identities.
+A StatefulSet manages **stateful** applications - apps that need stable identity, persistent storage, and ordered operations.
+
+#### Characteristics
+
+| Feature | Description |
+|---------|-------------|
+| **Stateful** | Maintains identity across restarts |
+| **Stable names** | Pods get predictable names: `mysql-0`, `mysql-1`, `mysql-2` |
+| **Persistent storage** | Each pod gets its own persistent volume |
+| **Ordered operations** | Start/stop in order (0→1→2, 2→1→0) |
+| **Stable network ID** | Each pod has consistent DNS name |
+
+#### Visual Representation
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      STATEFULSET                                │
+│                      (Stateful)                                 │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│   StatefulSet: "mysql"                                          │
+│   Replicas: 3                                                   │
+│                                                                 │
+│   ┌──────────────┐  ┌──────────────┐  ┌──────────────┐         │
+│   │   mysql-0    │  │   mysql-1    │  │   mysql-2    │         │
+│   │   (MASTER)   │  │   (SLAVE)    │  │   (SLAVE)    │         │
+│   │              │  │              │  │              │         │
+│   │  Always "0"  │  │  Always "1"  │  │  Always "2"  │         │
+│   └──────┬───────┘  └──────┬───────┘  └──────┬───────┘         │
+│          │                 │                 │                  │
+│          ▼                 ▼                 ▼                  │
+│   ┌──────────────┐  ┌──────────────┐  ┌──────────────┐         │
+│   │   Volume-0   │  │   Volume-1   │  │   Volume-2   │         │
+│   │  (10GB SSD)  │  │  (10GB SSD)  │  │  (10GB SSD)  │         │
+│   │              │  │              │  │              │         │
+│   │  PERSISTENT  │  │  PERSISTENT  │  │  PERSISTENT  │         │
+│   └──────────────┘  └──────────────┘  └──────────────┘         │
+│                                                                 │
+│   Each pod:                                                     │
+│   • Has STABLE name (mysql-0, mysql-1, mysql-2)                │
+│   • Has its OWN persistent volume                              │
+│   • Has stable DNS: mysql-0.mysql.default.svc.cluster.local    │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Pod Behavior on Failure
+
+```
+SCENARIO: mysql-1 pod dies
+
+Before:
+  mysql-0  ←  Healthy
+  mysql-1  ←  Dies
+  mysql-2  ←  Healthy
+
+After:
+  mysql-0  ←  Still healthy
+  mysql-1  ←  NEW pod, but SAME name "mysql-1"
+  mysql-2  ←  Still healthy
+              │
+              └── Reconnects to Volume-1 (same data!)
+
+• Pod name STAYS the same (mysql-1)
+• Volume is REATTACHED (data preserved)
+• Other pods can find it at same DNS name
+```
+
+#### Ordered Startup/Shutdown
+
+```
+STARTUP (Sequential):
+  1. mysql-0 starts first
+  2. Wait until mysql-0 is READY
+  3. mysql-1 starts
+  4. Wait until mysql-1 is READY
+  5. mysql-2 starts
+
+SHUTDOWN (Reverse order):
+  1. mysql-2 stops first
+  2. mysql-1 stops
+  3. mysql-0 stops last
+
+Why? Databases need order:
+  • Master (mysql-0) must start first
+  • Slaves connect to master after
+```
+
+#### Example Use Cases
+- Databases (MySQL, PostgreSQL, MongoDB)
+- Message queues (Kafka, RabbitMQ)
+- Distributed systems (Elasticsearch, Cassandra)
+- Any app that needs persistent storage
+- Leader-follower architectures
+
+#### Example YAML
 
 ```yaml
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: kafka
+  name: mysql
 spec:
-  serviceName: kafka
+  serviceName: mysql
   replicas: 3
   selector:
     matchLabels:
-      app: kafka
+      app: mysql
   template:
     metadata:
       labels:
-        app: kafka
+        app: mysql
     spec:
       containers:
-      - name: kafka
-        image: kafka:latest
+      - name: mysql
+        image: mysql:8.0
+        ports:
+        - containerPort: 3306
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/mysql
+  volumeClaimTemplates:          # Each pod gets its own volume
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 10Gi
 ```
 
-**Characteristics:**
-- Stable network identities (kafka-0, kafka-1, kafka-2)
-- Ordered deployment and scaling
-- Persistent storage per pod
+---
 
-### 3. DaemonSet
+### 3. DaemonSet (One Pod Per Node)
 
-One pod per node.
+A DaemonSet ensures that **one copy** of a pod runs on **every node** (or selected nodes).
+
+#### Characteristics
+
+| Feature | Description |
+|---------|-------------|
+| **One per node** | Exactly one pod on each node |
+| **Automatic** | New nodes automatically get the pod |
+| **System-level** | Usually for infrastructure/monitoring |
+| **Node-specific** | Uses node's resources (network, disk) |
+
+#### Visual Representation
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      DAEMONSET                                  │
+│                      (One per Node)                             │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│   DaemonSet: "log-collector"                                    │
+│                                                                 │
+│   ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐  │
+│   │     NODE 0      │ │     NODE 1      │ │     NODE 2      │  │
+│   │                 │ │                 │ │                 │  │
+│   │ ┌─────────────┐ │ │ ┌─────────────┐ │ │ ┌─────────────┐ │  │
+│   │ │log-collector│ │ │ │log-collector│ │ │ │log-collector│ │  │
+│   │ │   -abc12    │ │ │ │   -def34    │ │ │ │   -ghi56    │ │  │
+│   │ └─────────────┘ │ │ └─────────────┘ │ │ └─────────────┘ │  │
+│   │                 │ │                 │ │                 │  │
+│   │ Collects logs   │ │ Collects logs   │ │ Collects logs   │  │
+│   │ from THIS node  │ │ from THIS node  │ │ from THIS node  │  │
+│   │                 │ │                 │ │                 │  │
+│   └─────────────────┘ └─────────────────┘ └─────────────────┘  │
+│                                                                 │
+│   If you add NODE 3 → automatically gets log-collector pod     │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Automatic Scaling with Nodes
+
+```
+SCENARIO: Add a new node to cluster
+
+Before (3 nodes):
+  Node 0: log-collector-abc12
+  Node 1: log-collector-def34
+  Node 2: log-collector-ghi56
+
+Add Node 3...
+
+After (4 nodes):
+  Node 0: log-collector-abc12
+  Node 1: log-collector-def34
+  Node 2: log-collector-ghi56
+  Node 3: log-collector-jkl78  ← Automatically created!
+
+• No manual intervention needed
+• DaemonSet controller sees new node
+• Creates pod automatically
+```
+
+#### Example Use Cases
+- Log collectors (Fluentd, Filebeat)
+- Monitoring agents (Prometheus node-exporter)
+- Network plugins (Calico, Flannel)
+- Storage plugins (CSI drivers)
+- Security agents
+- Node-level services
+
+#### Example YAML
 
 ```yaml
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: node-exporter
+  name: log-collector
 spec:
   selector:
     matchLabels:
-      app: node-exporter
+      app: log-collector
   template:
     metadata:
       labels:
-        app: node-exporter
+        app: log-collector
     spec:
       containers:
-      - name: exporter
-        image: prom/node-exporter
+      - name: fluentd
+        image: fluentd:latest
+        volumeMounts:
+        - name: varlog
+          mountPath: /var/log
+      volumes:
+      - name: varlog
+        hostPath:
+          path: /var/log
 ```
 
-**Characteristics:**
-- Runs on EVERY node
-- Auto-adds pod when new node joins
-- Used for: logging, monitoring, networking
+---
 
-### Comparison
+### Workload Types Comparison
 
-| Type | Replicas | Identity | Use Case |
-|------|----------|----------|----------|
-| **Deployment** | Any number | Random names | Web servers, APIs |
-| **StatefulSet** | Any number | Ordered names (0,1,2) | Databases, Kafka |
-| **DaemonSet** | One per node | Per-node | Monitoring, Logging |
+| Feature | Deployment | StatefulSet | DaemonSet |
+|---------|------------|-------------|-----------|
+| **Use case** | Stateless apps | Databases, queues | Node agents |
+| **Pod names** | Random suffix | Ordered (0, 1, 2) | Random suffix |
+| **Scaling** | Any number | Any number | One per node |
+| **Storage** | Shared/None | Each pod has own | Usually host path |
+| **Ordering** | Parallel | Sequential | Parallel |
+| **Identity** | No | Yes | No |
+| **Examples** | nginx, APIs | MySQL, Kafka | Fluentd, Calico |
+
+---
+
+### Decision Tree: Which Workload Type to Use?
+
+```
+                    ┌─────────────────────────┐
+                    │ Does your app need to   │
+                    │ run on EVERY node?      │
+                    └───────────┬─────────────┘
+                                │
+                    ┌───────────┴───────────┐
+                    │                       │
+                   YES                      NO
+                    │                       │
+                    ▼                       ▼
+             ┌─────────────┐    ┌─────────────────────────┐
+             │  DaemonSet  │    │ Does your app need      │
+             │             │    │ persistent storage or   │
+             │ (Logs,      │    │ stable identity?        │
+             │  Monitoring,│    └───────────┬─────────────┘
+             │  Networking)│                │
+             └─────────────┘    ┌───────────┴───────────┐
+                                │                       │
+                               YES                      NO
+                                │                       │
+                                ▼                       ▼
+                         ┌─────────────┐         ┌─────────────┐
+                         │ StatefulSet │         │ Deployment  │
+                         │             │         │             │
+                         │ (Databases, │         │ (Web apps,  │
+                         │  Kafka,     │         │  APIs,      │
+                         │  Caches)    │         │  Stateless) │
+                         └─────────────┘         └─────────────┘
+```
+
+---
+
+### Visual Summary
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     WORKLOAD TYPES COMPARISON                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  DEPLOYMENT (Stateless)         STATEFULSET (Stateful)                     │
+│  ┌───┐ ┌───┐ ┌───┐             ┌───┐ ┌───┐ ┌───┐                          │
+│  │ A │ │ A │ │ A │             │ 0 │→│ 1 │→│ 2 │  (Ordered)               │
+│  └───┘ └───┘ └───┘             └─┬─┘ └─┬─┘ └─┬─┘                          │
+│    │     │     │                 │     │     │                             │
+│    └─────┴─────┘                 ▼     ▼     ▼                             │
+│          │                     ┌───┐ ┌───┐ ┌───┐                          │
+│    All identical               │Vol│ │Vol│ │Vol│  (Persistent)            │
+│    Interchangeable             └───┘ └───┘ └───┘                          │
+│                                                                             │
+│  ───────────────────────────────────────────────────────────────────────── │
+│                                                                             │
+│  DAEMONSET (One per Node)                                                  │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐          │
+│  │   Node 0    │ │   Node 1    │ │   Node 2    │ │   Node N    │          │
+│  │ ┌─────────┐ │ │ ┌─────────┐ │ │ ┌─────────┐ │ │ ┌─────────┐ │          │
+│  │ │  Agent  │ │ │ │  Agent  │ │ │ │  Agent  │ │ │ │  Agent  │ │          │
+│  │ └─────────┘ │ │ └─────────┘ │ │ └─────────┘ │ │ └─────────┘ │          │
+│  └─────────────┘ └─────────────┘ └─────────────┘ └─────────────┘          │
+│                                                                             │
+│  Exactly ONE pod per node (automatic)                                      │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
