@@ -713,433 +713,358 @@ public class KafkaAdminExample {
 <dependencies>
     <dependency>
         <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter</artifactId>
+        <artifactId>spring-boot-starter-web</artifactId>
     </dependency>
     <dependency>
         <groupId>org.springframework.kafka</groupId>
         <artifactId>spring-kafka</artifactId>
     </dependency>
-    <dependency>
-        <groupId>org.projectlombok</groupId>
-        <artifactId>lombok</artifactId>
-        <optional>true</optional>
-    </dependency>
 </dependencies>
 ```
 
-### application.yml
+---
 
-```yaml
-spring:
-  kafka:
-    bootstrap-servers: localhost:9092
-    
-    producer:
-      key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
-      acks: all
-      retries: 3
-      properties:
-        enable.idempotence: true
-        max.in.flight.requests.per.connection: 5
-    
-    consumer:
-      group-id: order-service-group
-      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
-      auto-offset-reset: earliest
-      enable-auto-commit: false
-      properties:
-        spring.json.trusted.packages: "com.example.*"
-    
-    listener:
-      ack-mode: manual
-      concurrency: 3
+## Part 1: Simple String Messages
 
-# Custom topic properties
-app:
-  kafka:
-    topics:
-      orders: orders-topic
-      payments: payments-topic
+### application.properties
+
+```properties
+spring.kafka.bootstrap-servers=localhost:9092
+
+# Producer (String)
+spring.kafka.producer.key-serializer=org.apache.kafka.common.serialization.StringSerializer
+spring.kafka.producer.value-serializer=org.apache.kafka.common.serialization.StringSerializer
+
+# Consumer (String)
+spring.kafka.consumer.group-id=my-group
+spring.kafka.consumer.key-deserializer=org.apache.kafka.common.serialization.StringDeserializer
+spring.kafka.consumer.value-deserializer=org.apache.kafka.common.serialization.StringDeserializer
+spring.kafka.consumer.auto-offset-reset=earliest
 ```
 
-### Kafka Configuration
+### Producer (String)
 
 ```java
-package com.example.kafka.config;
+@Service
+public class MessageProducer {
 
-import org.apache.kafka.clients.admin.NewTopic;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.kafka.config.TopicBuilder;
-import org.springframework.kafka.core.KafkaTemplate;
-import org.springframework.kafka.core.ProducerFactory;
-import org.springframework.kafka.support.converter.RecordMessageConverter;
-import org.springframework.kafka.support.converter.StringJsonMessageConverter;
+    @Autowired
+    private KafkaTemplate<String, String> kafkaTemplate;
 
+    public void send(String message) {
+        kafkaTemplate.send("my-topic", message);
+    }
+
+    public void sendWithKey(String key, String message) {
+        kafkaTemplate.send("my-topic", key, message);
+    }
+}
+```
+
+### Consumer (String)
+
+```java
+@Service
+public class MessageConsumer {
+
+    @KafkaListener(topics = "my-topic", groupId = "my-group")
+    public void listen(String message) {
+        System.out.println("Received: " + message);
+    }
+}
+```
+
+### Test It
+
+```java
+// In any controller or service
+@Autowired
+private MessageProducer producer;
+
+producer.send("Hello Kafka!");
+producer.sendWithKey("user-123", "Order placed");
+```
+
+---
+
+## Part 2: JSON Messages
+
+### application.properties
+
+```properties
+spring.kafka.bootstrap-servers=localhost:9092
+
+# Producer (JSON)
+spring.kafka.producer.key-serializer=org.apache.kafka.common.serialization.StringSerializer
+spring.kafka.producer.value-serializer=org.springframework.kafka.support.serializer.JsonSerializer
+
+# Consumer (JSON)
+spring.kafka.consumer.group-id=my-group
+spring.kafka.consumer.key-deserializer=org.apache.kafka.common.serialization.StringDeserializer
+spring.kafka.consumer.value-deserializer=org.springframework.kafka.support.serializer.JsonDeserializer
+spring.kafka.consumer.properties.spring.json.trusted.packages=*
+spring.kafka.consumer.auto-offset-reset=earliest
+```
+
+### Model Class
+
+```java
+public class Order {
+    private String orderId;
+    private String product;
+    private int quantity;
+    private double price;
+
+    public Order() {}  // Required for JSON deserialization
+
+    public Order(String orderId, String product, int quantity, double price) {
+        this.orderId = orderId;
+        this.product = product;
+        this.quantity = quantity;
+        this.price = price;
+    }
+
+    // Getters and Setters
+    public String getOrderId() { return orderId; }
+    public void setOrderId(String orderId) { this.orderId = orderId; }
+    
+    public String getProduct() { return product; }
+    public void setProduct(String product) { this.product = product; }
+    
+    public int getQuantity() { return quantity; }
+    public void setQuantity(int quantity) { this.quantity = quantity; }
+    
+    public double getPrice() { return price; }
+    public void setPrice(double price) { this.price = price; }
+}
+```
+
+### Producer (JSON)
+
+```java
+@Service
+public class OrderProducer {
+
+    @Autowired
+    private KafkaTemplate<String, Order> kafkaTemplate;
+
+    public void sendOrder(Order order) {
+        kafkaTemplate.send("orders", order.getOrderId(), order);
+        System.out.println("Sent order: " + order.getOrderId());
+    }
+}
+```
+
+### Consumer (JSON)
+
+```java
+@Service
+public class OrderConsumer {
+
+    @KafkaListener(topics = "orders", groupId = "order-group")
+    public void handleOrder(Order order) {
+        System.out.println("Received Order:");
+        System.out.println("  ID: " + order.getOrderId());
+        System.out.println("  Product: " + order.getProduct());
+        System.out.println("  Quantity: " + order.getQuantity());
+        System.out.println("  Price: $" + order.getPrice());
+    }
+}
+```
+
+### Test Controller
+
+```java
+@RestController
+@RequestMapping("/orders")
+public class OrderController {
+
+    @Autowired
+    private OrderProducer orderProducer;
+
+    @PostMapping
+    public String createOrder(@RequestBody Order order) {
+        orderProducer.sendOrder(order);
+        return "Order sent: " + order.getOrderId();
+    }
+}
+```
+
+### Test with cURL
+
+```bash
+curl -X POST http://localhost:8080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"orderId":"ORD-001","product":"Laptop","quantity":2,"price":999.99}'
+```
+
+---
+
+## Part 3: Avro Messages (Schema Registry)
+
+### Additional Dependencies
+
+```xml
+<dependency>
+    <groupId>io.confluent</groupId>
+    <artifactId>kafka-avro-serializer</artifactId>
+    <version>7.5.0</version>
+</dependency>
+```
+
+### application.properties
+
+```properties
+spring.kafka.bootstrap-servers=localhost:9092
+spring.kafka.properties.schema.registry.url=http://localhost:8081
+
+# Producer (Avro)
+spring.kafka.producer.key-serializer=org.apache.kafka.common.serialization.StringSerializer
+spring.kafka.producer.value-serializer=io.confluent.kafka.serializers.KafkaAvroSerializer
+
+# Consumer (Avro)
+spring.kafka.consumer.group-id=my-group
+spring.kafka.consumer.key-deserializer=org.apache.kafka.common.serialization.StringDeserializer
+spring.kafka.consumer.value-deserializer=io.confluent.kafka.serializers.KafkaAvroDeserializer
+spring.kafka.consumer.properties.specific.avro.reader=true
+```
+
+### Avro Schema (src/main/avro/order.avsc)
+
+```json
+{
+  "type": "record",
+  "name": "OrderAvro",
+  "namespace": "com.example.avro",
+  "fields": [
+    {"name": "orderId", "type": "string"},
+    {"name": "product", "type": "string"},
+    {"name": "quantity", "type": "int"},
+    {"name": "price", "type": "double"}
+  ]
+}
+```
+
+---
+
+## Part 4: Multiple Message Types
+
+### Config for Multiple Types
+
+```java
 @Configuration
 public class KafkaConfig {
 
-    @Value("${app.kafka.topics.orders}")
-    private String ordersTopic;
+    // String Template
+    @Bean
+    public KafkaTemplate<String, String> stringKafkaTemplate(
+            ProducerFactory<String, String> pf) {
+        return new KafkaTemplate<>(pf);
+    }
 
-    @Value("${app.kafka.topics.payments}")
-    private String paymentsTopic;
+    // JSON Template  
+    @Bean
+    public KafkaTemplate<String, Object> jsonKafkaTemplate(
+            ProducerFactory<String, Object> pf) {
+        return new KafkaTemplate<>(pf);
+    }
+}
+```
 
-    // Topic creation
+### Use Different Templates
+
+```java
+@Service
+public class MultiProducer {
+
+    @Autowired
+    private KafkaTemplate<String, String> stringTemplate;
+    
+    @Autowired
+    private KafkaTemplate<String, Object> jsonTemplate;
+
+    public void sendString(String msg) {
+        stringTemplate.send("string-topic", msg);
+    }
+
+    public void sendJson(Order order) {
+        jsonTemplate.send("order-topic", order);
+    }
+}
+```
+
+---
+
+## Quick Reference
+
+| Format | Value Serializer | Value Deserializer |
+|--------|------------------|-------------------|
+| **String** | `StringSerializer` | `StringDeserializer` |
+| **JSON** | `JsonSerializer` | `JsonDeserializer` |
+| **Avro** | `KafkaAvroSerializer` | `KafkaAvroDeserializer` |
+
+### Minimum Code
+
+```java
+// String Message
+kafkaTemplate.send("topic", "Hello");
+
+// JSON Message (auto-serialized)
+kafkaTemplate.send("topic", new Order("1", "Phone", 1, 599.99));
+
+// Consumer - just match the type
+@KafkaListener(topics = "topic")
+void receive(Order order) { ... }
+```
+
+---
+
+## Auto Create Topic
+
+```java
+@Configuration
+public class TopicConfig {
+
     @Bean
     public NewTopic ordersTopic() {
-        return TopicBuilder.name(ordersTopic)
+        return TopicBuilder.name("orders")
                 .partitions(3)
-                .replicas(3)
-                .config("retention.ms", "604800000")
+                .replicas(1)
                 .build();
     }
+}
+```
 
+---
+
+## Complete Working Example
+
+```java
+@SpringBootApplication
+public class KafkaApp {
+
+    public static void main(String[] args) {
+        SpringApplication.run(KafkaApp.class, args);
+    }
+
+    // Create topic
     @Bean
-    public NewTopic paymentsTopic() {
-        return TopicBuilder.name(paymentsTopic)
-                .partitions(3)
-                .replicas(3)
-                .build();
+    NewTopic topic() {
+        return TopicBuilder.name("demo").partitions(1).replicas(1).build();
     }
 
-    // JSON message converter
+    // Send on startup
     @Bean
-    public RecordMessageConverter messageConverter() {
-        return new StringJsonMessageConverter();
-    }
-}
-```
-
-### DTO / Event Class
-
-```java
-package com.example.kafka.dto;
-
-import lombok.AllArgsConstructor;
-import lombok.Builder;
-import lombok.Data;
-import lombok.NoArgsConstructor;
-
-import java.math.BigDecimal;
-import java.time.LocalDateTime;
-
-@Data
-@Builder
-@NoArgsConstructor
-@AllArgsConstructor
-public class OrderEvent {
-    private String orderId;
-    private String customerId;
-    private String productId;
-    private int quantity;
-    private BigDecimal totalAmount;
-    private OrderStatus status;
-    private LocalDateTime createdAt;
-    
-    public enum OrderStatus {
-        CREATED, PROCESSING, COMPLETED, CANCELLED
-    }
-}
-```
-
-### Producer Service - Spring Boot
-
-```java
-package com.example.kafka.producer;
-
-import com.example.kafka.dto.OrderEvent;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.kafka.core.KafkaTemplate;
-import org.springframework.kafka.support.SendResult;
-import org.springframework.stereotype.Service;
-
-import java.util.concurrent.CompletableFuture;
-
-@Service
-@Slf4j
-@RequiredArgsConstructor
-public class OrderProducer {
-
-    private final KafkaTemplate<String, OrderEvent> kafkaTemplate;
-
-    @Value("${app.kafka.topics.orders}")
-    private String topic;
-
-    // Simple async send
-    public void sendOrder(OrderEvent order) {
-        log.info("Sending order: {}", order.getOrderId());
-        kafkaTemplate.send(topic, order.getOrderId(), order);
+    CommandLineRunner run(KafkaTemplate<String, String> kafka) {
+        return args -> {
+            kafka.send("demo", "Hello from Spring Boot!");
+        };
     }
 
-    // Async send with callback
-    public CompletableFuture<SendResult<String, OrderEvent>> sendOrderAsync(OrderEvent order) {
-        log.info("Sending order async: {}", order.getOrderId());
-        
-        return kafkaTemplate.send(topic, order.getOrderId(), order)
-                .whenComplete((result, exception) -> {
-                    if (exception == null) {
-                        log.info("Order sent successfully: key={}, partition={}, offset={}",
-                                order.getOrderId(),
-                                result.getRecordMetadata().partition(),
-                                result.getRecordMetadata().offset());
-                    } else {
-                        log.error("Failed to send order: {}", order.getOrderId(), exception);
-                    }
-                });
-    }
-
-    // Synchronous send (blocking)
-    public SendResult<String, OrderEvent> sendOrderSync(OrderEvent order) {
-        log.info("Sending order sync: {}", order.getOrderId());
-        try {
-            return kafkaTemplate.send(topic, order.getOrderId(), order).get();
-        } catch (Exception e) {
-            log.error("Failed to send order synchronously", e);
-            throw new RuntimeException("Failed to send order", e);
-        }
-    }
-
-    // Send to specific partition
-    public void sendToPartition(OrderEvent order, int partition) {
-        kafkaTemplate.send(topic, partition, order.getOrderId(), order);
-    }
-}
-```
-
-### Consumer Service - Spring Boot
-
-```java
-package com.example.kafka.consumer;
-
-import com.example.kafka.dto.OrderEvent;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.kafka.annotation.KafkaListener;
-import org.springframework.kafka.support.Acknowledgment;
-import org.springframework.kafka.support.KafkaHeaders;
-import org.springframework.messaging.handler.annotation.Header;
-import org.springframework.messaging.handler.annotation.Payload;
-import org.springframework.stereotype.Service;
-
-@Service
-@Slf4j
-public class OrderConsumer {
-
-    // Basic consumer
-    @KafkaListener(
-            topics = "${app.kafka.topics.orders}",
-            groupId = "order-service-group"
-    )
-    public void consumeOrder(
-            @Payload OrderEvent order,
-            @Header(KafkaHeaders.RECEIVED_PARTITION) int partition,
-            @Header(KafkaHeaders.OFFSET) long offset,
-            Acknowledgment ack
-    ) {
-        log.info("Received order: id={}, partition={}, offset={}",
-                order.getOrderId(), partition, offset);
-        
-        try {
-            // Process the order
-            processOrder(order);
-            
-            // Acknowledge after successful processing
-            ack.acknowledge();
-            log.info("Order processed successfully: {}", order.getOrderId());
-            
-        } catch (Exception e) {
-            log.error("Failed to process order: {}", order.getOrderId(), e);
-            // Don't acknowledge - message will be redelivered
-            // Or implement retry/dead-letter logic
-        }
-    }
-
-    // Consumer with specific partitions
-    @KafkaListener(
-            topics = "${app.kafka.topics.orders}",
-            groupId = "order-analytics-group",
-            topicPartitions = @org.springframework.kafka.annotation.TopicPartition(
-                    topic = "${app.kafka.topics.orders}",
-                    partitions = {"0", "1"}
-            )
-    )
-    public void consumeFromSpecificPartitions(OrderEvent order) {
-        log.info("Analytics processing: {}", order.getOrderId());
-    }
-
-    // Batch consumer
-    @KafkaListener(
-            topics = "${app.kafka.topics.orders}",
-            groupId = "order-batch-group",
-            containerFactory = "batchFactory"
-    )
-    public void consumeBatch(java.util.List<OrderEvent> orders, Acknowledgment ack) {
-        log.info("Received batch of {} orders", orders.size());
-        
-        for (OrderEvent order : orders) {
-            processOrder(order);
-        }
-        
-        ack.acknowledge();
-    }
-
-    private void processOrder(OrderEvent order) {
-        // Business logic here
-        log.info("Processing order: {} for customer: {}", 
-                order.getOrderId(), order.getCustomerId());
-        
-        // Simulate processing
-        switch (order.getStatus()) {
-            case CREATED:
-                log.info("New order created");
-                break;
-            case PROCESSING:
-                log.info("Order is being processed");
-                break;
-            case COMPLETED:
-                log.info("Order completed");
-                break;
-            case CANCELLED:
-                log.info("Order was cancelled");
-                break;
-        }
-    }
-}
-```
-
-### Batch Consumer Configuration
-
-```java
-package com.example.kafka.config;
-
-import com.example.kafka.dto.OrderEvent;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
-import org.springframework.kafka.core.ConsumerFactory;
-import org.springframework.kafka.listener.ContainerProperties;
-
-@Configuration
-public class KafkaBatchConfig {
-
-    @Bean
-    public ConcurrentKafkaListenerContainerFactory<String, OrderEvent> batchFactory(
-            ConsumerFactory<String, OrderEvent> consumerFactory) {
-        
-        ConcurrentKafkaListenerContainerFactory<String, OrderEvent> factory = 
-                new ConcurrentKafkaListenerContainerFactory<>();
-        
-        factory.setConsumerFactory(consumerFactory);
-        factory.setBatchListener(true);  // Enable batch listening
-        factory.setConcurrency(3);       // Number of consumer threads
-        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL);
-        factory.getContainerProperties().setPollTimeout(3000);
-        
-        return factory;
-    }
-}
-```
-
-### Error Handling & Dead Letter Topic
-
-```java
-package com.example.kafka.config;
-
-import lombok.extern.slf4j.Slf4j;
-import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.kafka.core.KafkaTemplate;
-import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
-import org.springframework.kafka.listener.DefaultErrorHandler;
-import org.springframework.util.backoff.FixedBackOff;
-
-@Configuration
-@Slf4j
-public class KafkaErrorConfig {
-
-    @Bean
-    public DefaultErrorHandler errorHandler(KafkaTemplate<String, Object> kafkaTemplate) {
-        
-        // Dead letter recoverer - sends failed messages to DLT
-        DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(
-                kafkaTemplate,
-                (record, exception) -> {
-                    log.error("Sending to DLT: topic={}, key={}", 
-                            record.topic(), record.key());
-                    return new org.apache.kafka.common.TopicPartition(
-                            record.topic() + ".DLT", record.partition());
-                }
-        );
-
-        // Retry 3 times with 1 second interval, then send to DLT
-        DefaultErrorHandler errorHandler = new DefaultErrorHandler(
-                recoverer,
-                new FixedBackOff(1000L, 3L)
-        );
-
-        // Don't retry for specific exceptions
-        errorHandler.addNotRetryableExceptions(
-                IllegalArgumentException.class,
-                NullPointerException.class
-        );
-
-        return errorHandler;
-    }
-}
-```
-
-### REST Controller Example
-
-```java
-package com.example.kafka.controller;
-
-import com.example.kafka.dto.OrderEvent;
-import com.example.kafka.producer.OrderProducer;
-import lombok.RequiredArgsConstructor;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
-
-import java.math.BigDecimal;
-import java.time.LocalDateTime;
-import java.util.UUID;
-
-@RestController
-@RequestMapping("/api/orders")
-@RequiredArgsConstructor
-public class OrderController {
-
-    private final OrderProducer orderProducer;
-
-    @PostMapping
-    public ResponseEntity<String> createOrder(@RequestBody OrderRequest request) {
-        
-        OrderEvent order = OrderEvent.builder()
-                .orderId(UUID.randomUUID().toString())
-                .customerId(request.getCustomerId())
-                .productId(request.getProductId())
-                .quantity(request.getQuantity())
-                .totalAmount(request.getTotalAmount())
-                .status(OrderEvent.OrderStatus.CREATED)
-                .createdAt(LocalDateTime.now())
-                .build();
-
-        orderProducer.sendOrder(order);
-
-        return ResponseEntity.ok("Order created: " + order.getOrderId());
-    }
-
-    @Data
-    public static class OrderRequest {
-        private String customerId;
-        private String productId;
-        private int quantity;
-        private BigDecimal totalAmount;
+    // Receive
+    @KafkaListener(topics = "demo", groupId = "demo-group")
+    void listen(String msg) {
+        System.out.println("Got: " + msg);
     }
 }
 ```
