@@ -1917,10 +1917,71 @@ phantom.get();  // Always returns null
 
 ## Design Patterns
 
+Design patterns are **proven solutions to common software design problems**. They represent best practices evolved over time by experienced developers. Understanding design patterns helps you write more maintainable, flexible, and scalable code.
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                    DESIGN PATTERNS CATEGORIES                          │
+├────────────────────────────────────────────────────────────────────────┤
+│  CREATIONAL (Object Creation)                                          │
+│  ├── Singleton   - Ensures only one instance exists                    │
+│  ├── Factory     - Creates objects without specifying exact class      │
+│  ├── Builder     - Constructs complex objects step by step             │
+│  ├── Prototype   - Creates new objects by copying existing ones        │
+│  └── Abstract Factory - Creates families of related objects            │
+├────────────────────────────────────────────────────────────────────────┤
+│  STRUCTURAL (Object Composition)                                       │
+│  ├── Adapter     - Makes incompatible interfaces work together         │
+│  ├── Decorator   - Adds behavior to objects dynamically                │
+│  ├── Facade      - Provides simplified interface to complex system     │
+│  ├── Proxy       - Controls access to another object                   │
+│  └── Composite   - Treats individual objects and compositions alike    │
+├────────────────────────────────────────────────────────────────────────┤
+│  BEHAVIORAL (Object Communication)                                     │
+│  ├── Observer    - Notifies dependents of state changes                │
+│  ├── Strategy    - Defines family of interchangeable algorithms        │
+│  ├── Command     - Encapsulates request as an object                   │
+│  ├── Template    - Defines skeleton of algorithm in base class         │
+│  └── State       - Alters behavior when internal state changes         │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
 ### Q61: What is Singleton Pattern?
+
+**Definition:** The Singleton Pattern ensures that a class has **only one instance** and provides a **global point of access** to that instance throughout the application.
+
+#### 🎯 Problem It Solves
+
+Sometimes you need exactly one instance of a class to coordinate actions across the system:
+- **Database Connection Pool** - One pool managing all connections
+- **Configuration Manager** - One source of truth for app settings
+- **Logger** - One logging mechanism for entire application
+- **Cache Manager** - One cache shared across application
+- **Thread Pool** - One pool managing worker threads
+
+Without Singleton, you might accidentally create multiple instances, leading to:
+- Inconsistent state across the application
+- Resource wastage (multiple DB connections)
+- Conflicting configurations
+
+#### 📊 When to Use Each Approach
+
+| Approach | Thread-Safe | Lazy | Serialization-Safe | Best For |
+|----------|-------------|------|-------------------|----------|
+| Eager | ✅ Yes | ❌ No | ❌ No | Always needed, small footprint |
+| Double-Checked Locking | ✅ Yes | ✅ Yes | ❌ No | Rarely used, expensive creation |
+| Bill Pugh (Holder) | ✅ Yes | ✅ Yes | ❌ No | Most cases (recommended) |
+| Enum | ✅ Yes | ❌ No | ✅ Yes | Need serialization safety |
+
+#### 💻 Implementation Approaches
 
 ```java
 // 1. Eager Initialization
+// ✅ Simple, thread-safe
+// ❌ Instance created even if never used (memory waste if heavy object)
+// 📍 Use when: Singleton is always needed and creation is lightweight
 public class Singleton {
     private static final Singleton INSTANCE = new Singleton();
     private Singleton() { }
@@ -1928,14 +1989,18 @@ public class Singleton {
 }
 
 // 2. Lazy Initialization (Thread-safe with double-checked locking)
+// ✅ Creates instance only when needed (saves memory)
+// ✅ Thread-safe with volatile + synchronized
+// ❌ More complex code, slight performance overhead
+// 📍 Use when: Heavy object that may never be used
 public class Singleton {
-    private static volatile Singleton instance;
+    private static volatile Singleton instance;  // volatile prevents instruction reordering
     private Singleton() { }
     
     public static Singleton getInstance() {
-        if (instance == null) {
-            synchronized (Singleton.class) {
-                if (instance == null) {
+        if (instance == null) {                    // First check (no locking)
+            synchronized (Singleton.class) {        // Lock only when null
+                if (instance == null) {             // Second check (with lock)
                     instance = new Singleton();
                 }
             }
@@ -1944,92 +2009,307 @@ public class Singleton {
     }
 }
 
-// 3. Bill Pugh (Best approach)
+// 3. Bill Pugh / Holder Pattern (⭐ BEST APPROACH)
+// ✅ Lazy loading (Holder class loaded only when getInstance() called)
+// ✅ Thread-safe (class loading is thread-safe by JVM)
+// ✅ No synchronization overhead
+// 📍 Use when: Default choice for most Singleton needs
 public class Singleton {
     private Singleton() { }
     
+    // Inner static class - not loaded until referenced
     private static class Holder {
         private static final Singleton INSTANCE = new Singleton();
     }
     
     public static Singleton getInstance() {
-        return Holder.INSTANCE;
+        return Holder.INSTANCE;  // Holder class loaded here
     }
 }
 
-// 4. Enum (Thread-safe, serialization-safe)
+// 4. Enum Singleton (⭐ SAFEST APPROACH)
+// ✅ Thread-safe, serialization-safe, reflection-safe
+// ✅ JVM guarantees single instance
+// ❌ Cannot extend other classes
+// 📍 Use when: Need serialization safety or maximum protection
 public enum Singleton {
     INSTANCE;
-    public void doSomething() { }
+    
+    private String config;
+    
+    public void configure(String config) { this.config = config; }
+    public String getConfig() { return config; }
+    public void doSomething() { System.out.println("Working with: " + config); }
 }
+
+// Usage: Singleton.INSTANCE.doSomething();
+```
+
+#### 🌍 Real-World Examples in Java
+
+```java
+// Java Runtime - only one runtime per JVM
+Runtime runtime = Runtime.getRuntime();
+
+// Logger - typically one logger per class/application
+Logger logger = Logger.getLogger("MyApp");
+
+// Desktop - only one desktop environment
+Desktop desktop = Desktop.getDesktop();
+```
+
+#### ⚠️ Common Interview Questions
+
+1. **How to break Singleton?**
+   - Reflection: Can call private constructor
+   - Serialization: Creates new instance on deserialization
+   - Cloning: Can create copy via clone()
+   
+2. **How to prevent breaking?**
+   - Use Enum Singleton (protects against all)
+   - Throw exception in constructor if instance exists
+   - Implement `readResolve()` for serialization
 ```
 
 ---
 
 ### Q62: What is Factory Pattern?
 
+**Definition:** The Factory Pattern provides an interface for creating objects in a superclass, but allows subclasses to alter the type of objects that will be created. It **encapsulates object creation logic** and provides a single point for object instantiation.
+
+#### 🎯 Problem It Solves
+
+Without Factory Pattern:
 ```java
-// Product interface
+// ❌ BAD - Client code is tightly coupled to concrete classes
+if (type.equals("circle")) {
+    shape = new Circle();
+} else if (type.equals("rectangle")) {
+    shape = new Rectangle();
+} else if (type.equals("triangle")) {
+    shape = new Triangle();
+}
+// Adding new shape requires modifying this code everywhere!
+```
+
+With Factory Pattern:
+```java
+// ✅ GOOD - Client code doesn't know about concrete classes
+Shape shape = ShapeFactory.createShape("circle");
+// Adding new shape only requires modifying factory!
+```
+
+#### 📊 Types of Factory Patterns
+
+| Type | Description | Use Case |
+|------|-------------|----------|
+| **Simple Factory** | Single factory class with creation method | Basic object creation |
+| **Factory Method** | Abstract method in base class, subclasses implement | When subclasses decide which class to instantiate |
+| **Abstract Factory** | Creates families of related objects | Multiple related products (e.g., UI themes) |
+
+#### 💻 Implementation
+
+```java
+// =============================================
+// SIMPLE FACTORY PATTERN
+// =============================================
+
+// Product interface - defines what all shapes must do
 interface Shape {
     void draw();
+    double getArea();
 }
 
-// Concrete products
+// Concrete products - specific implementations
 class Circle implements Shape {
-    public void draw() { System.out.println("Drawing Circle"); }
+    private double radius;
+    
+    public Circle(double radius) { this.radius = radius; }
+    public void draw() { System.out.println("Drawing Circle with radius: " + radius); }
+    public double getArea() { return Math.PI * radius * radius; }
 }
 
 class Rectangle implements Shape {
-    public void draw() { System.out.println("Drawing Rectangle"); }
+    private double width, height;
+    
+    public Rectangle(double width, double height) {
+        this.width = width;
+        this.height = height;
+    }
+    public void draw() { System.out.println("Drawing Rectangle: " + width + "x" + height); }
+    public double getArea() { return width * height; }
 }
 
-// Factory
+class Triangle implements Shape {
+    private double base, height;
+    
+    public Triangle(double base, double height) {
+        this.base = base;
+        this.height = height;
+    }
+    public void draw() { System.out.println("Drawing Triangle"); }
+    public double getArea() { return 0.5 * base * height; }
+}
+
+// Factory - centralizes object creation logic
 class ShapeFactory {
-    public Shape createShape(String type) {
+    
+    // Simple factory method
+    public static Shape createShape(String type) {
         return switch (type.toLowerCase()) {
-            case "circle" -> new Circle();
-            case "rectangle" -> new Rectangle();
+            case "circle" -> new Circle(1.0);
+            case "rectangle" -> new Rectangle(1.0, 1.0);
+            case "triangle" -> new Triangle(1.0, 1.0);
             default -> throw new IllegalArgumentException("Unknown shape: " + type);
         };
     }
+    
+    // Factory method with parameters
+    public static Shape createCircle(double radius) {
+        return new Circle(radius);
+    }
+    
+    public static Shape createRectangle(double width, double height) {
+        return new Rectangle(width, height);
+    }
 }
 
-// Usage
-ShapeFactory factory = new ShapeFactory();
-Shape circle = factory.createShape("circle");
-circle.draw();
+// Usage - client doesn't know about Circle, Rectangle classes
+Shape shape = ShapeFactory.createShape("circle");
+shape.draw();  // Drawing Circle with radius: 1.0
+```
+
+#### 🌍 Real-World Examples
+
+```java
+// Java Calendar - factory method
+Calendar calendar = Calendar.getInstance();  // Returns GregorianCalendar
+
+// Java NumberFormat - factory methods
+NumberFormat nf = NumberFormat.getCurrencyInstance();
+NumberFormat pf = NumberFormat.getPercentInstance();
+
+// Java Executors - factory for thread pools
+ExecutorService executor = Executors.newFixedThreadPool(10);
+ExecutorService cached = Executors.newCachedThreadPool();
+
+// JDBC Connection
+Connection conn = DriverManager.getConnection(url);  // Returns MySQL/PostgreSQL connection
+```
+
+#### ✅ Advantages & ❌ Disadvantages
+
+| Advantages | Disadvantages |
+|------------|---------------|
+| Loose coupling - client doesn't know concrete classes | Can lead to many factory classes |
+| Single Responsibility - creation logic in one place | Adds complexity for simple cases |
+| Open/Closed - add new products without changing client | Subclasses may need to implement factories |
+| Easier testing - can mock factory | May hide what object is actually created |
 ```
 
 ---
 
 ### Q63: What is Builder Pattern?
 
+**Definition:** The Builder Pattern separates the construction of a complex object from its representation, allowing the same construction process to create different representations. It provides a **step-by-step approach** to building objects with many optional parameters.
+
+#### 🎯 Problem It Solves
+
+**The Telescoping Constructor Anti-Pattern:**
+```java
+// ❌ BAD - Multiple constructors for different combinations
+public class User {
+    public User(String name) { ... }
+    public User(String name, String email) { ... }
+    public User(String name, String email, int age) { ... }
+    public User(String name, String email, int age, String phone) { ... }
+    public User(String name, String email, int age, String phone, String address) { ... }
+    // 🤯 Explosion of constructors! Hard to read, easy to make mistakes
+}
+
+// Confusing - which parameter is which?
+User user = new User("John", "john@email.com", 30, null, "NYC");
+```
+
+**With Builder Pattern:**
+```java
+// ✅ GOOD - Clear, readable, self-documenting
+User user = new User.Builder("John", "john@email.com")
+    .age(30)
+    .address("NYC")
+    .build();
+```
+
+#### 📊 When to Use Builder Pattern
+
+| Scenario | Use Builder? |
+|----------|--------------|
+| Object has 4+ parameters | ✅ Yes |
+| Many optional parameters | ✅ Yes |
+| Object should be immutable after creation | ✅ Yes |
+| Need validation before object creation | ✅ Yes |
+| Same construction process, different representations | ✅ Yes |
+| Simple object with 2-3 required params | ❌ Overkill |
+
+#### 💻 Implementation
+
 ```java
 public class User {
-    private final String name;      // Required
-    private final String email;     // Required
-    private final int age;          // Optional
-    private final String phone;     // Optional
+    // All fields are final - immutable object
+    private final String name;          // Required
+    private final String email;         // Required
+    private final int age;              // Optional
+    private final String phone;         // Optional
+    private final String address;       // Optional
+    private final List<String> roles;   // Optional
 
+    // Private constructor - only Builder can create User
     private User(Builder builder) {
         this.name = builder.name;
         this.email = builder.email;
         this.age = builder.age;
         this.phone = builder.phone;
+        this.address = builder.address;
+        this.roles = builder.roles;
     }
 
+    // Only getters, no setters - immutability
+    public String getName() { return name; }
+    public String getEmail() { return email; }
+    public int getAge() { return age; }
+    public String getPhone() { return phone; }
+    public String getAddress() { return address; }
+    public List<String> getRoles() { return Collections.unmodifiableList(roles); }
+
+    // Static inner Builder class
     public static class Builder {
+        // Required parameters
         private final String name;
         private final String email;
+        
+        // Optional parameters with default values
         private int age = 0;
         private String phone = "";
+        private String address = "";
+        private List<String> roles = new ArrayList<>();
 
-        public Builder(String name, String email) {  // Required params
+        // Constructor with required parameters only
+        public Builder(String name, String email) {
+            if (name == null || name.isEmpty()) {
+                throw new IllegalArgumentException("Name is required");
+            }
+            if (email == null || !email.contains("@")) {
+                throw new IllegalArgumentException("Valid email is required");
+            }
             this.name = name;
             this.email = email;
         }
 
+        // Fluent setters - return 'this' for chaining
         public Builder age(int age) {
+            if (age < 0 || age > 150) {
+                throw new IllegalArgumentException("Invalid age");
+            }
             this.age = age;
             return this;
         }
@@ -2039,114 +2319,619 @@ public class User {
             return this;
         }
 
+        public Builder address(String address) {
+            this.address = address;
+            return this;
+        }
+
+        public Builder addRole(String role) {
+            this.roles.add(role);
+            return this;
+        }
+
+        // Build method - creates the final immutable object
         public User build() {
+            // Final validation can happen here
             return new User(this);
         }
     }
+    
+    @Override
+    public String toString() {
+        return "User{name='" + name + "', email='" + email + "', age=" + age + "}";
+    }
 }
 
-// Usage - fluent interface
-User user = new User.Builder("John", "john@email.com")
-    .age(30)
+// =============================================
+// USAGE EXAMPLES
+// =============================================
+
+// Minimal - only required fields
+User user1 = new User.Builder("John", "john@email.com")
+    .build();
+
+// With some optional fields
+User user2 = new User.Builder("Jane", "jane@email.com")
+    .age(28)
     .phone("123-456-7890")
     .build();
+
+// Full featured with method chaining
+User user3 = new User.Builder("Bob", "bob@email.com")
+    .age(35)
+    .phone("555-123-4567")
+    .address("123 Main St, NYC")
+    .addRole("ADMIN")
+    .addRole("USER")
+    .build();
+
+System.out.println(user3);  // User{name='Bob', email='bob@email.com', age=35}
+```
+
+#### 🌍 Real-World Examples in Java
+
+```java
+// StringBuilder - most common builder
+StringBuilder sb = new StringBuilder()
+    .append("Hello")
+    .append(" ")
+    .append("World")
+    .append("!");
+String result = sb.toString();
+
+// Stream.Builder
+Stream.Builder<String> streamBuilder = Stream.builder();
+streamBuilder.add("a").add("b").add("c");
+Stream<String> stream = streamBuilder.build();
+
+// Locale.Builder (Java 7+)
+Locale locale = new Locale.Builder()
+    .setLanguage("en")
+    .setRegion("US")
+    .build();
+
+// HttpRequest.Builder (Java 11+)
+HttpRequest request = HttpRequest.newBuilder()
+    .uri(URI.create("https://api.example.com"))
+    .header("Content-Type", "application/json")
+    .timeout(Duration.ofSeconds(10))
+    .POST(HttpRequest.BodyPublishers.ofString("{}"))
+    .build();
+```
+
+#### ✅ Advantages & ❌ Disadvantages
+
+| Advantages | Disadvantages |
+|------------|---------------|
+| Readable, self-documenting code | More code to write |
+| Immutable objects | Requires inner class |
+| Validation before construction | Slight runtime overhead |
+| Fluent API with method chaining | |
+| Can create different representations | |
 ```
 
 ---
 
 ### Q64: What is Observer Pattern?
 
-```java
-// Subject
-interface Subject {
-    void addObserver(Observer o);
-    void removeObserver(Observer o);
-    void notifyObservers();
-}
+**Definition:** The Observer Pattern defines a **one-to-many dependency** between objects so that when one object (Subject/Publisher) changes state, all its dependents (Observers/Subscribers) are **notified and updated automatically**. Also known as **Publish-Subscribe (Pub-Sub)** pattern.
 
-// Observer
+#### 🎯 Problem It Solves
+
+**Without Observer Pattern:**
+```java
+// ❌ BAD - Tight coupling, manual notification
+class NewsAgency {
+    private CNN cnn;
+    private BBC bbc;
+    private Reuters reuters;
+    
+    void publishNews(String news) {
+        cnn.receive(news);      // Must know about CNN
+        bbc.receive(news);      // Must know about BBC
+        reuters.receive(news);  // Must know about Reuters
+        // Adding new channel = modifying this class!
+    }
+}
+```
+
+**With Observer Pattern:**
+```java
+// ✅ GOOD - Loose coupling, automatic notification
+class NewsAgency {
+    private List<Observer> observers;
+    
+    void publishNews(String news) {
+        observers.forEach(o -> o.update(news));  // Doesn't know who observers are
+        // Adding new channel = just add to list, no code changes!
+    }
+}
+```
+
+#### 📊 Key Components
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        OBSERVER PATTERN STRUCTURE                       │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│    ┌───────────────────┐         notifies        ┌──────────────────┐  │
+│    │      Subject      │ ─────────────────────── │     Observer     │  │
+│    │    (Publisher)    │                         │   (Subscriber)   │  │
+│    ├───────────────────┤                         ├──────────────────┤  │
+│    │ + attach(observer)│                         │ + update(data)   │  │
+│    │ + detach(observer)│                         └────────┬─────────┘  │
+│    │ + notify()        │                                  │            │
+│    └─────────┬─────────┘                                  │            │
+│              │                                            │            │
+│              │ implements                                 │ implements │
+│              ▼                                            ▼            │
+│    ┌───────────────────┐                         ┌──────────────────┐  │
+│    │  ConcreteSubject  │                         │ConcreteObserver  │  │
+│    │   (NewsAgency)    │                         │  (NewsChannel)   │  │
+│    ├───────────────────┤                         ├──────────────────┤  │
+│    │ - state           │                         │ - subject        │  │
+│    │ + getState()      │                         │ + update(data)   │  │
+│    │ + setState()      │                         └──────────────────┘  │
+│    └───────────────────┘                                               │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 💻 Implementation
+
+```java
+import java.util.ArrayList;
+import java.util.List;
+
+// =============================================
+// OBSERVER INTERFACE
+// =============================================
 interface Observer {
     void update(String message);
 }
 
-// Concrete Subject
+// =============================================
+// SUBJECT INTERFACE
+// =============================================
+interface Subject {
+    void addObserver(Observer observer);
+    void removeObserver(Observer observer);
+    void notifyObservers();
+}
+
+// =============================================
+// CONCRETE SUBJECT (Publisher)
+// =============================================
 class NewsAgency implements Subject {
     private List<Observer> observers = new ArrayList<>();
-    private String news;
+    private String latestNews;
 
-    public void addObserver(Observer o) { observers.add(o); }
-    public void removeObserver(Observer o) { observers.remove(o); }
-    
+    @Override
+    public void addObserver(Observer observer) {
+        observers.add(observer);
+        System.out.println("New subscriber added. Total: " + observers.size());
+    }
+
+    @Override
+    public void removeObserver(Observer observer) {
+        observers.remove(observer);
+        System.out.println("Subscriber removed. Total: " + observers.size());
+    }
+
+    @Override
     public void notifyObservers() {
-        for (Observer o : observers) {
-            o.update(news);
+        System.out.println("Broadcasting to " + observers.size() + " subscribers...");
+        for (Observer observer : observers) {
+            observer.update(latestNews);
         }
     }
 
-    public void setNews(String news) {
-        this.news = news;
+    // When news changes, all observers are notified
+    public void publishNews(String news) {
+        this.latestNews = news;
+        System.out.println("\n📰 BREAKING: " + news);
         notifyObservers();
     }
 }
 
-// Concrete Observer
+// =============================================
+// CONCRETE OBSERVERS (Subscribers)
+// =============================================
 class NewsChannel implements Observer {
-    private String name;
+    private String channelName;
+    private String lastReceivedNews;
 
-    public NewsChannel(String name) { this.name = name; }
+    public NewsChannel(String name) {
+        this.channelName = name;
+    }
 
+    @Override
     public void update(String news) {
-        System.out.println(name + " received: " + news);
+        this.lastReceivedNews = news;
+        displayNews();
+    }
+
+    private void displayNews() {
+        System.out.println("  📺 " + channelName + " reporting: " + lastReceivedNews);
     }
 }
 
-// Usage
-NewsAgency agency = new NewsAgency();
-agency.addObserver(new NewsChannel("CNN"));
-agency.addObserver(new NewsChannel("BBC"));
-agency.setNews("Breaking News!");  // Both channels notified
+class MobileApp implements Observer {
+    private String appName;
+
+    public MobileApp(String name) {
+        this.appName = name;
+    }
+
+    @Override
+    public void update(String news) {
+        sendPushNotification(news);
+    }
+
+    private void sendPushNotification(String news) {
+        System.out.println("  📱 " + appName + " push notification: " + news);
+    }
+}
+
+// =============================================
+// USAGE
+// =============================================
+public class ObserverDemo {
+    public static void main(String[] args) {
+        // Create the subject (publisher)
+        NewsAgency agency = new NewsAgency();
+        
+        // Create observers (subscribers)
+        Observer cnn = new NewsChannel("CNN");
+        Observer bbc = new NewsChannel("BBC");
+        Observer app = new MobileApp("NewsApp");
+        
+        // Subscribe
+        agency.addObserver(cnn);
+        agency.addObserver(bbc);
+        agency.addObserver(app);
+        
+        // Publish news - all observers notified automatically
+        agency.publishNews("Java 21 Released!");
+        
+        // Unsubscribe BBC
+        agency.removeObserver(bbc);
+        
+        // Publish again - only CNN and app notified
+        agency.publishNews("Spring Boot 3.2 is here!");
+    }
+}
+
+/* OUTPUT:
+New subscriber added. Total: 1
+New subscriber added. Total: 2
+New subscriber added. Total: 3
+
+📰 BREAKING: Java 21 Released!
+Broadcasting to 3 subscribers...
+  📺 CNN reporting: Java 21 Released!
+  📺 BBC reporting: Java 21 Released!
+  📱 NewsApp push notification: Java 21 Released!
+  
+Subscriber removed. Total: 2
+
+📰 BREAKING: Spring Boot 3.2 is here!
+Broadcasting to 2 subscribers...
+  📺 CNN reporting: Spring Boot 3.2 is here!
+  📱 NewsApp push notification: Spring Boot 3.2 is here!
+*/
+```
+
+#### 🌍 Real-World Examples
+
+| Example | Subject | Observers |
+|---------|---------|-----------|
+| **YouTube** | Channel | Subscribers |
+| **Twitter/X** | Account | Followers |
+| **Stock Market** | Stock Price | Trading Apps |
+| **Event Listeners** | Button | Click Handlers |
+| **MVC Pattern** | Model | Views |
+| **Message Queues** | Queue | Consumers |
+
+```java
+// Java Built-in Observer (deprecated in Java 9, but good to know)
+// java.util.Observable (Subject)
+// java.util.Observer (Observer)
+
+// Modern alternatives:
+// 1. PropertyChangeListener (JavaBeans)
+bean.addPropertyChangeListener(e -> System.out.println("Changed: " + e.getNewValue()));
+
+// 2. Reactive Streams (Project Reactor, RxJava)
+Flux.just(1, 2, 3).subscribe(System.out::println);
+
+// 3. Java Flow API (Java 9+)
+// Publisher, Subscriber, Subscription interfaces
+```
+
+#### ✅ Advantages & ❌ Disadvantages
+
+| Advantages | Disadvantages |
+|------------|---------------|
+| Loose coupling between subject and observers | Observers notified in random order |
+| Open/Closed - add observers without changing subject | Memory leaks if observers not removed |
+| Runtime registration/deregistration | Unexpected updates if not careful |
+| Supports broadcast communication | Can cause cascade of updates |
 ```
 
 ---
 
 ### Q65: What is Strategy Pattern?
 
+**Definition:** The Strategy Pattern defines a family of algorithms, encapsulates each one, and makes them **interchangeable at runtime**. It lets the algorithm vary independently from clients that use it. Think of it as **pluggable behaviors**.
+
+#### 🎯 Problem It Solves
+
+**Without Strategy Pattern:**
 ```java
-// Strategy interface
+// ❌ BAD - Hardcoded algorithm, violates Open/Closed Principle
+class ShoppingCart {
+    void checkout(String paymentType, double amount) {
+        if (paymentType.equals("creditCard")) {
+            // Credit card logic
+            System.out.println("Processing credit card...");
+        } else if (paymentType.equals("paypal")) {
+            // PayPal logic
+            System.out.println("Processing PayPal...");
+        } else if (paymentType.equals("crypto")) {
+            // Crypto logic - need to add new else-if!
+            System.out.println("Processing crypto...");
+        }
+        // Adding new payment = modifying this method!
+        // Violates Open/Closed Principle
+    }
+}
+```
+
+**With Strategy Pattern:**
+```java
+// ✅ GOOD - Pluggable strategies, follows Open/Closed Principle
+class ShoppingCart {
+    private PaymentStrategy strategy;
+    
+    void setPaymentStrategy(PaymentStrategy strategy) {
+        this.strategy = strategy;
+    }
+    
+    void checkout(double amount) {
+        strategy.pay(amount);
+    }
+}
+// Adding new payment = just create new class, no changes to ShoppingCart!
+```
+
+#### 📊 Strategy Pattern Structure
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                        STRATEGY PATTERN STRUCTURE                        │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│    ┌─────────────────────┐                                               │
+│    │       Context       │ ────────────────── uses ──────────────────┐   │
+│    │   (ShoppingCart)    │                                           │   │
+│    ├─────────────────────┤                                           ▼   │
+│    │ - strategy          │                               ┌───────────────┐│
+│    │ + setStrategy()     │                               │   Strategy    ││
+│    │ + executeStrategy() │                               │  (interface)  ││
+│    └─────────────────────┘                               ├───────────────┤│
+│                                                          │ + execute()   ││
+│                                                          └───────┬───────┘│
+│                                                                  │        │
+│                    ┌─────────────────────┬───────────────────────┤        │
+│                    │                     │                       │        │
+│                    ▼                     ▼                       ▼        │
+│          ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐  │
+│          │ ConcreteStrategy│   │ ConcreteStrategy│   │ ConcreteStrategy│  │
+│          │   (CreditCard)  │   │    (PayPal)     │   │    (Crypto)     │  │
+│          ├─────────────────┤   ├─────────────────┤   ├─────────────────┤  │
+│          │ + execute()     │   │ + execute()     │   │ + execute()     │  │
+│          └─────────────────┘   └─────────────────┘   └─────────────────┘  │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 💻 Implementation
+
+```java
+// =============================================
+// STRATEGY INTERFACE
+// =============================================
 interface PaymentStrategy {
     void pay(double amount);
+    String getPaymentMethod();
 }
 
-// Concrete strategies
+// =============================================
+// CONCRETE STRATEGIES
+// =============================================
 class CreditCardPayment implements PaymentStrategy {
-    public void pay(double amount) {
-        System.out.println("Paid $" + amount + " with credit card");
+    private String cardNumber;
+    private String cardHolder;
+    
+    public CreditCardPayment(String cardNumber, String cardHolder) {
+        this.cardNumber = cardNumber;
+        this.cardHolder = cardHolder;
     }
+    
+    @Override
+    public void pay(double amount) {
+        String maskedCard = "**** **** **** " + cardNumber.substring(cardNumber.length() - 4);
+        System.out.println("💳 Paid $" + amount + " using Credit Card");
+        System.out.println("   Card: " + maskedCard + " | Holder: " + cardHolder);
+    }
+    
+    @Override
+    public String getPaymentMethod() { return "Credit Card"; }
 }
 
 class PayPalPayment implements PaymentStrategy {
-    public void pay(double amount) {
-        System.out.println("Paid $" + amount + " with PayPal");
+    private String email;
+    
+    public PayPalPayment(String email) {
+        this.email = email;
     }
+    
+    @Override
+    public void pay(double amount) {
+        System.out.println("📧 Paid $" + amount + " using PayPal");
+        System.out.println("   Account: " + email);
+    }
+    
+    @Override
+    public String getPaymentMethod() { return "PayPal"; }
 }
 
-// Context
+class CryptoPayment implements PaymentStrategy {
+    private String walletAddress;
+    private String cryptoType;
+    
+    public CryptoPayment(String walletAddress, String cryptoType) {
+        this.walletAddress = walletAddress;
+        this.cryptoType = cryptoType;
+    }
+    
+    @Override
+    public void pay(double amount) {
+        System.out.println("🪙 Paid $" + amount + " using " + cryptoType);
+        System.out.println("   Wallet: " + walletAddress.substring(0, 8) + "...");
+    }
+    
+    @Override
+    public String getPaymentMethod() { return cryptoType; }
+}
+
+// =============================================
+// CONTEXT CLASS
+// =============================================
 class ShoppingCart {
+    private List<String> items = new ArrayList<>();
     private PaymentStrategy paymentStrategy;
 
+    public void addItem(String item, double price) {
+        items.add(item + " ($" + price + ")");
+    }
+
+    // Strategy can be changed at runtime!
     public void setPaymentStrategy(PaymentStrategy strategy) {
         this.paymentStrategy = strategy;
+        System.out.println("Payment method set to: " + strategy.getPaymentMethod());
     }
 
     public void checkout(double amount) {
+        if (paymentStrategy == null) {
+            throw new IllegalStateException("Please select a payment method!");
+        }
+        System.out.println("\n🛒 Cart: " + items);
         paymentStrategy.pay(amount);
+        System.out.println("✅ Order complete!\n");
     }
 }
 
-// Usage - strategy can be changed at runtime
-ShoppingCart cart = new ShoppingCart();
-cart.setPaymentStrategy(new CreditCardPayment());
-cart.checkout(100.0);
+// =============================================
+// USAGE - RUNTIME STRATEGY SWITCHING
+// =============================================
+public class StrategyDemo {
+    public static void main(String[] args) {
+        ShoppingCart cart = new ShoppingCart();
+        cart.addItem("Laptop", 999.99);
+        cart.addItem("Mouse", 29.99);
+        
+        // User selects Credit Card
+        cart.setPaymentStrategy(new CreditCardPayment("1234567890123456", "John Doe"));
+        cart.checkout(1029.98);
+        
+        // Same cart, different payment method - strategy changed at runtime!
+        cart.setPaymentStrategy(new PayPalPayment("john@email.com"));
+        cart.checkout(1029.98);
+        
+        // User changes to Crypto
+        cart.setPaymentStrategy(new CryptoPayment("0x1234abcd5678efgh", "Bitcoin"));
+        cart.checkout(1029.98);
+    }
+}
+
+/* OUTPUT:
+Payment method set to: Credit Card
+
+🛒 Cart: [Laptop ($999.99), Mouse ($29.99)]
+💳 Paid $1029.98 using Credit Card
+   Card: **** **** **** 3456 | Holder: John Doe
+✅ Order complete!
+
+Payment method set to: PayPal
+
+🛒 Cart: [Laptop ($999.99), Mouse ($29.99)]
+📧 Paid $1029.98 using PayPal
+   Account: john@email.com
+✅ Order complete!
+
+Payment method set to: Bitcoin
+
+🛒 Cart: [Laptop ($999.99), Mouse ($29.99)]
+🪙 Paid $1029.98 using Bitcoin
+   Wallet: 0x1234ab...
+✅ Order complete!
+*/
+```
+
+#### 🌍 Real-World Examples
+
+| Example | Context | Strategies |
+|---------|---------|------------|
+| **Sorting** | Collections.sort() | Comparator implementations |
+| **Compression** | File Compressor | ZIP, RAR, GZIP algorithms |
+| **Validation** | Form Validator | Email, Phone, Credit Card validators |
+| **Navigation** | Google Maps | Driving, Walking, Cycling routes |
+| **Authentication** | Login Service | OAuth, JWT, Basic Auth |
+| **Discount** | E-commerce | Percentage, Fixed, Seasonal discounts |
+
+```java
+// Java's built-in Strategy Pattern examples:
+
+// 1. Comparator - sorting strategy
+List<String> names = Arrays.asList("Charlie", "Alice", "Bob");
+Collections.sort(names, String::compareToIgnoreCase);  // Strategy: case-insensitive
+Collections.sort(names, Comparator.reverseOrder());    // Strategy: reverse order
+
+// 2. Layout Managers in Swing - layout strategy
+panel.setLayout(new FlowLayout());    // Strategy: flow layout
+panel.setLayout(new BorderLayout());  // Strategy: border layout
+panel.setLayout(new GridLayout(2,2)); // Strategy: grid layout
+
+// 3. Thread Pool Rejection Policies
+ThreadPoolExecutor executor = new ThreadPoolExecutor(
+    10, 10, 0L, TimeUnit.MILLISECONDS,
+    new LinkedBlockingQueue<>(100),
+    new ThreadPoolExecutor.CallerRunsPolicy()  // Strategy: caller runs
+);
+// Other strategies: AbortPolicy, DiscardPolicy, DiscardOldestPolicy
+```
+
+#### ✅ Advantages & ❌ Disadvantages
+
+| Advantages | Disadvantages |
+|------------|---------------|
+| Open/Closed - add strategies without changing context | Client must know about strategies |
+| Eliminates conditional statements | Increases number of classes |
+| Runtime algorithm switching | Communication overhead between context and strategy |
+| Easy to test strategies in isolation | May be overkill for simple cases |
+| Promotes composition over inheritance | |
+
+#### 🆚 Strategy vs State Pattern
+
+| Aspect | Strategy | State |
+|--------|----------|-------|
+| **Purpose** | Swap algorithms | Change behavior based on state |
+| **Client** | Usually sets strategy | Usually doesn't know about states |
+| **Transitions** | External (client decides) | Internal (state decides next state) |
+| **Awareness** | Strategies don't know about each other | States may know about other states |
 
 cart.setPaymentStrategy(new PayPalPayment());
 cart.checkout(50.0);
