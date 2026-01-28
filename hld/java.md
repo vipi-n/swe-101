@@ -283,3 +283,164 @@ public class OddEvenSemaphore {
 - Each thread manages its own numbers
 - Cleaner turn-taking logic
 - Less error-prone
+
+---
+
+## Producer-Consumer with Queue and wait/notify
+
+Manual implementation without BlockingQueue - good for understanding the fundamentals.
+
+### Code
+
+```java
+package com.example.demo;
+
+import java.util.LinkedList;
+import java.util.Queue;
+
+public class ProducerConsumerManual {
+
+    public static void main(String[] args) {
+        Buffer buffer = new Buffer();
+
+        Thread producer = new Thread(() -> {
+            try {
+                buffer.produce();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }, "Producer-");
+
+        Thread consumer = new Thread(() -> {
+            try {
+                buffer.consume();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }, "Consumer-");
+
+        producer.start();
+        consumer.start();
+    }
+}
+
+class Buffer {
+    private final int capacity = 5;
+    private final Queue<Integer> queue = new LinkedList<>();
+    private final int max = 100;
+    private int produced = 1;
+    private boolean producerDone = false;
+
+    public synchronized void produce() throws InterruptedException {
+        while (produced <= max) {
+            // Wait if queue is full
+            while (queue.size() == capacity) {
+                wait();
+            }
+            
+            queue.add(produced);
+            System.out.println(Thread.currentThread().getName() + "produced: " + produced);
+            produced++;
+            notify();
+        }
+        producerDone = true;
+        notify();  // Wake up consumer to check done flag
+    }
+
+    public synchronized void consume() throws InterruptedException {
+        while (!producerDone || !queue.isEmpty()) {
+            // Wait if queue is empty AND producer is still producing
+            while (queue.isEmpty() && !producerDone) {
+                wait();
+            }
+            
+            if (!queue.isEmpty()) {
+                int val = queue.poll();
+                System.out.println(Thread.currentThread().getName() + "consumed: " + val);
+                notify();
+            }
+        }
+        System.out.println("Consumer finished - all items consumed");
+    }
+}
+```
+
+### Issues in Original Code (Fixed Above)
+
+| Issue | Problem | Fix |
+|-------|---------|-----|
+| `while (!queue.isEmpty())` | Exits immediately if queue starts empty | Use `while (!producerDone \|\| !queue.isEmpty())` |
+| Missing `i++` | Producer adds same value forever (infinite loop) | Add `produced++` after adding |
+| No termination signal | Consumer doesn't know when producer is done | Add `producerDone` flag |
+| `while (queue.size() == 0)` | Same as `queue.isEmpty()` but less readable | Use `queue.isEmpty()` |
+
+### Flow Diagram
+
+```
+Producer                     Queue [capacity=5]              Consumer
+   │                                                            │
+   ├── produce(1) ────────► [1]                                 │
+   ├── produce(2) ────────► [1][2]                              │
+   ├── produce(3) ────────► [1][2][3]                           │
+   ├── produce(4) ────────► [1][2][3][4]                        │
+   ├── produce(5) ────────► [1][2][3][4][5] ← FULL              │
+   │   wait() ←───────────  (blocked)                           │
+   │                                        ◄── consume() → 1 ──┤
+   │   wakeup ←──────────── notify()        [2][3][4][5]        │
+   ├── produce(6) ────────► [2][3][4][5][6]                     │
+   │                                        ◄── consume() → 2 ──┤
+   │   ...continues...                                          │
+   │                                                            │
+   ├── produce(100) ──────► [...][100]                          │
+   ├── producerDone = true                                      │
+   ├── notify() ──────────────────────────► consumer wakes up   │
+   │                                        consumes remaining  │
+   │                                        queue.isEmpty() ✓   │
+   │                                        producerDone ✓      │
+   │                                        EXIT                │
+```
+
+### Why `producerDone` Flag?
+
+Without it, the consumer can't distinguish between:
+1. **Queue temporarily empty** - Producer is slow, wait for more items
+2. **Queue permanently empty** - Producer finished, stop consuming
+
+```java
+// Consumer needs to know:
+while (!producerDone || !queue.isEmpty()) {
+    //     ↑ Producer still running    ↑ Items left to consume
+    // Continue if EITHER is true
+}
+```
+
+### Sample Output
+
+```
+Producer-produced: 1
+Producer-produced: 2
+Producer-produced: 3
+Producer-produced: 4
+Producer-produced: 5
+Consumer-consumed: 1
+Consumer-consumed: 2
+Producer-produced: 6
+Producer-produced: 7
+...
+Producer-produced: 100
+Consumer-consumed: 98
+Consumer-consumed: 99
+Consumer-consumed: 100
+Consumer finished - all items consumed
+```
+
+### Comparison: BlockingQueue vs Manual Queue
+
+| Aspect | BlockingQueue | Manual Queue + wait/notify |
+|--------|---------------|---------------------------|
+| **Code complexity** | ~30 lines | ~60 lines |
+| **Thread safety** | Built-in | Manual (`synchronized`) |
+| **Termination** | Check value (e.g., `if item == 100`) | Need explicit flag |
+| **Error handling** | Simple | Must handle edge cases |
+| **Interview** | "Easy way" | "Shows you understand internals" |
+| **Production** | ✅ Use this | ❌ Use BlockingQueue instead |
