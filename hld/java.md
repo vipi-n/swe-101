@@ -1024,19 +1024,20 @@ Map<String, Long> frequency = words.stream()
 ```java
 String str = "aabbcdeeff";
 
-Character firstNonRepeated = str.chars()
-    .mapToObj(c -> (char) c)
+String firstNonRepeated = Arrays.stream(str.split(""))
     .collect(Collectors.groupingBy(
-        Function.identity(),
-        LinkedHashMap::new,  // Preserve order
+        Function.identity(),                     // Returns element as-is
+        // c -> c,                               // Lambda equivalent
+        LinkedHashMap::new,                      // Preserve order
         Collectors.counting()
     ))
     .entrySet().stream()
     .filter(e -> e.getValue() == 1)
-    .map(Map.Entry::getKey)
+    .map(Map.Entry::getKey)                     // Method reference
+    // .map(e -> e.getKey())                    // Lambda equivalent
     .findFirst()
     .orElse(null);
-// Result: 'c'
+// Result: "c"
 ```
 
 ---
@@ -1189,6 +1190,234 @@ String[] strArray = list.stream().toArray(String[]::new);  // Method reference
 
 // To int array
 int[] intArray = IntStream.of(1, 2, 3).toArray();
+```
+
+---
+
+#### Q16: Count the occurrence of each character in a string
+
+```java
+String str = "programming";
+
+// Method 1: Using split("") - Simple approach
+String[] chars = str.split("");
+Map<String, Long> charCount = Arrays.stream(chars)
+    .collect(Collectors.groupingBy(
+        Function.identity(),                     // Group by character itself
+        // c -> c,                               // Lambda equivalent
+        Collectors.counting()                    // Count occurrences
+    ));
+// Result: {p=1, r=2, o=1, g=2, a=1, m=2, i=1, n=1}
+
+// Print the result
+charCount.forEach((ch, count) -> 
+    System.out.println(ch + " -> " + count));
+
+// Method 2: Preserve insertion order with LinkedHashMap
+Map<String, Long> orderedCount = Arrays.stream(str.split(""))
+    .collect(Collectors.groupingBy(
+        Function.identity(),                     // Returns element as-is
+        // c -> c,                               // Lambda equivalent
+        LinkedHashMap::new,                      // Preserve insertion order
+        Collectors.counting()
+    ));
+// Result: {p=1, r=2, o=1, g=2, r=already counted, a=1, m=2, i=1, n=1, g=already counted}
+
+```
+
+---
+
+#### Q17: Find all duplicate elements from a string
+
+```java
+String str = "programming";
+
+// Method 1: Using groupingBy and filter
+Set<String> duplicates = Arrays.stream(str.split(""))
+    .collect(Collectors.groupingBy(
+        Function.identity(),                     // Returns element as-is
+        // c -> c,                               // Lambda equivalent
+        Collectors.counting()
+    ))
+    .entrySet().stream()
+    .filter(e -> e.getValue() > 1)              // Keep only duplicates
+    .map(Map.Entry::getKey)                     // Method reference
+    // .map(e -> e.getKey())                    // Lambda equivalent
+    .collect(Collectors.toSet());
+// Result: [r, g, m]
+
+// Method 2: Using Collections.frequency
+List<String> chars = Arrays.asList(str.split(""));
+
+Set<String> duplicates2 = chars.stream()
+    .filter(c -> Collections.frequency(chars, c) > 1)
+    .collect(Collectors.toSet());
+// Result: [r, g, m]
+
+// Method 3: Using Set to track seen characters
+Set<String> seen = new HashSet<>();
+Set<String> duplicates3 = Arrays.stream(str.split(""))
+    .filter(c -> !seen.add(c))                  // add() returns false if already exists
+    .collect(Collectors.toSet());
+// Result: [r, g, m]
+```
+
+---
+
+#### Q18: Find first non-repeated character in a string
+
+```java
+String str = "aabbcdeeff";
+
+// Method 1: Using LinkedHashMap to preserve order
+String firstNonRepeated = Arrays.stream(str.split(""))
+    .collect(Collectors.groupingBy(
+        Function.identity(),                     // Returns element as-is
+        // c -> c,                               // Lambda equivalent
+        LinkedHashMap::new,                      // Preserve insertion order
+        Collectors.counting()
+    ))
+    .entrySet().stream()
+    .filter(e -> e.getValue() == 1)             // Keep only non-repeated
+    .map(Map.Entry::getKey)                     // Method reference
+    // .map(e -> e.getKey())                    // Lambda equivalent
+    .findFirst()
+    .orElse(null);
+// Result: "c"
+
+// Method 2: Using indexOf and lastIndexOf
+String firstUnique = Arrays.stream(str.split(""))
+    .filter(c -> str.indexOf(c) == str.lastIndexOf(c))  // Same position = unique
+    .findFirst()
+    .orElse(null);
+// Result: "c"
+```
+
+---
+
+#### Q19: Find second highest number from an array
+
+```java
+int[] arr = {5, 9, 11, 2, 8, 21, 1};
+
+// Method 1: Using sorted and skip
+int secondHighest = Arrays.stream(arr)
+    .boxed()                                    // Convert to Stream<Integer>
+    .sorted(Comparator.reverseOrder())          // Sort descending
+    .skip(1)                                    // Skip first (highest)
+    .findFirst()
+    .orElseThrow(() -> new RuntimeException("Array too small"));
+// Result: 11
+
+// Method 2: Using distinct (handles duplicates)
+int[] arrWithDuplicates = {21, 9, 21, 2, 8, 21, 1};
+int secondHighestDistinct = Arrays.stream(arrWithDuplicates)
+    .boxed()
+    .distinct()                                 // Remove duplicates
+    .sorted(Comparator.reverseOrder())
+    .skip(1)
+    .findFirst()
+    .orElseThrow(() -> new RuntimeException("Not enough unique elements"));
+// Result: 9
+
+// Method 3: Using reduce (single pass, no sorting)
+int[] result = Arrays.stream(arr)
+    .boxed()
+    .reduce(
+        new int[]{Integer.MIN_VALUE, Integer.MIN_VALUE},  // [max, secondMax]
+        (acc, n) -> {
+            if (n > acc[0]) {
+                acc[1] = acc[0];                // Previous max becomes second
+                acc[0] = n;                     // New max
+            } else if (n > acc[1] && n < acc[0]) {
+                acc[1] = n;                     // New second max
+            }
+            return acc;
+        },
+        (a, b) -> a                             // Combiner (not used in sequential)
+    );
+int secondMax = result[1];
+// Result: 11
+```
+
+---
+
+#### Q20: Find longest string from an array
+
+```java
+String[] arr = {"cat", "elephant", "rat", "hippopotamus", "dog"};
+
+// Method 1: Using max with Comparator
+String longest = Arrays.stream(arr)
+    .max(Comparator.comparing(String::length))  // Method reference
+    // .max(Comparator.comparing(s -> s.length())) // Lambda equivalent
+    .orElse("");
+// Result: "hippopotamus"
+
+// Method 2: Using reduce
+String longestReduce = Arrays.stream(arr)
+    .reduce("", (a, b) -> a.length() > b.length() ? a : b);
+// Result: "hippopotamus"
+
+// Method 3: Using sorted (less efficient)
+String longestSorted = Arrays.stream(arr)
+    .sorted(Comparator.comparing(String::length).reversed())
+    .findFirst()
+    .orElse("");
+// Result: "hippopotamus"
+
+// Find all strings with maximum length (if there are ties)
+int maxLength = Arrays.stream(arr)
+    .mapToInt(String::length)
+    .max()
+    .orElse(0);
+
+List<String> allLongest = Arrays.stream(arr)
+    .filter(s -> s.length() == maxLength)
+    .collect(Collectors.toList());
+// Result: ["hippopotamus"]
+```
+
+---
+
+#### Q21: Find all elements from an array that start with '1'
+
+```java
+int[] arr = {15, 20, 123, 45, 1, 100, 78, 19, 12};
+
+// Method 1: Convert to String and check
+List<Integer> startsWithOne = Arrays.stream(arr)
+    .boxed()
+    .filter(n -> String.valueOf(n).startsWith("1"))
+    .collect(Collectors.toList());
+// Result: [15, 123, 1, 100, 19, 12]
+
+// Method 2: Using String conversion with method reference
+List<Integer> startsWithOne2 = Arrays.stream(arr)
+    .filter(n -> String.valueOf(n).charAt(0) == '1')
+    .boxed()
+    .collect(Collectors.toList());
+// Result: [15, 123, 1, 100, 19, 12]
+
+// Method 3: Mathematical approach (without String conversion)
+List<Integer> startsWithOne3 = Arrays.stream(arr)
+    .boxed()
+    .filter(n -> {
+        while (n >= 10) {
+            n = n / 10;                         // Get first digit
+        }
+        return n == 1;
+    })
+    .collect(Collectors.toList());
+// Result: [15, 123, 1, 100, 19, 12]
+
+// For String array - find strings starting with specific letter
+String[] names = {"John", "Jane", "Alice", "Jack", "Bob"};
+
+List<String> startsWithJ = Arrays.stream(names)
+    .filter(s -> s.startsWith("J"))
+    .collect(Collectors.toList());
+// Result: [John, Jane, Jack]
 ```
 
 ---
