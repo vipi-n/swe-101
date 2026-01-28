@@ -3,6 +3,8 @@
 ## Table of Contents
 1. [Producer-Consumer with BlockingQueue](#producer-consumer-with-blockingqueue)
 2. [Odd-Even Printer with wait/notify](#odd-even-printer-with-waitnotify)
+3. [Odd-Even Printer with Semaphore](#alternative-using-semaphore)
+4. [Producer-Consumer with Queue and wait/notify](#producer-consumer-with-queue-and-waitnotify)
 
 ---
 
@@ -132,7 +134,7 @@ class Printer {
 
     public synchronized void printOdd() throws InterruptedException {
         while (i <= max) {
-            while (i <= max && i % 2 == 0) {   // NOT my turn (number is even)
+            while (i % 2 == 0) {   // NOT my turn (number is even)
                 wait();
             }
             if (i > max) break;
@@ -144,7 +146,7 @@ class Printer {
 
     public synchronized void printEven() throws InterruptedException {
         while (i <= max) {
-            while (i <= max && i % 2 != 0) {   // NOT my turn (number is odd)
+            while (i % 2 != 0) {   // NOT my turn (number is odd)
                 wait();
             }
             if (i > max) break;
