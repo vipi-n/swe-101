@@ -1,6 +1,6 @@
-# 📚 Interview Preparation Hub
+# 📚
 
-> A curated collection of technical interview preparation documents covering Java, System Design, Networking, and DevOps.
+> A curated collection of technical interview preparation documents covering Java, Spring Boot, System Design, Networking, and DevOps.
 
 
 
