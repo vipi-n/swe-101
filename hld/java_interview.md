@@ -3711,7 +3711,6 @@ Desktop desktop = Desktop.getDesktop();
    - Use Enum Singleton (protects against all)
    - Throw exception in constructor if instance exists
    - Implement `readResolve()` for serialization
-```
 
 ---
 
