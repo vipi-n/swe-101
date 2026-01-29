@@ -62,7 +62,90 @@
 
 ---
 
-### Q3: What are primitive data types in Java?
+### Q3: Why is Java "Write Once, Run Anywhere" (WORA)?
+
+**Core Concept:** You write Java code **once**, compile it to **bytecode**, and it runs on **any platform** with a JVM.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    WRITE ONCE, RUN ANYWHERE                             │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│    ┌──────────────┐      javac        ┌──────────────────┐              │
+│    │  Hello.java  │  ───────────────► │  Hello.class     │              │
+│    │ (Source Code)│     (compile)     │   (Bytecode)     │              │
+│    └──────────────┘                   └────────┬─────────┘              │
+│                                                │                        │
+│                    ┌───────────────────────────┼───────────────────┐    │
+│                    │                           │                   │    │
+│                    ▼                           ▼                   ▼    │
+│           ┌──────────────┐           ┌──────────────┐     ┌────────────┐│
+│           │  JVM Windows │           │  JVM macOS   │     │ JVM Linux  ││
+│           └──────┬───────┘           └──────┬───────┘     └─────┬──────┘│
+│                  │                          │                   │       │
+│                  ▼                          ▼                   ▼       │
+│           ┌──────────────┐           ┌──────────────┐     ┌────────────┐│
+│           │   Windows    │           │    macOS     │     │   Linux    ││
+│           │   Machine    │           │   Machine    │     │  Machine   ││
+│           └──────────────┘           └──────────────┘     └────────────┘│
+│                                                                         │
+│    ONE source code → ONE bytecode → RUNS on ANY platform with JVM       │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Java vs C/C++ Compilation
+
+```
+C/C++ (Platform Dependent):
+┌──────────────┐     compile      ┌──────────────┐
+│  hello.c     │  ─────────────►  │  hello.exe   │  ← Windows ONLY!
+└──────────────┘   (for Windows)  └──────────────┘
+
+┌──────────────┐     compile      ┌──────────────┐
+│  hello.c     │  ─────────────►  │  hello       │  ← Linux ONLY!
+└──────────────┘   (for Linux)    └──────────────┘
+
+Need to recompile for EACH platform! ❌
+
+
+Java (Platform Independent):
+┌──────────────┐     javac        ┌──────────────┐
+│  Hello.java  │  ─────────────►  │  Hello.class │  ← Runs EVERYWHERE! ✅
+└──────────────┘                  └──────────────┘
+```
+
+#### How JVM Makes It Work
+
+```
+┌─────────────────────────────────────────────────┐
+│          Bytecode (Hello.class)                 │
+│    Same for ALL platforms - doesn't change      │
+└────────────────────┬────────────────────────────┘
+                     │
+        ┌────────────┼────────────┐
+        ▼            ▼            ▼
+┌───────────┐  ┌───────────┐  ┌───────────┐
+│JVM Windows│  │ JVM macOS │  │ JVM Linux │
+│ (written  │  │ (written  │  │ (written  │
+│  in C++)  │  │  in C++)  │  │  in C++)  │
+└─────┬─────┘  └─────┬─────┘  └─────┬─────┘
+      ▼              ▼              ▼
+  Windows         macOS          Linux
+  native          native         native
+  code            code           code
+```
+
+| Language | Compile | Output | Portable? |
+|----------|---------|--------|-----------|
+| **C/C++** | For each OS | Native `.exe` | ❌ No |
+| **Java** | Once | Bytecode `.class` | ✅ Yes (via JVM) |
+
+**Key Insight:** JVM is platform-specific so your code doesn't have to be!
+
+---
+
+### Q4: What are primitive data types in Java?
 
 | Type | Size | Default | Range |
 |------|------|---------|-------|
@@ -77,7 +160,7 @@
 
 ---
 
-### Q4: What is the difference between == and equals()?
+### Q5: What is the difference between == and equals()?
 
 ```java
 String s1 = new String("Hello");
@@ -1043,36 +1126,187 @@ for (String s : safeList) {
 
 ### Q34: Comparable vs Comparator?
 
+**Definition:**
+- **Comparable** - "I can compare myself" - defines natural ordering inside the class
+- **Comparator** - "I compare two objects" - defines custom ordering outside the class
+
+| Aspect | Comparable | Comparator |
+|--------|------------|------------|
+| **Package** | `java.lang` | `java.util` |
+| **Method** | `compareTo(Object o)` | `compare(Object o1, Object o2)` |
+| **Sorting logic** | Inside the class | Outside the class |
+| **Modifies class?** | ✅ Yes | ❌ No |
+| **# of sort sequences** | Only 1 (natural order) | Multiple (custom orders) |
+| **Use case** | Default sorting | Custom/multiple sorting |
+
+#### Comparable - Natural Ordering
+
 ```java
-// Comparable - natural ordering (inside class)
+// Class implements Comparable - defines how to sort itself
 class Employee implements Comparable<Employee> {
-    int id;
     String name;
+    int salary;
+    int age;
+    
+    public Employee(String name, int salary, int age) {
+        this.name = name;
+        this.salary = salary;
+        this.age = age;
+    }
     
     @Override
     public int compareTo(Employee other) {
-        return this.id - other.id;  // Natural order by id
+        return this.salary - other.salary;  // Natural order: by salary
+    }
+    
+    // getters...
+}
+
+// Usage - no comparator needed
+List<Employee> employees = new ArrayList<>();
+employees.add(new Employee("Alice", 50000, 30));
+employees.add(new Employee("Bob", 30000, 25));
+employees.add(new Employee("Charlie", 40000, 35));
+
+Collections.sort(employees);  // Uses compareTo() automatically
+// Result: Bob(30k), Charlie(40k), Alice(50k)
+```
+
+#### Comparator - Custom/Multiple Orderings
+
+```java
+class Employee {
+    String name;
+    int salary;
+    int age;
+    // constructor, getters...
+}
+
+// Multiple Comparators - different sorting strategies
+Comparator<Employee> byName = (e1, e2) -> e1.getName().compareTo(e2.getName());
+Comparator<Employee> bySalary = (e1, e2) -> e1.getSalary() - e2.getSalary();
+Comparator<Employee> byAge = (e1, e2) -> e1.getAge() - e2.getAge();
+
+List<Employee> employees = getEmployees();
+
+// Use different comparators for different sorts
+Collections.sort(employees, byName);    // Sort by name
+Collections.sort(employees, bySalary);  // Sort by salary
+Collections.sort(employees, byAge);     // Sort by age
+```
+
+#### Modern Java 8+ Comparator Methods
+
+```java
+// Using Comparator.comparing() - cleaner syntax
+Comparator<Employee> byName = Comparator.comparing(Employee::getName);
+Comparator<Employee> bySalary = Comparator.comparing(Employee::getSalary);
+
+// Reverse order
+Comparator<Employee> bySalaryDesc = Comparator.comparing(Employee::getSalary).reversed();
+
+// Chaining - sort by salary, then by name
+Comparator<Employee> bySalaryThenName = Comparator
+    .comparing(Employee::getSalary)
+    .thenComparing(Employee::getName);
+
+// Null-safe comparator
+Comparator<Employee> byNameNullSafe = Comparator
+    .nullsFirst(Comparator.comparing(Employee::getName));
+
+// Usage with Stream
+employees.stream()
+    .sorted(Comparator.comparing(Employee::getSalary).reversed())
+    .forEach(System.out::println);
+```
+
+#### Return Value Meaning
+
+```java
+// compareTo() and compare() return:
+//   negative  → first < second  (first comes before)
+//   zero      → first == second (equal)
+//   positive  → first > second  (first comes after)
+
+public int compareTo(Employee other) {
+    return this.salary - other.salary;
+}
+// If this.salary = 30000, other.salary = 50000
+// 30000 - 50000 = -20000 (negative) → this comes BEFORE other
+```
+
+#### Using Comparator as Separate Class
+
+```java
+// Separate class for Comparator
+class SalaryComparator implements Comparator<Employee> {
+    @Override
+    public int compare(Employee e1, Employee e2) {
+        return e1.getSalary() - e2.getSalary();
     }
 }
 
-Collections.sort(employees);  // Uses compareTo()
+// Usage
+Collections.sort(employees, new SalaryComparator());
 
-// Comparator - custom ordering (external)
-Comparator<Employee> byName = (e1, e2) -> e1.name.compareTo(e2.name);
-Comparator<Employee> bySalary = Comparator.comparing(Employee::getSalary);
-Comparator<Employee> byIdDesc = Comparator.comparing(Employee::getId).reversed();
+// ⚠️ Note: If inside another class, must be static or outside
+public class Employee {
+    // ✅ Static inner class - works in static main()
+    static class SalaryComparator implements Comparator<Employee> {
+        public int compare(Employee e1, Employee e2) {
+            return e1.getSalary() - e2.getSalary();
+        }
+    }
+    
+    public static void main(String[] args) {
+        Collections.sort(list, new SalaryComparator());  // ✅ Works
+    }
+}
 
-Collections.sort(employees, byName);
-employees.sort(bySalary);
+// ❌ Non-static inner class won't work in static main()
+// Because it needs an instance of outer class
 ```
 
-| Comparable | Comparator |
-|------------|------------|
-| `compareTo(Object)` | `compare(Object, Object)` |
-| `java.lang` package | `java.util` package |
-| Single sorting sequence | Multiple sorting sequences |
-| Modifies original class | External, doesn't modify class |
-| Natural ordering | Custom ordering |
+#### When to Use Which?
+
+| Scenario | Use |
+|----------|-----|
+| Single natural ordering (ID, name) | **Comparable** |
+| Multiple ways to sort | **Comparator** |
+| Can't modify the class | **Comparator** |
+| Third-party class sorting | **Comparator** |
+| Default sorting behavior | **Comparable** |
+| Sorting by different fields at runtime | **Comparator** |
+
+#### Complete Example: Both Together
+
+```java
+// Comparable for natural order
+public class Product implements Comparable<Product> {
+    int id;
+    String name;
+    double price;
+    
+    @Override
+    public int compareTo(Product other) {
+        return this.id - other.id;  // Natural order: by ID
+    }
+    
+    // getters...
+}
+
+// Comparators for custom orders
+Comparator<Product> byPrice = Comparator.comparing(Product::getPrice);
+Comparator<Product> byName = Comparator.comparing(Product::getName);
+Comparator<Product> byPriceDesc = Comparator.comparing(Product::getPrice).reversed();
+
+List<Product> products = getProducts();
+
+Collections.sort(products);              // By ID (Comparable)
+Collections.sort(products, byPrice);     // By price (Comparator)
+Collections.sort(products, byPriceDesc); // By price descending
+products.sort(byName);                   // By name (List.sort method)
+```
 
 ---
 
@@ -2941,59 +3175,174 @@ cart.checkout(50.0);
 
 ## SOLID Principles
 
+SOLID is an acronym for **five design principles** that help developers create more maintainable, flexible, and scalable software. These principles were introduced by Robert C. Martin (Uncle Bob) and are fundamental to object-oriented design.
+
 ### Q66: What are SOLID principles?
 
+**Why SOLID Matters:**
+- **Maintainability** - Code is easier to understand and modify
+- **Flexibility** - Easy to extend without breaking existing code
+- **Testability** - Components can be tested in isolation
+- **Reusability** - Components can be reused across projects
+- **Reduces Technical Debt** - Less refactoring needed over time
+
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    SOLID PRINCIPLES                          │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  S - Single Responsibility Principle                        │
-│      A class should have only one reason to change          │
-│                                                             │
-│  O - Open/Closed Principle                                  │
-│      Open for extension, closed for modification            │
-│                                                             │
-│  L - Liskov Substitution Principle                          │
-│      Subtypes must be substitutable for base types          │
-│                                                             │
-│  I - Interface Segregation Principle                        │
-│      Many specific interfaces > one general interface       │
-│                                                             │
-│  D - Dependency Inversion Principle                         │
-│      Depend on abstractions, not concretions                │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           SOLID PRINCIPLES                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  S - Single Responsibility Principle (SRP)                                  │
+│      "A class should have only ONE reason to change"                        │
+│      • One class = One job                                                  │
+│      • Easier to maintain, test, and understand                             │
+│                                                                             │
+│  O - Open/Closed Principle (OCP)                                            │
+│      "Open for EXTENSION, closed for MODIFICATION"                          │
+│      • Add new features without changing existing code                      │
+│      • Use interfaces and polymorphism                                      │
+│                                                                             │
+│  L - Liskov Substitution Principle (LSP)                                    │
+│      "Subtypes must be SUBSTITUTABLE for their base types"                  │
+│      • Child class should work anywhere parent works                        │
+│      • Don't break inherited behavior                                       │
+│                                                                             │
+│  I - Interface Segregation Principle (ISP)                                  │
+│      "Many SPECIFIC interfaces > One GENERAL interface"                     │
+│      • Don't force classes to implement unused methods                      │
+│      • Split fat interfaces into smaller ones                               │
+│                                                                             │
+│  D - Dependency Inversion Principle (DIP)                                   │
+│      "Depend on ABSTRACTIONS, not concretions"                              │
+│      • High-level modules shouldn't depend on low-level modules             │
+│      • Both should depend on interfaces                                     │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ### Q67: Single Responsibility Principle (SRP)?
 
-```java
-// ❌ BAD - Multiple responsibilities
-class Employee {
-    void calculateSalary() { }    // Business logic
-    void saveToDatabase() { }     // Persistence
-    void generateReport() { }     // Reporting
-}
+**Definition:** A class should have only **one reason to change**, meaning it should have only **one job** or responsibility.
 
-// ✅ GOOD - Single responsibility each
+#### 🎯 Why It Matters
+
+When a class has multiple responsibilities:
+- Changes to one responsibility may break another
+- Harder to understand what the class does
+- Difficult to test in isolation
+- More reasons for bugs
+
+#### 📊 How to Identify SRP Violation
+
+Ask yourself: "What does this class do?"
+- If the answer contains "AND", it might violate SRP
+- ❌ "This class manages users AND sends emails AND generates reports"
+- ✅ "This class manages user data"
+
+#### 💻 Implementation
+
+```java
+// ❌ BAD - Multiple responsibilities (3 reasons to change)
 class Employee {
-    String name;
-    double salary;
+    // Responsibility 1: Business logic
+    void calculateSalary() { 
+        // If salary rules change, this class changes
+    }
+    
+    // Responsibility 2: Persistence
+    void saveToDatabase() { 
+        // If database changes, this class changes
+    }
+    
+    // Responsibility 3: Reporting
+    void generateReport() { 
+        // If report format changes, this class changes
+    }
+}
+// Problem: Changes to database, reports, OR salary rules affect this class!
+
+// ✅ GOOD - Single responsibility each (1 reason to change per class)
+class Employee {
+    private String name;
+    private double baseSalary;
+    
+    // Getters and setters - just data, no behavior
+    public String getName() { return name; }
+    public double getBaseSalary() { return baseSalary; }
 }
 
 class SalaryCalculator {
-    double calculate(Employee emp) { }
+    // Only reason to change: salary calculation rules change
+    double calculate(Employee emp) {
+        return emp.getBaseSalary() * 1.1;  // 10% bonus
+    }
 }
 
 class EmployeeRepository {
-    void save(Employee emp) { }
+    // Only reason to change: database access changes
+    void save(Employee emp) {
+        // Save to database
+    }
+    
+    Employee findById(Long id) {
+        // Load from database
+        return null;
+    }
 }
 
 class ReportGenerator {
-    void generate(Employee emp) { }
+    // Only reason to change: report format changes
+    String generate(Employee emp) {
+        return "Report for: " + emp.getName();
+    }
+}
+```
+
+#### 🌍 Real-World Example
+
+```java
+// ❌ BAD - Controller doing too much
+@RestController
+class UserController {
+    void registerUser(UserDTO dto) {
+        // Validation
+        if (dto.getEmail() == null) throw new Exception();
+        
+        // Password hashing
+        String hashed = BCrypt.hash(dto.getPassword());
+        
+        // Save to DB
+        jdbcTemplate.update("INSERT INTO users...");
+        
+        // Send welcome email
+        sendEmail(dto.getEmail(), "Welcome!");
+    }
+}
+
+// ✅ GOOD - Separated responsibilities
+@RestController
+class UserController {
+    @Autowired private UserValidator validator;
+    @Autowired private UserService service;
+    
+    void registerUser(UserDTO dto) {
+        validator.validate(dto);
+        service.register(dto);
+    }
+}
+
+@Service
+class UserService {
+    @Autowired private PasswordEncoder encoder;
+    @Autowired private UserRepository repo;
+    @Autowired private EmailService emailService;
+    
+    void register(UserDTO dto) {
+        User user = new User(dto.getEmail(), encoder.encode(dto.getPassword()));
+        repo.save(user);
+        emailService.sendWelcome(user.getEmail());
+    }
 }
 ```
 
@@ -3001,39 +3350,148 @@ class ReportGenerator {
 
 ### Q68: Open/Closed Principle (OCP)?
 
+**Definition:** Software entities (classes, modules, functions) should be **open for extension** but **closed for modification**. You should be able to add new functionality without changing existing code.
+
+#### 🎯 Why It Matters
+
+When you modify existing code:
+- You might introduce bugs in working code
+- You need to retest everything
+- You violate the trust of code that depends on it
+
+When you extend (add new classes):
+- Existing code remains untouched
+- Only new code needs testing
+- Lower risk of regressions
+
+#### 💻 Implementation
+
 ```java
-// ❌ BAD - Modifying existing code for new shapes
+// ❌ BAD - Modifying existing code for every new shape
 class AreaCalculator {
     double calculate(Object shape) {
         if (shape instanceof Circle) {
-            return Math.PI * ((Circle)shape).radius * ((Circle)shape).radius;
+            Circle c = (Circle) shape;
+            return Math.PI * c.radius * c.radius;
         } else if (shape instanceof Rectangle) {
-            return ((Rectangle)shape).width * ((Rectangle)shape).height;
+            Rectangle r = (Rectangle) shape;
+            return r.width * r.height;
+        } else if (shape instanceof Triangle) {
+            // New shape = modify this method!
+            Triangle t = (Triangle) shape;
+            return 0.5 * t.base * t.height;
         }
-        // Adding new shape requires modifying this method!
+        // Every new shape requires modification here!
         return 0;
     }
 }
 
 // ✅ GOOD - Open for extension, closed for modification
 interface Shape {
-    double area();
+    double area();  // Each shape calculates its own area
 }
 
 class Circle implements Shape {
     double radius;
-    public double area() { return Math.PI * radius * radius; }
+    
+    public Circle(double radius) { this.radius = radius; }
+    
+    @Override
+    public double area() { 
+        return Math.PI * radius * radius; 
+    }
 }
 
 class Rectangle implements Shape {
     double width, height;
-    public double area() { return width * height; }
+    
+    public Rectangle(double width, double height) {
+        this.width = width;
+        this.height = height;
+    }
+    
+    @Override
+    public double area() { 
+        return width * height; 
+    }
 }
 
-// New shapes can be added without modifying existing code
+// Adding new shape - NO modification to existing code!
 class Triangle implements Shape {
     double base, height;
-    public double area() { return 0.5 * base * height; }
+    
+    public Triangle(double base, double height) {
+        this.base = base;
+        this.height = height;
+    }
+    
+    @Override
+    public double area() { 
+        return 0.5 * base * height; 
+    }
+}
+
+class Pentagon implements Shape {
+    double side;
+    
+    @Override
+    public double area() { 
+        return 0.25 * Math.sqrt(5 * (5 + 2 * Math.sqrt(5))) * side * side;
+    }
+}
+
+// Calculator never needs to change!
+class AreaCalculator {
+    double calculate(Shape shape) {
+        return shape.area();  // Works for ANY shape
+    }
+    
+    double calculateTotal(List<Shape> shapes) {
+        return shapes.stream()
+            .mapToDouble(Shape::area)
+            .sum();
+    }
+}
+```
+
+#### 🌍 Real-World Example: Discount System
+
+```java
+// ❌ BAD - if-else chain for discounts
+class DiscountCalculator {
+    double calculate(Order order, String discountType) {
+        if (discountType.equals("SUMMER")) {
+            return order.getTotal() * 0.20;  // 20% off
+        } else if (discountType.equals("LOYALTY")) {
+            return order.getTotal() * 0.15;  // 15% off
+        } else if (discountType.equals("FIRSTORDER")) {
+            return order.getTotal() * 0.10;  // 10% off
+        }
+        // New discount = modify this method!
+        return 0;
+    }
+}
+
+// ✅ GOOD - Strategy pattern for OCP
+interface DiscountStrategy {
+    double calculate(Order order);
+}
+
+class SummerDiscount implements DiscountStrategy {
+    public double calculate(Order order) { return order.getTotal() * 0.20; }
+}
+
+class LoyaltyDiscount implements DiscountStrategy {
+    public double calculate(Order order) { return order.getTotal() * 0.15; }
+}
+
+class FirstOrderDiscount implements DiscountStrategy {
+    public double calculate(Order order) { return order.getTotal() * 0.10; }
+}
+
+// Adding new discount - no modification needed!
+class BlackFridayDiscount implements DiscountStrategy {
+    public double calculate(Order order) { return order.getTotal() * 0.50; }
 }
 ```
 
@@ -3041,42 +3499,146 @@ class Triangle implements Shape {
 
 ### Q69: Liskov Substitution Principle (LSP)?
 
+**Definition:** Objects of a superclass should be replaceable with objects of its subclasses **without breaking the application**. If S is a subtype of T, then objects of type T can be replaced with objects of type S without altering the correctness of the program.
+
+#### 🎯 Why It Matters
+
+LSP ensures that inheritance is used correctly:
+- Subclasses should extend behavior, not change it
+- Client code shouldn't need to know which subclass it's using
+- Prevents unexpected behavior from polymorphism
+
+#### 📊 Signs of LSP Violation
+
+- Subclass throws exceptions for methods parent doesn't
+- Subclass has empty or no-op implementations
+- Client code checks object type with `instanceof`
+- Subclass weakens postconditions or strengthens preconditions
+
+#### 💻 The Classic Rectangle-Square Problem
+
 ```java
-// ❌ BAD - Square is not a proper substitute for Rectangle
+// ❌ BAD - Square violates LSP when substituted for Rectangle
 class Rectangle {
-    protected int width, height;
+    protected int width;
+    protected int height;
     
-    void setWidth(int w) { width = w; }
-    void setHeight(int h) { height = h; }
-    int area() { return width * height; }
+    public void setWidth(int w) { this.width = w; }
+    public void setHeight(int h) { this.height = h; }
+    public int getWidth() { return width; }
+    public int getHeight() { return height; }
+    public int area() { return width * height; }
 }
 
+// Mathematically, Square IS-A Rectangle, but...
 class Square extends Rectangle {
+    // Square must maintain equal sides, so we override setters
     @Override
-    void setWidth(int w) { width = height = w; }  // Breaks behavior!
+    public void setWidth(int w) { 
+        this.width = w; 
+        this.height = w;  // Keep it square!
+    }
+    
     @Override
-    void setHeight(int h) { width = height = h; }
+    public void setHeight(int h) { 
+        this.width = h;  // Keep it square!
+        this.height = h; 
+    }
 }
 
-// Client code breaks
-Rectangle r = new Square();
-r.setWidth(5);
-r.setHeight(10);
-r.area();  // Expected 50, got 100!
+// Client code that works for Rectangle but BREAKS for Square
+void resize(Rectangle r) {
+    r.setWidth(5);
+    r.setHeight(10);
+    
+    // Expected area: 5 * 10 = 50
+    assert r.area() == 50;  // ❌ FAILS for Square! Area is 100
+}
 
-// ✅ GOOD - Use composition or separate hierarchy
+Rectangle rect = new Rectangle();
+resize(rect);  // ✅ Works, area = 50
+
+Rectangle square = new Square();  // Looks valid (polymorphism)
+resize(square);  // ❌ FAILS! Area = 100, not 50
+
+// ✅ GOOD - Proper design using composition or separate hierarchy
 interface Shape {
     int area();
 }
 
 class Rectangle implements Shape {
-    protected int width, height;
+    private int width;
+    private int height;
+    
+    public Rectangle(int width, int height) {
+        this.width = width;
+        this.height = height;
+    }
+    
     public int area() { return width * height; }
 }
 
 class Square implements Shape {
     private int side;
+    
+    public Square(int side) {
+        this.side = side;
+    }
+    
     public int area() { return side * side; }
+}
+
+// Now each shape is responsible for its own behavior
+// No unexpected behavior when substituting
+```
+
+#### 🌍 Real-World LSP Example
+
+```java
+// ❌ BAD - Penguin violates LSP
+class Bird {
+    void fly() {
+        System.out.println("Flying...");
+    }
+}
+
+class Penguin extends Bird {
+    @Override
+    void fly() {
+        throw new UnsupportedOperationException("Penguins can't fly!");
+        // Violates LSP - can't substitute Penguin for Bird!
+    }
+}
+
+// Client code breaks
+void makeBirdFly(Bird bird) {
+    bird.fly();  // ❌ Throws exception for Penguin!
+}
+
+// ✅ GOOD - Proper abstraction
+interface Bird {
+    void eat();
+    void move();
+}
+
+interface FlyingBird extends Bird {
+    void fly();
+}
+
+class Sparrow implements FlyingBird {
+    public void eat() { System.out.println("Eating seeds..."); }
+    public void move() { fly(); }
+    public void fly() { System.out.println("Flying..."); }
+}
+
+class Penguin implements Bird {
+    public void eat() { System.out.println("Eating fish..."); }
+    public void move() { System.out.println("Swimming..."); }  // Penguins swim!
+}
+
+// Now Penguin is not expected to fly
+void makeBirdMove(Bird bird) {
+    bird.move();  // ✅ Works for all birds
 }
 ```
 
@@ -3084,21 +3646,47 @@ class Square implements Shape {
 
 ### Q70: Interface Segregation Principle (ISP)?
 
+**Definition:** Clients should not be forced to depend on interfaces they don't use. It's better to have **many specific interfaces** than one general-purpose "fat" interface.
+
+#### 🎯 Why It Matters
+
+Fat interfaces cause:
+- Classes implementing methods they don't need (empty/throwing implementations)
+- Tight coupling between unrelated functionality
+- Difficult to maintain and understand
+- Changes to unused methods still require recompilation
+
+#### 💻 Implementation
+
 ```java
-// ❌ BAD - Fat interface
+// ❌ BAD - Fat interface forces unnecessary implementations
 interface Worker {
     void work();
     void eat();
     void sleep();
 }
 
-class Robot implements Worker {
-    public void work() { }
-    public void eat() { }   // Robots don't eat!
-    public void sleep() { } // Robots don't sleep!
+class Human implements Worker {
+    public void work() { System.out.println("Working..."); }
+    public void eat() { System.out.println("Eating lunch..."); }
+    public void sleep() { System.out.println("Sleeping..."); }
 }
 
-// ✅ GOOD - Segregated interfaces
+class Robot implements Worker {
+    public void work() { System.out.println("Working 24/7..."); }
+    
+    // ❌ Robots don't eat! Forced to implement anyway
+    public void eat() { 
+        throw new UnsupportedOperationException("Robots don't eat!");
+    }
+    
+    // ❌ Robots don't sleep! Forced to implement anyway
+    public void sleep() { 
+        throw new UnsupportedOperationException("Robots don't sleep!");
+    }
+}
+
+// ✅ GOOD - Segregated interfaces (each interface has ONE purpose)
 interface Workable {
     void work();
 }
@@ -3111,69 +3699,477 @@ interface Sleepable {
     void sleep();
 }
 
+// Human implements all three - makes sense!
 class Human implements Workable, Eatable, Sleepable {
-    public void work() { }
-    public void eat() { }
-    public void sleep() { }
+    public void work() { System.out.println("Working 9-5..."); }
+    public void eat() { System.out.println("Having lunch break..."); }
+    public void sleep() { System.out.println("Sleeping 8 hours..."); }
 }
 
+// Robot only implements what it needs - no unused methods!
 class Robot implements Workable {
-    public void work() { }
+    public void work() { System.out.println("Working 24/7..."); }
+}
+
+// AI Assistant - works and can be "fed" data
+class AIAssistant implements Workable, Eatable {
+    public void work() { System.out.println("Processing queries..."); }
+    public void eat() { System.out.println("Consuming training data..."); }
 }
 ```
+
+#### 🌍 Real-World ISP Example
+
+```java
+// ❌ BAD - Fat interface for all printers
+interface MultiFunctionDevice {
+    void print(Document doc);
+    void scan(Document doc);
+    void fax(Document doc);
+    void staple(Document doc);
+}
+
+// Basic printer forced to implement features it doesn't have
+class BasicPrinter implements MultiFunctionDevice {
+    public void print(Document doc) { /* OK */ }
+    public void scan(Document doc) { throw new UnsupportedOperationException(); }
+    public void fax(Document doc) { throw new UnsupportedOperationException(); }
+    public void staple(Document doc) { throw new UnsupportedOperationException(); }
+}
+
+// ✅ GOOD - Segregated printer interfaces
+interface Printer {
+    void print(Document doc);
+}
+
+interface Scanner {
+    void scan(Document doc);
+}
+
+interface Fax {
+    void fax(Document doc);
+}
+
+interface Stapler {
+    void staple(Document doc);
+}
+
+// Basic printer - just printing
+class BasicPrinter implements Printer {
+    public void print(Document doc) { System.out.println("Printing..."); }
+}
+
+// Office printer - printing, scanning, faxing
+class OfficePrinter implements Printer, Scanner, Fax {
+    public void print(Document doc) { System.out.println("Printing..."); }
+    public void scan(Document doc) { System.out.println("Scanning..."); }
+    public void fax(Document doc) { System.out.println("Faxing..."); }
+}
+
+// Enterprise printer - everything!
+class EnterprisePrinter implements Printer, Scanner, Fax, Stapler {
+    public void print(Document doc) { }
+    public void scan(Document doc) { }
+    public void fax(Document doc) { }
+    public void staple(Document doc) { }
+}
+```
+
+#### ✅ Benefits of ISP
+
+| Benefit | Description |
+|---------|-------------|
+| **Cohesion** | Interfaces are focused on single purpose |
+| **Flexibility** | Classes implement only what they need |
+| **Maintainability** | Changes to one interface don't affect unrelated classes |
+| **Testability** | Easier to mock small interfaces |
 
 ---
 
 ### Q71: Dependency Inversion Principle (DIP)?
 
+**Definition:** High-level modules should not depend on low-level modules. Both should depend on **abstractions** (interfaces). Abstractions should not depend on details. Details should depend on abstractions.
+
+#### 🎯 Why It Matters
+
+Without DIP:
+- High-level business logic is tightly coupled to low-level details
+- Changing database, framework, or external service breaks business logic
+- Difficult to test (can't mock concrete classes easily)
+- Hard to swap implementations
+
+With DIP:
+- Business logic depends only on interfaces
+- Easy to switch implementations (MySQL → MongoDB, REST → gRPC)
+- Easy to test with mock objects
+- Follows "program to interface, not implementation"
+
+#### 📊 Understanding the "Inversion"
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    DEPENDENCY INVERSION                                  │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   ❌ TRADITIONAL (without DIP)                                          │
+│   ┌────────────────┐                                                    │
+│   │  UserService   │  ──── depends on ────►  ┌─────────────────┐        │
+│   │  (High-level)  │                         │  MySQLDatabase  │        │
+│   └────────────────┘                         │  (Low-level)    │        │
+│                                              └─────────────────┘        │
+│   Problem: Can't switch to MongoDB without changing UserService!        │
+│                                                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   ✅ WITH DIP (Dependency Inversion)                                    │
+│                                                                         │
+│   ┌────────────────┐          ┌─────────────────┐                       │
+│   │  UserService   │ ──────── │    Database     │ ◄── Interface        │
+│   │  (High-level)  │ depends  │   (Abstraction) │     (Abstraction)    │
+│   └────────────────┘   on     └────────┬────────┘                       │
+│                                        │                                │
+│                          ┌─────────────┼─────────────┐                  │
+│                          ▼             ▼             ▼                  │
+│                   ┌──────────┐  ┌──────────┐  ┌──────────┐              │
+│                   │  MySQL   │  │ MongoDB  │  │  Redis   │              │
+│                   │  (impl)  │  │  (impl)  │  │  (impl)  │              │
+│                   └──────────┘  └──────────┘  └──────────┘              │
+│                                                                         │
+│   Both high-level (UserService) and low-level (MySQL/MongoDB)           │
+│   depend on the abstraction (Database interface)!                       │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 💻 Implementation
+
 ```java
-// ❌ BAD - High-level depends on low-level
+// ❌ BAD - High-level module depends on low-level module
 class MySQLDatabase {
-    void save(String data) { }
+    void save(String data) { 
+        System.out.println("Saving to MySQL: " + data);
+    }
+    
+    String find(String id) {
+        return "Data from MySQL";
+    }
 }
 
 class UserService {
-    private MySQLDatabase database = new MySQLDatabase();  // Tight coupling!
+    // Direct dependency on concrete class - tight coupling!
+    private MySQLDatabase database = new MySQLDatabase();
     
     void saveUser(String user) {
         database.save(user);
     }
+    
+    // Problems:
+    // 1. Can't switch to MongoDB without changing this class
+    // 2. Can't unit test without real MySQL database
+    // 3. Can't use different DB for testing/production
 }
 
-// ✅ GOOD - Both depend on abstraction
+// ✅ GOOD - Both depend on abstraction (Dependency Inversion)
+
+// Step 1: Define abstraction (interface)
 interface Database {
     void save(String data);
+    String find(String id);
 }
 
+// Step 2: Low-level modules implement the abstraction
 class MySQLDatabase implements Database {
-    public void save(String data) { }
+    @Override
+    public void save(String data) { 
+        System.out.println("MySQL: INSERT INTO users VALUES (" + data + ")");
+    }
+    
+    @Override
+    public String find(String id) {
+        System.out.println("MySQL: SELECT * FROM users WHERE id = " + id);
+        return "User from MySQL";
+    }
 }
 
 class MongoDB implements Database {
-    public void save(String data) { }
+    @Override
+    public void save(String data) {
+        System.out.println("MongoDB: db.users.insert({" + data + "})");
+    }
+    
+    @Override
+    public String find(String id) {
+        System.out.println("MongoDB: db.users.find({_id: " + id + "})");
+        return "User from MongoDB";
+    }
 }
 
-class UserService {
-    private Database database;  // Depends on abstraction
+class InMemoryDatabase implements Database {  // Great for testing!
+    private Map<String, String> storage = new HashMap<>();
     
-    public UserService(Database database) {  // Inject dependency
+    @Override
+    public void save(String data) {
+        storage.put(UUID.randomUUID().toString(), data);
+    }
+    
+    @Override
+    public String find(String id) {
+        return storage.get(id);
+    }
+}
+
+// Step 3: High-level module depends on abstraction
+class UserService {
+    private final Database database;  // Depends on interface, not concrete class
+    
+    // Dependency Injection via constructor
+    public UserService(Database database) {
         this.database = database;
     }
     
     void saveUser(String user) {
         database.save(user);
     }
+    
+    String getUser(String id) {
+        return database.find(id);
+    }
 }
 
-// Can easily switch databases
-UserService service = new UserService(new MongoDB());
+// =============================================
+// USAGE - Easy to switch implementations!
+// =============================================
+
+// Production with MySQL
+UserService mysqlService = new UserService(new MySQLDatabase());
+mysqlService.saveUser("John");
+
+// Switch to MongoDB - just change the injected dependency!
+UserService mongoService = new UserService(new MongoDB());
+mongoService.saveUser("Jane");
+
+// Testing with in-memory database - no real DB needed!
+UserService testService = new UserService(new InMemoryDatabase());
+testService.saveUser("Test User");
+```
+
+#### 🌍 Real-World Example: Notification System
+
+```java
+// Interface (abstraction)
+interface NotificationSender {
+    void send(String to, String message);
+}
+
+// Multiple implementations
+class EmailSender implements NotificationSender {
+    public void send(String to, String message) {
+        System.out.println("📧 Email to " + to + ": " + message);
+    }
+}
+
+class SMSSender implements NotificationSender {
+    public void send(String to, String message) {
+        System.out.println("📱 SMS to " + to + ": " + message);
+    }
+}
+
+class PushNotificationSender implements NotificationSender {
+    public void send(String to, String message) {
+        System.out.println("🔔 Push to " + to + ": " + message);
+    }
+}
+
+// High-level service depends on abstraction
+class OrderService {
+    private final NotificationSender notificationSender;
+    
+    public OrderService(NotificationSender notificationSender) {
+        this.notificationSender = notificationSender;
+    }
+    
+    void placeOrder(Order order) {
+        // Business logic...
+        notificationSender.send(order.getCustomerContact(), "Order placed!");
+    }
+}
+
+// Spring Boot example - DI container handles injection
+@Service
+class OrderService {
+    @Autowired
+    private NotificationSender notificationSender;  // Spring injects implementation
+}
+```
+
+#### ✅ Benefits of DIP
+
+| Benefit | Description |
+|---------|-------------|
+| **Loose Coupling** | High-level not tied to low-level details |
+| **Testability** | Easy to mock dependencies |
+| **Flexibility** | Swap implementations without code changes |
+| **Maintainability** | Changes in low-level don't affect high-level |
+| **Reusability** | High-level logic can work with any implementation |
 ```
 
 ---
 
 ## Coding Questions
 
-### Q72: Reverse a String
+### Q72: Reverse Words in a String
+
+**Problem:** Given an input string `s`, reverse the order of the words. Words are separated by spaces. Handle leading/trailing spaces and multiple spaces between words.
+
+```
+Input:  "the sky is blue"
+Output: "blue is sky the"
+
+Input:  "  hello world  "
+Output: "world hello"
+
+Input:  "a good   example"
+Output: "example good a"
+```
+
+```java
+// Method 1: Using built-in methods (Most readable)
+// Time: O(n), Space: O(n)
+String reverseWords1(String s) {
+    // 1. Trim and split by one or more spaces
+    String[] words = s.trim().split("\\s+");
+    
+    // 2. Reverse the array
+    Collections.reverse(Arrays.asList(words));
+    
+    // 3. Join with single space
+    return String.join(" ", words);
+}
+
+// Method 2: Two-pointer approach (Interview favorite)
+// Time: O(n), Space: O(n)
+String reverseWords2(String s) {
+    StringBuilder result = new StringBuilder();
+    int n = s.length();
+    int i = n - 1;
+    
+    while (i >= 0) {
+        // Skip trailing spaces
+        while (i >= 0 && s.charAt(i) == ' ') {
+            i--;
+        }
+        
+        if (i < 0) break;
+        
+        // Find the start of the word
+        int end = i;
+        while (i >= 0 && s.charAt(i) != ' ') {
+            i--;
+        }
+        int start = i + 1;
+        
+        // Append word
+        if (result.length() > 0) {
+            result.append(" ");
+        }
+        result.append(s.substring(start, end + 1));
+    }
+    
+    return result.toString();
+}
+
+// Method 3: In-place with char array (Most optimal for space)
+// Time: O(n), Space: O(n) for char array
+String reverseWords3(String s) {
+    char[] chars = s.toCharArray();
+    int n = chars.length;
+    
+    // Step 1: Reverse entire string
+    reverse(chars, 0, n - 1);
+    
+    // Step 2: Reverse each word
+    reverseWords(chars, n);
+    
+    // Step 3: Clean up spaces
+    return cleanSpaces(chars, n);
+}
+
+private void reverse(char[] chars, int left, int right) {
+    while (left < right) {
+        char temp = chars[left];
+        chars[left++] = chars[right];
+        chars[right--] = temp;
+    }
+}
+
+private void reverseWords(char[] chars, int n) {
+    int i = 0, j = 0;
+    while (i < n) {
+        // Skip spaces
+        while (i < j || (i < n && chars[i] == ' ')) i++;
+        // Skip non-spaces
+        while (j < i || (j < n && chars[j] != ' ')) j++;
+        // Reverse the word
+        reverse(chars, i, j - 1);
+    }
+}
+
+private String cleanSpaces(char[] chars, int n) {
+    int i = 0, j = 0;
+    while (j < n) {
+        // Skip spaces
+        while (j < n && chars[j] == ' ') j++;
+        // Copy non-spaces
+        while (j < n && chars[j] != ' ') chars[i++] = chars[j++];
+        // Skip spaces
+        while (j < n && chars[j] == ' ') j++;
+        // Add single space between words
+        if (j < n) chars[i++] = ' ';
+    }
+    return new String(chars, 0, i);
+}
+
+// Method 4: Using Stream API (Java 8+)
+String reverseWords4(String s) {
+    return Arrays.stream(s.trim().split("\\s+"))
+        .reduce((a, b) -> b + " " + a)
+        .orElse("");
+}
+
+// Method 5: Using Deque (Stack approach)
+String reverseWords5(String s) {
+    Deque<String> deque = new ArrayDeque<>();
+    StringBuilder word = new StringBuilder();
+    
+    for (char c : s.toCharArray()) {
+        if (c != ' ') {
+            word.append(c);
+        } else if (word.length() > 0) {
+            deque.addFirst(word.toString());
+            word = new StringBuilder();
+        }
+    }
+    
+    // Don't forget the last word
+    if (word.length() > 0) {
+        deque.addFirst(word.toString());
+    }
+    
+    return String.join(" ", deque);
+}
+```
+
+| Method | Time | Space | Notes |
+|--------|------|-------|-------|
+| Built-in | O(n) | O(n) | Cleanest, uses regex |
+| Two-pointer | O(n) | O(n) | Good for interviews |
+| In-place reverse | O(n) | O(n) | Shows algorithm knowledge |
+| Stream API | O(n) | O(n) | Functional style |
+| Deque/Stack | O(n) | O(n) | Easy to understand |
+
+---
+
+### Q73: Reverse a String (Characters)
 
 ```java
 // Method 1: StringBuilder
@@ -3201,7 +4197,7 @@ String reverse3(String str) {
 
 ---
 
-### Q73: Check if String is Palindrome
+### Q74: Check if String is Palindrome
 
 ```java
 boolean isPalindrome(String str) {
