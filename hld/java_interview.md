@@ -4574,10 +4574,6 @@ ThreadPoolExecutor executor = new ThreadPoolExecutor(
 | **Transitions** | External (client decides) | Internal (state decides next state) |
 | **Awareness** | Strategies don't know about each other | States may know about other states |
 
-cart.setPaymentStrategy(new PayPalPayment());
-cart.checkout(50.0);
-```
-
 ---
 
 ## SOLID Principles
