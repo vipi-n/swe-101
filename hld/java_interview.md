@@ -5414,7 +5414,6 @@ class OrderService {
 | **Flexibility** | Swap implementations without code changes |
 | **Maintainability** | Changes in low-level don't affect high-level |
 | **Reusability** | High-level logic can work with any implementation |
-```
 
 ---
 
