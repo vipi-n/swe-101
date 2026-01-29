@@ -880,6 +880,23 @@ str.toCharArray();         // char[]
 
 ## Collections Framework
 
+**What is Collections Framework?**
+The Java Collections Framework is a unified architecture for representing and manipulating collections (groups of objects). It provides:
+
+- **Interfaces** - Abstract data types (List, Set, Map, Queue)
+- **Implementations** - Concrete classes (ArrayList, HashSet, HashMap)
+- **Algorithms** - Static methods for sorting, searching (Collections.sort())
+
+**Why use Collections instead of Arrays?**
+
+| Feature | Arrays | Collections |
+|---------|--------|-------------|
+| Size | Fixed | Dynamic |
+| Type safety | Basic | Generics support |
+| Primitives | Direct | Wrapper classes |
+| Built-in methods | None | Many (add, remove, contains) |
+| Memory | More efficient | Slightly more overhead |
+
 ### Q25: What is the Collections Framework hierarchy?
 
 ```
@@ -895,7 +912,7 @@ str.toCharArray();         // char[]
                       │
                     SortedSet
 
-                          Map
+                          Map (separate hierarchy)
                          / | \
                    HashMap │ TreeMap
               LinkedHashMap│
@@ -904,28 +921,61 @@ str.toCharArray();         // char[]
                         SortedMap
 ```
 
+**Key Interfaces:**
+
+| Interface | Description | Duplicates | Order | Null |
+|-----------|-------------|------------|-------|------|
+| **List** | Ordered collection | ✅ Yes | ✅ Insertion order | ✅ Allowed |
+| **Set** | Unique elements | ❌ No | Depends on impl | 1 null (HashSet) |
+| **Queue** | FIFO processing | ✅ Yes | FIFO/Priority | Depends on impl |
+| **Map** | Key-value pairs | Keys: No, Values: Yes | Depends on impl | 1 null key (HashMap) |
+
 ---
 
 ### Q26: ArrayList vs LinkedList?
+
+**Internal Structure:**
+
+```
+ArrayList (Dynamic Array):
+┌─────────────────────────────────────────────┐
+│  [0]  [1]  [2]  [3]  [4]  [5]  ...     │
+│   A    B    C    D    E    -   -       │  ← Contiguous memory
+└─────────────────────────────────────────────┘
+- Direct index access: O(1)
+- Insert at middle: shift all elements O(n)
+
+LinkedList (Doubly Linked):
+┌─────┐    ┌─────┐    ┌─────┐    ┌─────┐
+│  A  │───▶│  B  │───▶│  C  │───▶│  D  │
+│prev│◄───│next│◄───│next│◄───│next│
+└─────┘    └─────┘    └─────┘    └─────┘
+- Each node has prev and next pointers
+- Access by index: traverse from head O(n)
+- Insert: just update pointers O(1)
+```
 
 ```java
 List<String> arrayList = new ArrayList<>();   // Dynamic array
 List<String> linkedList = new LinkedList<>(); // Doubly linked list
 ```
 
-| Operation | ArrayList | LinkedList |
-|-----------|-----------|------------|
-| Get by index `get(i)` | O(1) ✅ | O(n) |
-| Add at end `add(e)` | O(1)* | O(1) ✅ |
-| Add at index `add(i,e)` | O(n) | O(n)** |
-| Remove by index | O(n) | O(n)** |
-| Memory | Less (contiguous) | More (nodes + pointers) |
+| Operation | ArrayList | LinkedList | Winner |
+|-----------|-----------|------------|--------|
+| Get by index `get(i)` | O(1) | O(n) | ✅ ArrayList |
+| Add at end `add(e)` | O(1)* | O(1) | Tie |
+| Add at start | O(n) | O(1) | ✅ LinkedList |
+| Add at index `add(i,e)` | O(n) | O(n)** | Tie |
+| Remove by index | O(n) | O(n)** | Tie |
+| Memory | Less | More (pointers) | ✅ ArrayList |
+| Iterator remove | O(n) | O(1) | ✅ LinkedList |
 
 *Amortized O(1), O(n) when resizing
 **O(1) if you have reference to node
 
-**Use ArrayList** for most cases (random access)
-**Use LinkedList** for frequent insertions/deletions at beginning
+**When to use which:**
+- **ArrayList** - Default choice, random access, iteration
+- **LinkedList** - Frequent add/remove at beginning, implementing Queue/Deque
 
 ---
 
@@ -1312,6 +1362,15 @@ products.sort(byName);                   // By name (List.sort method)
 
 ## Exception Handling
 
+**What is an Exception?**
+An exception is an **unexpected event** that disrupts the normal flow of a program. Java provides a robust exception handling mechanism to deal with runtime errors gracefully.
+
+**Why Exception Handling?**
+- Separates error-handling code from regular code
+- Propagates errors up the call stack
+- Groups and differentiates error types
+- Maintains normal program flow
+
 ### Q35: What is the exception hierarchy?
 
 ```
@@ -1332,6 +1391,12 @@ products.sort(byName);                   // By name (List.sort method)
      CHECKED EXCEPTIONS              UNCHECKED EXCEPTIONS
      (Must handle)                   (Optional to handle)
 ```
+
+| Type | Description | Examples |
+|------|-------------|----------|
+| **Error** | Serious problems, shouldn't catch | OutOfMemoryError, StackOverflowError |
+| **Checked Exception** | Must be handled at compile time | IOException, SQLException |
+| **Unchecked Exception** | Runtime errors, optional to handle | NullPointerException, ArithmeticException |
 
 ---
 
@@ -1402,59 +1467,109 @@ public int test() {
 
 ### Q38: throw vs throws?
 
+**Definition:**
+- **throw** - Used to **explicitly throw** an exception from a method or block
+- **throws** - Used to **declare** that a method might throw exceptions (part of method signature)
+
 ```java
-// throws - declaration (method signature)
+// throws - declaration in method signature
+// "This method MAY throw these exceptions - caller must handle"
 public void readFile() throws IOException, FileNotFoundException {
     // Method may throw these exceptions
+    FileReader fr = new FileReader("file.txt");
 }
 
-// throw - actually throwing exception
+// throw - actually creating and throwing exception
+// "I'm throwing this exception RIGHT NOW"
 public void validate(int age) {
     if (age < 0) {
         throw new IllegalArgumentException("Age cannot be negative");
     }
 }
+
+// Combined example
+public void processAge(int age) throws InvalidAgeException {
+    if (age < 0) {
+        throw new InvalidAgeException("Age cannot be negative");  // throw
+    }
+}  // throws in signature tells caller to handle it
 ```
 
-| throw | throws |
-|-------|--------|
-| Keyword to throw exception | Keyword to declare exception |
-| Used inside method body | Used in method signature |
-| Followed by exception object | Followed by exception class |
-| Throws single exception | Can declare multiple |
+| Aspect | throw | throws |
+|--------|-------|--------|
+| **Purpose** | Actually throw exception | Declare possible exceptions |
+| **Location** | Inside method body | In method signature |
+| **Followed by** | Exception object | Exception class(es) |
+| **Count** | Single exception | Multiple (comma-separated) |
+| **Keyword type** | Statement | Declaration |
 
 ---
 
 ### Q39: How to create custom exception?
 
+**Why create custom exceptions?**
+- More meaningful exception names for your domain
+- Add additional properties (error codes, context data)
+- Group related exceptions in a hierarchy
+- Distinguish your exceptions from standard Java exceptions
+
+**Rules:**
+- Extend `Exception` for **checked** custom exception
+- Extend `RuntimeException` for **unchecked** custom exception
+- Follow naming convention: end with `Exception` (e.g., `InsufficientFundsException`)
+- Provide constructors that match parent class
+
 ```java
-// Checked custom exception
+// Checked custom exception (caller MUST handle)
 public class InsufficientFundsException extends Exception {
     private double amount;
+    private double balance;
 
     public InsufficientFundsException(String message, double amount) {
         super(message);
         this.amount = amount;
     }
-
-    public double getAmount() {
-        return amount;
+    
+    // Additional constructor with cause
+    public InsufficientFundsException(String message, Throwable cause) {
+        super(message, cause);
     }
+
+    public double getAmount() { return amount; }
 }
 
-// Unchecked custom exception
+// Unchecked custom exception (caller doesn't need to handle)
 public class InvalidUserException extends RuntimeException {
+    private String userId;
+    
     public InvalidUserException(String message) {
         super(message);
     }
+    
+    public InvalidUserException(String message, String userId) {
+        super(message);
+        this.userId = userId;
+    }
+    
+    public String getUserId() { return userId; }
 }
 
 // Usage
 public void withdraw(double amount) throws InsufficientFundsException {
     if (amount > balance) {
-        throw new InsufficientFundsException("Not enough funds", amount);
+        throw new InsufficientFundsException(
+            "Cannot withdraw " + amount + ", balance is " + balance, 
+            amount
+        );
     }
     balance -= amount;
+}
+
+// Catching custom exception
+try {
+    account.withdraw(1000);
+} catch (InsufficientFundsException e) {
+    System.out.println("Failed to withdraw: " + e.getAmount());
 }
 ```
 
@@ -1462,8 +1577,21 @@ public void withdraw(double amount) throws InsufficientFundsException {
 
 ### Q40: What is try-with-resources?
 
+**Definition:** Try-with-resources (introduced in Java 7) automatically closes resources (files, connections, streams) when the try block finishes, even if an exception occurs.
+
+**Why use it?**
+- **Automatic cleanup** - No need for finally block to close resources
+- **Cleaner code** - Less boilerplate
+- **Suppressed exceptions** - Handles multiple exceptions properly
+- **No resource leaks** - Guaranteed closing
+
+**Requirements:**
+- Resource must implement `AutoCloseable` or `Closeable` interface
+- Resources are closed in **reverse order** of creation
+- Resources declared in try() are implicitly final
+
 ```java
-// Before Java 7 - manual close
+// ❌ Before Java 7 - verbose and error-prone
 BufferedReader br = null;
 try {
     br = new BufferedReader(new FileReader("file.txt"));
@@ -1473,38 +1601,68 @@ try {
 } finally {
     if (br != null) {
         try {
-            br.close();
+            br.close();  // Can also throw exception!
         } catch (IOException e) {
             e.printStackTrace();
         }
     }
 }
 
-// Java 7+ try-with-resources - auto close
+// ✅ Java 7+ try-with-resources - clean and safe
 try (BufferedReader br = new BufferedReader(new FileReader("file.txt"))) {
     String line = br.readLine();
 } catch (IOException e) {
     e.printStackTrace();
 }
-// br.close() called automatically!
+// br.close() called automatically, even if exception occurs!
 
-// Multiple resources
+// Multiple resources - closed in REVERSE order (fos first, then fis)
 try (FileInputStream fis = new FileInputStream("in.txt");
      FileOutputStream fos = new FileOutputStream("out.txt")) {
     // Use resources
+}  // fos.close() called first, then fis.close()
+
+// Java 9+: Can use effectively final variables
+BufferedReader br = new BufferedReader(new FileReader("file.txt"));
+try (br) {  // br is effectively final
+    String line = br.readLine();
 }
-// Both closed automatically in reverse order
 ```
 
-**Requirements:**
-- Resource must implement `AutoCloseable` interface
-- Resources closed in reverse order of creation
+**Common AutoCloseable Resources:**
+
+| Resource | Package |
+|----------|--------|
+| FileInputStream/OutputStream | java.io |
+| BufferedReader/Writer | java.io |
+| Connection, Statement, ResultSet | java.sql |
+| Socket, ServerSocket | java.net |
+| Stream, Scanner | java.util |
 
 ---
 
 ## Multithreading & Concurrency
 
 ### Q41: What is a Thread? How to create threads?
+
+**Definition:** A thread is the **smallest unit of execution** within a process. Multiple threads can run concurrently within the same process, sharing the same memory space but having their own stack.
+
+**Why use threads?**
+- **Responsiveness** - UI remains responsive while background tasks run
+- **Resource sharing** - Threads share memory, cheaper than processes
+- **Performance** - Utilize multiple CPU cores
+- **Simplicity** - Easier than managing multiple processes
+
+**Thread vs Process:**
+
+| Aspect | Thread | Process |
+|--------|--------|--------|
+| Memory | Shared | Separate |
+| Creation | Lightweight | Heavyweight |
+| Communication | Easy (shared memory) | Complex (IPC) |
+| Crash impact | Can crash entire process | Isolated |
+
+**4 Ways to Create Threads:**
 
 ```java
 // Method 1: Extend Thread class
@@ -1591,12 +1749,51 @@ Integer result = future.get();  // Blocks until done
 
 ### Q43: What is synchronization? How to achieve it?
 
+**Definition:** Synchronization is a mechanism that ensures that **only one thread** can access a shared resource at a time, preventing **race conditions** and ensuring **data consistency**.
+
+**Why is it needed?**
+
+```
+Without Synchronization (Race Condition):
+┌─────────────────────────────────────────────────────────────┐
+│  count = 5                                                  │
+│                                                             │
+│  Thread 1: read count (5)     Thread 2: read count (5)     │
+│  Thread 1: increment (6)      Thread 2: increment (6)      │
+│  Thread 1: write count (6)    Thread 2: write count (6)    │
+│                                                             │
+│  Expected: 7    Actual: 6  ← DATA LOST!                    │
+└─────────────────────────────────────────────────────────────┘
+
+With Synchronization:
+┌─────────────────────────────────────────────────────────────┐
+│  count = 5                                                  │
+│                                                             │
+│  Thread 1: acquire lock                                     │
+│  Thread 1: read → increment → write (6)                     │
+│  Thread 1: release lock                                     │
+│                                                             │
+│  Thread 2: acquire lock (waits until available)             │
+│  Thread 2: read → increment → write (7)                     │
+│  Thread 2: release lock                                     │
+│                                                             │
+│  Result: 7 ✅                                               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Key Concepts:**
+- **Monitor/Lock** - Object that controls access to synchronized code
+- **Critical Section** - Code that accesses shared resources
+- **Race Condition** - Bug when multiple threads access shared data unsafely
+- **Thread-Safe** - Code that works correctly with multiple threads
+
+**4 Ways to Achieve Synchronization:**
+
 ```java
 // Problem without synchronization
 class Counter {
     int count = 0;
-    void increment() { count++; }  // Not atomic!
-}
+    void increment() { count++; }  // Not atomic! (read-modify-write)
 
 // Solution 1: synchronized method
 class Counter {
@@ -1633,26 +1830,97 @@ class Counter {
     }
 }
 
-// Solution 4: Atomic classes
+// Solution 4: Atomic classes (Lock-free, best performance)
 AtomicInteger count = new AtomicInteger(0);
-count.incrementAndGet();  // Thread-safe
+count.incrementAndGet();  // Thread-safe, uses CAS (Compare-And-Swap)
 ```
+
+**Comparison of Synchronization Methods:**
+
+| Method | Lock Type | Flexibility | Performance | Use Case |
+|--------|-----------|-------------|-------------|----------|
+| `synchronized` method | Implicit (this) | Low | Good | Simple cases |
+| `synchronized` block | Explicit object | Medium | Good | Specific sections |
+| `ReentrantLock` | Explicit Lock | High | Good | Need tryLock, fairness |
+| `AtomicInteger` | Lock-free (CAS) | Low | Best | Simple counters |
+
+**Best Practices:**
+1. Minimize synchronized code blocks (critical section)
+2. Don't synchronize on String literals or boxed primitives
+3. Prefer `ReentrantLock` for complex locking scenarios
+4. Use `AtomicInteger`/`AtomicReference` for simple cases
+5. Consider `ConcurrentHashMap` instead of synchronizing HashMap
 
 ---
 
 ### Q44: wait() vs sleep()?
 
+**Definition:**
+- **wait()** - Makes current thread wait until another thread calls `notify()` or `notifyAll()`. Used for **inter-thread communication**.
+- **sleep()** - Pauses current thread for specified time. Used for **introducing delays**.
+
+**Key Difference:** `wait()` releases the lock, `sleep()` does NOT release the lock.
+
+```
+wait() behavior:
+┌─────────────────────────────────────────────────────────────┐
+│  Thread 1: synchronized(obj) {                              │
+│               obj.wait();  ──────────────┐                  │
+│            }                             │ Releases lock    │
+│                                          ▼                  │
+│                               Other threads can enter       │
+│                               synchronized block!           │
+│                                          │                  │
+│            Thread 1 resumes ◄────────────┘                  │
+│            when notify() called      Reacquires lock        │
+└─────────────────────────────────────────────────────────────┘
+
+sleep() behavior:
+┌─────────────────────────────────────────────────────────────┐
+│  Thread 1: synchronized(obj) {                              │
+│               Thread.sleep(1000);  ──┐                      │
+│            }                         │ KEEPS lock!          │
+│                                      ▼                      │
+│                          Other threads BLOCKED              │
+│                          for 1 second!                      │
+└─────────────────────────────────────────────────────────────┘
+```
+
 ```java
 // wait() - releases lock, used for inter-thread communication
 synchronized(obj) {
-    while (condition) {
+    while (!condition) {  // Always use while, not if!
         obj.wait();  // Releases lock, waits for notify
     }
+    // Proceed when condition is true
 }
 
 // sleep() - doesn't release lock, just pauses
 synchronized(obj) {
     Thread.sleep(1000);  // Holds lock for 1 second!
+}
+
+// Producer-Consumer example with wait/notify
+class Buffer {
+    private Queue<Integer> queue = new LinkedList<>();
+    private int capacity = 10;
+    
+    public synchronized void produce(int item) throws InterruptedException {
+        while (queue.size() == capacity) {
+            wait();  // Buffer full, wait for consumer
+        }
+        queue.add(item);
+        notify();  // Notify waiting consumer
+    }
+    
+    public synchronized int consume() throws InterruptedException {
+        while (queue.isEmpty()) {
+            wait();  // Buffer empty, wait for producer
+        }
+        int item = queue.poll();
+        notify();  // Notify waiting producer
+        return item;
+    }
 }
 ```
 
@@ -1667,6 +1935,31 @@ synchronized(obj) {
 ---
 
 ### Q45: What is deadlock? How to prevent it?
+
+**Definition:** Deadlock is a situation where **two or more threads are blocked forever**, each waiting for a lock held by the other.
+
+**Four Conditions for Deadlock (ALL must be true):**
+1. **Mutual Exclusion** - Resource can only be held by one thread
+2. **Hold and Wait** - Thread holds one resource while waiting for another
+3. **No Preemption** - Resources cannot be forcibly taken away
+4. **Circular Wait** - Thread 1 waits for Thread 2, Thread 2 waits for Thread 1
+
+```
+Deadlock Visualization:
+┌─────────────────────────────────────────────────────────────┐
+│                                                             │
+│   Thread 1                           Thread 2               │
+│   ┌─────────┐                        ┌─────────┐            │
+│   │  Holds  │──── Lock A ────────────│  Wants  │            │
+│   │  Lock A │                        │  Lock A │            │
+│   │         │                        │         │            │
+│   │  Wants  │──── Lock B ────────────│  Holds  │            │
+│   │  Lock B │                        │  Lock B │            │
+│   └─────────┘                        └─────────┘            │
+│                                                             │
+│   Both threads waiting forever! ❌                          │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ```java
 // Deadlock example
@@ -1700,6 +1993,46 @@ synchronized(lock2) {
 
 ### Q46: What is volatile keyword?
 
+**Definition:** The `volatile` keyword ensures that a variable's value is always read from **main memory**, not from the thread's local CPU cache, providing **visibility** guarantee across threads.
+
+**Problem without volatile:**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     MAIN MEMORY                             │
+│                    flag = false                             │
+└─────────────────────┬───────────────────────────────────────┘
+                      │
+        ┌─────────────┴─────────────┐
+        ▼                           ▼
+┌───────────────┐           ┌───────────────┐
+│   Thread 1    │           │   Thread 2    │
+│   CPU Cache   │           │   CPU Cache   │
+│  flag = false │           │  flag = true  │  ← Sets flag
+│               │           │               │
+│  Still sees   │           └───────────────┘
+│  false! ❌    │  ← Never sees the update!
+└───────────────┘
+```
+
+**With volatile:**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     MAIN MEMORY                             │
+│                volatile flag = true                         │
+└─────────────────────┬───────────────────────────────────────┘
+                      │
+        ┌─────────────┴─────────────┐
+        ▼                           ▼
+┌───────────────┐           ┌───────────────┐
+│   Thread 1    │           │   Thread 2    │
+│  Reads from   │           │  Writes to    │
+│  main memory  │           │  main memory  │
+│  flag = true ✅│          │  flag = true  │
+└───────────────┘           └───────────────┘
+```
+
 ```java
 class SharedData {
     volatile boolean flag = false;  // Always read from main memory
@@ -1727,6 +2060,37 @@ class SharedData {
 ---
 
 ### Q47: What is ThreadPool? ExecutorService?
+
+**Definition:** A ThreadPool is a collection of **pre-created reusable threads** that can execute tasks, avoiding the overhead of creating new threads for each task.
+
+**Why use ThreadPool?**
+
+```
+Without ThreadPool:
+┌─────────────────────────────────────────────────────────────┐
+│  Task 1 → Create Thread → Execute → Destroy                │
+│  Task 2 → Create Thread → Execute → Destroy                │
+│  Task 3 → Create Thread → Execute → Destroy                │
+│                                                             │
+│  ❌ Expensive: Thread creation/destruction overhead         │
+│  ❌ Uncontrolled: Could create thousands of threads         │
+└─────────────────────────────────────────────────────────────┘
+
+With ThreadPool:
+┌─────────────────────────────────────────────────────────────┐
+│  ┌────────────────────────────────┐                         │
+│  │        THREAD POOL (5)         │                         │
+│  │  ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐│                         │
+│  │  │ T1│ │ T2│ │ T3│ │ T4│ │ T5││ ← Reusable threads      │
+│  │  └───┘ └───┘ └───┘ └───┘ └───┘│                         │
+│  └────────────────────────────────┘                         │
+│              ▲                                              │
+│  Tasks ──────┤ Task 1, Task 2, Task 3... (queued)          │
+│                                                             │
+│  ✅ Efficient: Threads reused                               │
+│  ✅ Controlled: Fixed number of threads                     │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ```java
 // Create thread pool
