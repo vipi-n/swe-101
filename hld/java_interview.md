@@ -4451,7 +4451,6 @@ Connection conn = DriverManager.getConnection(url);  // Returns MySQL/PostgreSQL
 | Single Responsibility - creation logic in one place | Adds complexity for simple cases |
 | Open/Closed - add new products without changing client | Subclasses may need to implement factories |
 | Easier testing - can mock factory | May hide what object is actually created |
-```
 
 ---
 
@@ -4654,7 +4653,6 @@ HttpRequest request = HttpRequest.newBuilder()
 | Validation before construction | Slight runtime overhead |
 | Fluent API with method chaining | |
 | Can create different representations | |
-```
 
 ---
 
@@ -4904,7 +4902,6 @@ Flux.just(1, 2, 3).subscribe(System.out::println);
 | Open/Closed - add observers without changing subject | Memory leaks if observers not removed |
 | Runtime registration/deregistration | Unexpected updates if not careful |
 | Supports broadcast communication | Can cause cascade of updates |
-```
 
 ---
 
