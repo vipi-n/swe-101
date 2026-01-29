@@ -668,6 +668,37 @@ class D implements B, C {
 
 ### Q19: What is association, aggregation, and composition?
 
+#### What Are They?
+
+These are three types of **relationships between classes** in OOP. They describe how objects are connected to each other and their **lifecycle dependencies**.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    THREE TYPES OF RELATIONSHIPS                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  1. ASSOCIATION (Uses-A) ────────────────────────────────────────────   │
+│     • General relationship - objects know about each other              │
+│     • Both can exist independently                                      │
+│     • Example: Teacher ←→ Student                                       │
+│                                                                         │
+│  2. AGGREGATION (Has-A, Weak) ◇──────────────────────────────────────   │
+│     • "Has a" relationship                                              │
+│     • Child CAN exist without parent                                    │
+│     • Parent doesn't own the child's lifecycle                          │
+│     • Example: Team ◇── Player (Team disbanded, players still exist)    │
+│                                                                         │
+│  3. COMPOSITION (Has-A, Strong) ◆────────────────────────────────────   │
+│     • "Has a" relationship (stronger)                                   │
+│     • Child CANNOT exist without parent                                 │
+│     • Parent owns the child's lifecycle                                 │
+│     • Example: Human ◆── Heart (Human dies, heart dies too)             │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Visual Comparison
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    RELATIONSHIPS                             │
@@ -688,25 +719,139 @@ class D implements B, C {
 └─────────────────────────────────────────────────────────────┘
 ```
 
+#### The Key Difference: What Happens When Parent Is Destroyed?
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│              AGGREGATION vs COMPOSITION                                 │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  AGGREGATION (Weak):                                                    │
+│  ┌──────────────┐        ┌──────────────┐                               │
+│  │  University  │───◇────│  Professor   │                               │
+│  └──────────────┘        └──────────────┘                               │
+│         ❌                      ✅                                       │
+│   (University closes)    (Professors still exist,                       │
+│                           can join another university)                  │
+│                                                                         │
+│  COMPOSITION (Strong):                                                  │
+│  ┌──────────────┐        ┌──────────────┐                               │
+│  │     Car      │───◆────│    Engine    │                               │
+│  └──────────────┘        └──────────────┘                               │
+│         ❌                      ❌                                       │
+│   (Car is destroyed)     (That specific engine                          │
+│                           is destroyed too)                             │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Code Examples
+
 ```java
-// Aggregation - Employee can exist without Department
-class Department {
-    private List<Employee> employees;  // Employees passed in
+// ═══════════════════════════════════════════════════════════════════════
+// ASSOCIATION - Teacher and Student know each other, but exist separately
+// ═══════════════════════════════════════════════════════════════════════
+class Teacher {
+    private String name;
     
-    public Department(List<Employee> employees) {
-        this.employees = employees;
+    void teach(Student student) {  // Uses Student, doesn't own it
+        System.out.println("Teaching " + student.getName());
     }
 }
 
-// Composition - Room cannot exist without House
+class Student {
+    private String name;
+    
+    void learn(Teacher teacher) {  // Uses Teacher, doesn't own it
+        System.out.println("Learning from " + teacher.getName());
+    }
+}
+
+// Both exist independently - no ownership
+
+// ═══════════════════════════════════════════════════════════════════════
+// AGGREGATION - Department HAS Employees (but doesn't own their lifecycle)
+// ═══════════════════════════════════════════════════════════════════════
+class Employee {
+    private String name;
+    public Employee(String name) { this.name = name; }
+}
+
+class Department {
+    private String name;
+    private List<Employee> employees;  // Employees passed in from outside
+    
+    public Department(String name, List<Employee> employees) {
+        this.name = name;
+        this.employees = employees;  // ◇ Department doesn't create employees
+    }
+    
+    // If Department is deleted, Employee objects still exist!
+}
+
+// Usage:
+Employee e1 = new Employee("John");   // Employee exists independently
+Employee e2 = new Employee("Jane");
+List<Employee> emps = Arrays.asList(e1, e2);
+Department dept = new Department("IT", emps);
+dept = null;  // Department gone, but e1 and e2 still exist!
+
+// ═══════════════════════════════════════════════════════════════════════
+// COMPOSITION - House HAS Rooms (owns their lifecycle completely)
+// ═══════════════════════════════════════════════════════════════════════
+class Room {
+    private String name;
+    public Room(String name) { this.name = name; }
+}
+
 class House {
     private List<Room> rooms;
     
     public House() {
         rooms = new ArrayList<>();
-        rooms.add(new Room());  // House creates Room
+        rooms.add(new Room("Living Room"));  // ◆ House CREATES the rooms
+        rooms.add(new Room("Bedroom"));
+        rooms.add(new Room("Kitchen"));
     }
+    
+    // If House is destroyed, Rooms are destroyed too!
 }
+
+// Usage:
+House house = new House();  // Rooms created inside
+house = null;  // House gone → Rooms gone too (no reference to them)
+```
+
+#### Quick Reference Table
+
+| Aspect | Association | Aggregation | Composition |
+|--------|-------------|-------------|-------------|
+| **Relationship** | Uses-A | Has-A (weak) | Has-A (strong) |
+| **Symbol** | ── | ◇── | ◆── |
+| **Ownership** | No ownership | Shared/No ownership | Exclusive ownership |
+| **Lifecycle** | Independent | Independent | Dependent |
+| **Parent dies** | No effect | Child survives | Child dies too |
+| **Child created by** | External | External (passed in) | Parent (internally) |
+| **Example** | Teacher-Student | Team-Player | Body-Heart |
+
+#### Real-World Examples
+
+| Relationship | Example | Why? |
+|--------------|---------|------|
+| **Association** | Doctor - Patient | Doctor treats patient, both exist independently |
+| **Aggregation** | Library - Books | Library has books, but books can exist in another library |
+| **Aggregation** | Company - Employee | Company has employees, employees can join other companies |
+| **Composition** | Order - OrderItems | Order contains items, items don't exist without order |
+| **Composition** | Email - Attachment | Email has attachments, attachments gone when email deleted |
+
+#### Memory Trick 🧠
+
+```
+AGGREGATION = "Assembled" (parts are brought together, can be separated)
+             Like LEGO blocks - you can take them apart and reuse
+
+COMPOSITION = "Composed" (parts are created together, can't separate)
+             Like a painting - destroy the canvas, the art is gone
 ```
 
 ---
@@ -2121,28 +2266,211 @@ executor.awaitTermination(60, TimeUnit.SECONDS);
 
 ### Q48: Callable vs Runnable?
 
+#### What Are They?
+
+Both `Runnable` and `Callable` are interfaces used to represent a **task** that can be executed by a thread. They are the ways you define "what work a thread should do."
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     RUNNABLE vs CALLABLE                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  RUNNABLE (Java 1.0)                CALLABLE (Java 5)                   │
+│  ┌─────────────────────┐            ┌─────────────────────┐             │
+│  │ interface Runnable  │            │ interface Callable<V>│            │
+│  │ ─────────────────── │            │ ───────────────────  │            │
+│  │ void run()          │            │ V call() throws Ex   │            │
+│  │                     │            │                      │            │
+│  │ ❌ No return value  │            │ ✅ Returns a value   │            │
+│  │ ❌ Can't throw      │            │ ✅ Can throw checked │            │
+│  │    checked exception│            │    exceptions        │            │
+│  └─────────────────────┘            └─────────────────────┘             │
+│                                                                         │
+│  Use for: Fire & forget            Use for: Need result back            │
+│  Example: Logging, cleanup         Example: API call, computation       │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Why Was Callable Introduced?
+
+**The Problem with Runnable:**
 ```java
-// Runnable - no return value, no exception
-Runnable runnable = () -> {
-    System.out.println("Running");
+// ❌ Runnable: How do you get the result of computation?
+Runnable task = () -> {
+    int result = heavyComputation();  // Result computed
+    // But no way to return it!
+};
+```
+
+**The Solution - Callable:**
+```java
+// ✅ Callable: Returns the result
+Callable<Integer> task = () -> {
+    return heavyComputation();  // Result returned!
 };
 
-// Callable - returns value, can throw exception
-Callable<Integer> callable = () -> {
-    return 42;
+Future<Integer> future = executor.submit(task);
+Integer result = future.get();  // Get the result
+```
+
+#### The Complete Picture with Future
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    HOW CALLABLE WORKS WITH FUTURE                       │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   Main Thread                     Worker Thread                         │
+│   ────────────                    ─────────────                         │
+│                                                                         │
+│   ┌──────────────┐                                                      │
+│   │ Submit task  │                                                      │
+│   │ (Callable)   │─────────────► ┌──────────────┐                       │
+│   └──────┬───────┘               │ Execute      │                       │
+│          │                       │ call()       │                       │
+│   ┌──────▼───────┐               │              │                       │
+│   │ Get Future   │               │ Computing... │                       │
+│   │ immediately  │               │              │                       │
+│   └──────┬───────┘               └──────┬───────┘                       │
+│          │                              │                               │
+│   ┌──────▼───────┐               ┌──────▼───────┐                       │
+│   │ future.get() │◄──────────────│ Return result│                       │
+│   │ (blocks)     │    result     │              │                       │
+│   └──────────────┘               └──────────────┘                       │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Code Examples
+
+**Runnable - No Return Value:**
+```java
+// Runnable: For tasks that don't need to return anything
+Runnable loggingTask = () -> {
+    System.out.println("Logging something...");
+    // No return statement possible
+};
+
+// Execute with Thread
+Thread thread = new Thread(loggingTask);
+thread.start();
+
+// Or with ExecutorService (returns Future<?> but get() returns null)
+ExecutorService executor = Executors.newSingleThreadExecutor();
+executor.execute(loggingTask);  // execute() - no return
+```
+
+**Callable - Returns Value:**
+```java
+// Callable: For tasks that compute and return a result
+Callable<Integer> sumTask = () -> {
+    int sum = 0;
+    for (int i = 1; i <= 100; i++) {
+        sum += i;
+    }
+    return sum;  // ✅ Can return value
 };
 
 ExecutorService executor = Executors.newSingleThreadExecutor();
-Future<Integer> future = executor.submit(callable);
-Integer result = future.get();  // Blocks until done
+Future<Integer> future = executor.submit(sumTask);  // submit() - returns Future
+
+try {
+    Integer result = future.get();  // Blocks until result ready
+    System.out.println("Sum: " + result);  // Sum: 5050
+} catch (InterruptedException | ExecutionException e) {
+    e.printStackTrace();
+}
 ```
 
-| Runnable | Callable |
-|----------|----------|
-| `void run()` | `V call()` |
-| No return value | Returns value |
-| Cannot throw checked exception | Can throw exception |
-| Java 1.0 | Java 5 |
+**Callable - Exception Handling:**
+```java
+// Callable can throw checked exceptions
+Callable<String> riskyTask = () -> {
+    if (Math.random() > 0.5) {
+        throw new IOException("Something went wrong!");  // ✅ Can throw
+    }
+    return "Success";
+};
+
+// Runnable can ONLY throw unchecked exceptions
+Runnable riskyRunnable = () -> {
+    // throw new IOException("Error");  // ❌ Compile error!
+    throw new RuntimeException("Only unchecked allowed");  // ✅ OK
+};
+```
+
+#### Real-World Use Cases
+
+```java
+// Use Case 1: API Call (need response)
+Callable<String> apiCall = () -> {
+    return httpClient.get("https://api.example.com/data");
+};
+
+// Use Case 2: Database Query (need results)
+Callable<List<User>> dbQuery = () -> {
+    return userRepository.findAll();
+};
+
+// Use Case 3: File Processing (need status)
+Callable<Boolean> fileProcessor = () -> {
+    processFile("data.csv");
+    return true;  // Success indicator
+};
+
+// Use Case 4: Parallel Computations
+List<Callable<Integer>> tasks = Arrays.asList(
+    () -> computePartA(),
+    () -> computePartB(),
+    () -> computePartC()
+);
+
+List<Future<Integer>> futures = executor.invokeAll(tasks);
+int total = futures.stream()
+    .map(f -> {
+        try { return f.get(); } 
+        catch (Exception e) { return 0; }
+    })
+    .mapToInt(Integer::intValue)
+    .sum();
+```
+
+#### Key Differences Summary
+
+| Feature | Runnable | Callable |
+|---------|----------|----------|
+| **Method** | `void run()` | `V call() throws Exception` |
+| **Return Value** | ❌ No | ✅ Yes (generic type V) |
+| **Checked Exceptions** | ❌ Cannot throw | ✅ Can throw |
+| **Introduced** | Java 1.0 | Java 5 |
+| **Use with** | `Thread`, `execute()` | `submit()` returns `Future` |
+| **When to Use** | Fire-and-forget tasks | Need result or handle exceptions |
+
+#### When to Use Which?
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    DECISION GUIDE                           │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Need to return a result?                                   │
+│      YES ──► Use Callable                                   │
+│      NO ───► Use Runnable                                   │
+│                                                             │
+│  Need to throw checked exceptions?                          │
+│      YES ──► Use Callable                                   │
+│      NO ───► Either works                                   │
+│                                                             │
+│  Using with ExecutorService.submit()?                       │
+│      - Callable: Future.get() returns your result           │
+│      - Runnable: Future.get() returns null                  │
+│                                                             │
+│  Legacy code or simple Thread?                              │
+│      ──► Use Runnable (Thread only accepts Runnable)        │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -2150,196 +2478,696 @@ Integer result = future.get();  // Blocks until done
 
 ### Q49: What are the main features of Java 8?
 
-| Feature | Description |
-|---------|-------------|
-| **Lambda Expressions** | Functional programming support |
-| **Stream API** | Functional operations on collections |
-| **Optional** | Avoid null pointer exceptions |
-| **Default Methods** | Interface methods with implementation |
-| **Method References** | Shorthand for lambdas |
-| **New Date/Time API** | java.time package |
-| **Functional Interfaces** | Single abstract method interfaces |
+**Java 8 (2014)** was a major release that introduced **functional programming** to Java. Before Java 8, Java was purely object-oriented. Now it supports a mix of OOP and functional programming.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    JAVA 8 MAJOR FEATURES                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  1. Lambda Expressions ────► Write less code, functional style          │
+│  2. Stream API ────────────► Process collections like SQL queries       │
+│  3. Optional Class ────────► Say goodbye to NullPointerException        │
+│  4. Functional Interfaces ─► Foundation for lambdas                     │
+│  5. Default Methods ───────► Add methods to interfaces without breaking │
+│  6. Method References ─────► Even shorter lambdas                       │
+│  7. New Date/Time API ─────► Replace the broken java.util.Date          │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+| Feature | What Problem It Solves |
+|---------|------------------------|
+| **Lambda Expressions** | No more verbose anonymous classes |
+| **Stream API** | Process collections with filter/map/reduce |
+| **Optional** | Handle null safely without if-null checks |
+| **Default Methods** | Evolve interfaces without breaking implementations |
+| **Method References** | Make lambdas even more readable |
+| **New Date/Time API** | Thread-safe, immutable date handling |
+| **Functional Interfaces** | Enable lambda expressions |
 
 ---
 
 ### Q50: What is a Lambda Expression?
 
+#### What Is It?
+
+A **Lambda Expression** is a short, anonymous function (no name) that you can pass around like data. It's a way to write **what to do** without the boilerplate of creating a class.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    LAMBDA = ANONYMOUS FUNCTION                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   Normal Method:                 Lambda:                                │
+│   ┌────────────────────┐         ┌────────────────────┐                 │
+│   │ int add(int a,     │         │ (a, b) -> a + b    │                 │
+│   │         int b) {   │    ═►   │                    │                 │
+│   │   return a + b;    │         │                    │                 │
+│   │ }                  │         │                    │                 │
+│   └────────────────────┘         └────────────────────┘                 │
+│                                                                         │
+│   Parameters ──► (a, b)                                                 │
+│   Arrow ───────► ->                                                     │
+│   Body ────────► a + b (the logic)                                      │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Why Was It Introduced?
+
+**Before Java 8 (Verbose):**
 ```java
-// Before Java 8
-Runnable r1 = new Runnable() {
+// Just to sort a list, you needed all this:
+Collections.sort(names, new Comparator<String>() {
     @Override
-    public void run() {
-        System.out.println("Running");
+    public int compare(String a, String b) {
+        return a.compareTo(b);
     }
-};
+});
+// 6 lines for simple sorting!
+```
 
-// With Lambda
-Runnable r2 = () -> System.out.println("Running");
+**After Java 8 (Concise):**
+```java
+// Same thing with lambda:
+Collections.sort(names, (a, b) -> a.compareTo(b));
+// 1 line!
+```
 
-// Lambda syntax
-// (parameters) -> expression
-// (parameters) -> { statements; }
+#### Lambda Syntax
 
-// Examples
-Comparator<String> comp = (a, b) -> a.compareTo(b);
-Consumer<String> printer = s -> System.out.println(s);
+```java
+// Full syntax
+(parameters) -> { statements; return value; }
+
+// Simplified versions:
+(a, b) -> a + b              // Single expression, no braces, implicit return
+a -> a * 2                   // Single parameter, no parentheses needed
+() -> System.out.println()   // No parameters
+(a, b) -> {                  // Multiple statements need braces
+    int sum = a + b;
+    return sum;
+}
+```
+
+#### Common Examples
+
+```java
+// Runnable - no parameters, no return
+Runnable task = () -> System.out.println("Running!");
+
+// Comparator - two parameters, returns int
+Comparator<String> byLength = (s1, s2) -> s1.length() - s2.length();
+
+// Consumer - takes parameter, no return
+Consumer<String> printer = msg -> System.out.println(msg);
+
+// Function - takes parameter, returns value
 Function<String, Integer> length = s -> s.length();
-Predicate<Integer> isEven = n -> n % 2 == 0;
+
+// Predicate - takes parameter, returns boolean
+Predicate<Integer> isPositive = n -> n > 0;
+
+// Using in real code
+List<String> names = Arrays.asList("Bob", "Alice", "Charlie");
+names.sort((a, b) -> a.compareTo(b));
+names.forEach(name -> System.out.println(name));
+names.removeIf(name -> name.startsWith("A"));
 ```
 
 ---
 
 ### Q51: What is a Functional Interface?
 
-```java
-// Functional Interface = exactly one abstract method
-@FunctionalInterface
-interface Calculator {
-    int calculate(int a, int b);
-    
-    // Can have default methods
-    default void print() { }
-    
-    // Can have static methods
-    static void info() { }
-}
+#### What Is It?
 
-Calculator add = (a, b) -> a + b;
-Calculator multiply = (a, b) -> a * b;
+A **Functional Interface** is an interface with **exactly ONE abstract method**. It's the "target type" for lambda expressions - lambdas need to know what method signature they're implementing.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    FUNCTIONAL INTERFACE                                 │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   @FunctionalInterface                                                  │
+│   interface Calculator {                                                │
+│       int calculate(int a, int b);  ← ONE abstract method               │
+│                                                                         │
+│       default void log() { }         ← Default methods OK               │
+│       static void info() { }         ← Static methods OK                │
+│   }                                                                     │
+│                                                                         │
+│   Why ONE?                                                              │
+│   ─────────                                                             │
+│   Lambda = one block of code                                            │
+│   It needs to know WHICH method it's implementing                       │
+│   If there are 2 abstract methods, lambda is confused!                  │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Built-in Functional Interfaces:**
+#### Why @FunctionalInterface?
 
-| Interface | Method | Use Case |
-|-----------|--------|----------|
-| `Predicate<T>` | `boolean test(T)` | Condition check |
-| `Function<T,R>` | `R apply(T)` | Transform T to R |
-| `Consumer<T>` | `void accept(T)` | Consume value |
-| `Supplier<T>` | `T get()` | Supply value |
-| `BiFunction<T,U,R>` | `R apply(T,U)` | Two inputs |
+```java
+@FunctionalInterface  // Optional but recommended
+interface Calculator {
+    int calculate(int a, int b);
+}
+
+// Without @FunctionalInterface, someone might add another method:
+interface Calculator {
+    int calculate(int a, int b);
+    int anotherMethod();  // Now lambdas won't work!
+}
+
+// With @FunctionalInterface, compiler will ERROR if you add another method
+```
+
+#### Built-in Functional Interfaces (Know These!)
+
+```java
+// java.util.function package provides ready-to-use interfaces:
+
+// 1. Predicate<T> - test something, return boolean
+Predicate<Integer> isAdult = age -> age >= 18;
+boolean result = isAdult.test(25);  // true
+
+// 2. Function<T, R> - transform T to R
+Function<String, Integer> toLength = s -> s.length();
+int len = toLength.apply("Hello");  // 5
+
+// 3. Consumer<T> - accept T, do something, return nothing
+Consumer<String> printer = msg -> System.out.println(msg);
+printer.accept("Hello");  // prints: Hello
+
+// 4. Supplier<T> - supply T (no input)
+Supplier<Double> random = () -> Math.random();
+double val = random.get();  // 0.12345...
+
+// 5. BiFunction<T, U, R> - two inputs, one output
+BiFunction<Integer, Integer, Integer> add = (a, b) -> a + b;
+int sum = add.apply(5, 3);  // 8
+```
+
+| Interface | Input | Output | Method | Example |
+|-----------|-------|--------|--------|---------|
+| `Predicate<T>` | T | boolean | `test()` | Filter |
+| `Function<T,R>` | T | R | `apply()` | Transform |
+| `Consumer<T>` | T | void | `accept()` | Print/Save |
+| `Supplier<T>` | none | T | `get()` | Factory |
+| `BiFunction<T,U,R>` | T, U | R | `apply()` | Combine |
 
 ---
 
 ### Q52: What is Method Reference?
 
-```java
-// Lambda vs Method Reference
+#### What Is It?
 
-// Static method reference
-Function<String, Integer> f1 = s -> Integer.parseInt(s);
-Function<String, Integer> f2 = Integer::parseInt;
+A **Method Reference** is a shortcut for lambdas when the lambda just calls an existing method. Instead of writing the lambda, you **reference** the method directly.
 
-// Instance method of particular object
-Consumer<String> c1 = s -> System.out.println(s);
-Consumer<String> c2 = System.out::println;
-
-// Instance method of arbitrary object
-Function<String, Integer> f3 = s -> s.length();
-Function<String, Integer> f4 = String::length;
-
-// Constructor reference
-Supplier<ArrayList<String>> s1 = () -> new ArrayList<>();
-Supplier<ArrayList<String>> s2 = ArrayList::new;
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    METHOD REFERENCE = SHORTER LAMBDA                    │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   Lambda:                        Method Reference:                      │
+│   ┌───────────────────────┐      ┌───────────────────────┐              │
+│   │ s -> s.toUpperCase()  │  ═►  │ String::toUpperCase   │              │
+│   └───────────────────────┘      └───────────────────────┘              │
+│                                                                         │
+│   s -> System.out.println(s) ═►  System.out::println                    │
+│   s -> Integer.parseInt(s)   ═►  Integer::parseInt                      │
+│   () -> new ArrayList()      ═►  ArrayList::new                         │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-| Type | Syntax | Example |
-|------|--------|---------|
-| Static method | `Class::staticMethod` | `Integer::parseInt` |
-| Instance method (bound) | `object::method` | `System.out::println` |
-| Instance method (unbound) | `Class::method` | `String::length` |
-| Constructor | `Class::new` | `ArrayList::new` |
+#### Four Types of Method References
+
+```java
+// TYPE 1: Static Method Reference (Class::staticMethod)
+// When lambda calls a static method
+Function<String, Integer> lambda1 = s -> Integer.parseInt(s);
+Function<String, Integer> ref1 = Integer::parseInt;  // Same!
+
+// TYPE 2: Instance Method of Specific Object (object::method)
+// When lambda calls method on a specific object
+Consumer<String> lambda2 = s -> System.out.println(s);
+Consumer<String> ref2 = System.out::println;  // Same!
+
+// TYPE 3: Instance Method of Arbitrary Object (Class::method)
+// When lambda calls method on the parameter itself
+Function<String, Integer> lambda3 = s -> s.length();
+Function<String, Integer> ref3 = String::length;  // Same!
+
+// TYPE 4: Constructor Reference (Class::new)
+// When lambda creates new object
+Supplier<ArrayList<String>> lambda4 = () -> new ArrayList<>();
+Supplier<ArrayList<String>> ref4 = ArrayList::new;  // Same!
+```
+
+#### When to Use Which Type
+
+| Type | Syntax | Lambda Equivalent | Use When |
+|------|--------|-------------------|----------|
+| Static | `Class::staticMethod` | `x -> Class.method(x)` | Calling static method |
+| Bound Instance | `object::method` | `x -> object.method(x)` | Calling on specific object |
+| Unbound Instance | `Class::method` | `x -> x.method()` | Calling on parameter |
+| Constructor | `Class::new` | `() -> new Class()` | Creating new object |
+
+```java
+// Practical examples
+List<String> names = Arrays.asList("Alice", "Bob", "Charlie");
+
+// forEach with method reference
+names.forEach(System.out::println);  // Instead of: name -> System.out.println(name)
+
+// map with method reference
+List<Integer> lengths = names.stream()
+    .map(String::length)  // Instead of: s -> s.length()
+    .collect(Collectors.toList());
+
+// sorted with method reference
+names.sort(String::compareToIgnoreCase);  // Instead of: (a, b) -> a.compareToIgnoreCase(b)
+```
 
 ---
 
 ### Q53: What is Optional?
 
-```java
-// Creating Optional
-Optional<String> empty = Optional.empty();
-Optional<String> present = Optional.of("Hello");
-Optional<String> nullable = Optional.ofNullable(null);  // No exception
+#### What Is It?
 
-// Checking and getting
+**Optional** is a container that may or may not contain a value. It's designed to **eliminate NullPointerException** and make your code explicitly handle the "no value" case.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    OPTIONAL = BOX THAT MIGHT BE EMPTY                   │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   Traditional approach:           Optional approach:                    │
+│   ┌─────────────────────┐         ┌─────────────────────┐               │
+│   │ User user = null;   │         │ Optional<User> opt  │               │
+│   │                     │    ═►   │ = Optional.empty(); │               │
+│   │ if (user != null)   │         │                     │               │
+│   │   user.getName();   │         │ opt.map(u->getName) │               │
+│   └─────────────────────┘         └─────────────────────┘               │
+│                                                                         │
+│   "null" says nothing             "Optional.empty()" says:              │
+│   Is it intentional?               "This value may not exist"           │
+│   Did we forget?                   It's INTENTIONAL and CLEAR           │
+│   Bug?                                                                  │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Why Was It Introduced?
+
+**The Problem:**
+```java
+// The billion-dollar mistake - NullPointerException!
+User user = userRepository.findById(1);  // Returns null if not found
+String name = user.getName();  // 💥 NullPointerException!
+
+// Defensive coding becomes ugly:
+if (user != null) {
+    if (user.getAddress() != null) {
+        if (user.getAddress().getCity() != null) {
+            System.out.println(user.getAddress().getCity());
+        }
+    }
+}
+```
+
+**The Solution - Optional:**
+```java
+// Clear intent - this might not exist
+Optional<User> user = userRepository.findById(1);
+
+// Elegant null handling
+String name = user.map(User::getName).orElse("Unknown");
+
+// Chain safely
+String city = user
+    .map(User::getAddress)
+    .map(Address::getCity)
+    .orElse("Unknown");  // No nested ifs!
+```
+
+#### How to Use Optional
+
+```java
+// CREATING Optional
+Optional<String> empty = Optional.empty();              // Empty optional
+Optional<String> present = Optional.of("Hello");        // Must be non-null
+Optional<String> nullable = Optional.ofNullable(null);  // Safe for null
+
+// CHECKING & GETTING
 if (present.isPresent()) {
     System.out.println(present.get());
 }
 
-// Better approach - ifPresent
+// BETTER: ifPresent (no if statement needed)
 present.ifPresent(System.out::println);
 
-// Default values
-String value1 = nullable.orElse("Default");
-String value2 = nullable.orElseGet(() -> "Computed Default");
-String value3 = present.orElseThrow(() -> new RuntimeException("Not found"));
+// DEFAULT VALUES
+String v1 = nullable.orElse("Default");              // Return default if empty
+String v2 = nullable.orElseGet(() -> "Computed");    // Lazy computation
+String v3 = present.orElseThrow(() -> new RuntimeException());  // Throw if empty
 
-// Transformations
-Optional<Integer> length = present.map(String::length);
-Optional<String> upper = present.filter(s -> s.length() > 3)
-                                 .map(String::toUpperCase);
+// TRANSFORMING
+Optional<Integer> length = present.map(String::length);  // Apply function
+Optional<String> filtered = present.filter(s -> s.length() > 3);  // Keep if matches
+```
+
+#### Optional Do's and Don'ts
+
+```java
+// ❌ DON'T: Use as method parameter
+void process(Optional<String> opt) { }  // Bad!
+
+// ✅ DO: Use as return type
+Optional<User> findById(int id) { }  // Good!
+
+// ❌ DON'T: Use get() without checking
+String value = optional.get();  // Might throw NoSuchElementException!
+
+// ✅ DO: Use orElse, orElseGet, or map
+String value = optional.orElse("default");  // Safe!
+
+// ❌ DON'T: Use for fields
+class User {
+    Optional<String> name;  // Bad - increases memory, serialization issues
+}
+
+// ✅ DO: Return Optional from methods
+class UserRepository {
+    Optional<User> findById(int id) { }  // Good!
+}
 ```
 
 ---
 
 ### Q54: Stream API - Key operations?
 
+#### What Is It?
+
+**Stream API** lets you process collections in a **declarative** way - you say **what** you want, not **how** to do it. Think of it like SQL queries for Java collections.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    STREAM = DATA PIPELINE                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   Collection ──► Stream ──► Operations ──► Result                       │
+│                                                                         │
+│   ┌────────────┐    ┌───────────────────────────────┐    ┌──────────┐  │
+│   │ [1,2,3,4]  │───►│ filter → map → sort → collect │───►│ [2,4,6]  │  │
+│   └────────────┘    └───────────────────────────────┘    └──────────┘  │
+│                            Pipeline                                     │
+│                                                                         │
+│   Traditional (imperative):     Stream (declarative):                   │
+│   for (int n : nums) {          nums.stream()                           │
+│     if (n % 2 == 0) {              .filter(n -> n % 2 == 0)             │
+│       result.add(n * 2);           .map(n -> n * 2)                     │
+│     }                              .collect(toList());                  │
+│   }                                                                     │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Why Was It Introduced?
+
+**Without Stream (Imperative):**
+```java
+// "Filter even numbers, double them, sort, and collect"
+List<Integer> result = new ArrayList<>();
+for (Integer n : numbers) {
+    if (n % 2 == 0) {
+        result.add(n * 2);
+    }
+}
+Collections.sort(result);
+// 6 lines, hard to read intention
+```
+
+**With Stream (Declarative):**
+```java
+List<Integer> result = numbers.stream()
+    .filter(n -> n % 2 == 0)   // Keep evens
+    .map(n -> n * 2)           // Double them
+    .sorted()                   // Sort
+    .collect(Collectors.toList());
+// Reads like English!
+```
+
+#### Two Types of Operations
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│              INTERMEDIATE vs TERMINAL OPERATIONS                        │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   INTERMEDIATE (return Stream)       TERMINAL (produce result)          │
+│   ────────────────────────────       ────────────────────────           │
+│   filter()  - Keep matching          collect() - To collection          │
+│   map()     - Transform              forEach() - Side effects           │
+│   sorted()  - Sort                   count()   - Count elements         │
+│   distinct()- Remove duplicates      reduce()  - Combine to one         │
+│   limit()   - First n                findFirst()- Get first             │
+│   skip()    - Skip first n           anyMatch() - Check condition       │
+│   flatMap() - Flatten nested                                            │
+│                                                                         │
+│   LAZY: Don't execute                EAGER: Execute pipeline            │
+│   until terminal called              and produce result                 │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Common Operations
+
 ```java
 List<Integer> numbers = Arrays.asList(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
 
-// Intermediate (return Stream)
-numbers.stream()
-    .filter(n -> n % 2 == 0)      // Keep evens
-    .map(n -> n * 2)               // Transform
-    .sorted()                      // Sort
-    .distinct()                    // Remove duplicates
-    .limit(5)                      // First 5
-    .skip(2);                      // Skip first 2
+// FILTER - keep elements matching condition
+List<Integer> evens = numbers.stream()
+    .filter(n -> n % 2 == 0)
+    .collect(Collectors.toList());  // [2, 4, 6, 8, 10]
 
-// Terminal (produce result)
-List<Integer> list = stream.collect(Collectors.toList());
-long count = stream.count();
-Optional<Integer> max = stream.max(Comparator.naturalOrder());
-stream.forEach(System.out::println);
-int sum = stream.reduce(0, Integer::sum);
-boolean anyMatch = stream.anyMatch(n -> n > 5);
+// MAP - transform each element
+List<String> strings = numbers.stream()
+    .map(n -> "Number: " + n)
+    .collect(Collectors.toList());  // ["Number: 1", "Number: 2", ...]
+
+// REDUCE - combine all to one value
+int sum = numbers.stream()
+    .reduce(0, (a, b) -> a + b);  // 55
+
+// COLLECT - to various collections
+Set<Integer> set = numbers.stream().collect(Collectors.toSet());
+Map<Integer, String> map = numbers.stream()
+    .collect(Collectors.toMap(n -> n, n -> "Val" + n));
+
+// COUNT, MIN, MAX
+long count = numbers.stream().count();  // 10
+Optional<Integer> max = numbers.stream().max(Integer::compare);  // 10
+
+// ANYMATCH, ALLMATCH, NONEMATCH
+boolean hasEven = numbers.stream().anyMatch(n -> n % 2 == 0);  // true
+boolean allPositive = numbers.stream().allMatch(n -> n > 0);  // true
+
+// FINDFIRST, FINDANY
+Optional<Integer> first = numbers.stream().filter(n -> n > 5).findFirst();  // 6
+```
+
+#### Real-World Examples
+
+```java
+List<Employee> employees = getEmployees();
+
+// Get names of employees earning > 50k, sorted
+List<String> richEmployees = employees.stream()
+    .filter(e -> e.getSalary() > 50000)
+    .map(Employee::getName)
+    .sorted()
+    .collect(Collectors.toList());
+
+// Group employees by department
+Map<String, List<Employee>> byDept = employees.stream()
+    .collect(Collectors.groupingBy(Employee::getDepartment));
+
+// Average salary
+double avgSalary = employees.stream()
+    .mapToDouble(Employee::getSalary)
+    .average()
+    .orElse(0.0);
+
+// Parallel processing (multi-threaded)
+long count = employees.parallelStream()
+    .filter(e -> e.getAge() > 30)
+    .count();
 ```
 
 ---
 
 ### Q55: New Date/Time API (java.time)?
 
-```java
-// Local (no timezone)
-LocalDate date = LocalDate.now();           // 2026-01-29
-LocalTime time = LocalTime.now();           // 14:30:45.123
-LocalDateTime dateTime = LocalDateTime.now();
+#### What Is It?
 
-// With timezone
-ZonedDateTime zdt = ZonedDateTime.now();
-ZonedDateTime nyTime = ZonedDateTime.now(ZoneId.of("America/New_York"));
+Java 8 introduced a completely new Date/Time API in the `java.time` package. It replaces the old, problematic `java.util.Date` and `java.util.Calendar` classes.
 
-// Creating specific dates
-LocalDate birthday = LocalDate.of(1990, Month.JANUARY, 15);
-LocalTime meeting = LocalTime.of(14, 30);
-
-// Manipulation (immutable - returns new object)
-LocalDate tomorrow = date.plusDays(1);
-LocalDate lastMonth = date.minusMonths(1);
-
-// Formatting
-DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd-MM-yyyy");
-String formatted = date.format(formatter);
-LocalDate parsed = LocalDate.parse("29-01-2026", formatter);
-
-// Duration and Period
-Duration duration = Duration.between(time1, time2);
-Period period = Period.between(date1, date2);
 ```
+┌─────────────────────────────────────────────────────────────────────────┐
+│              OLD vs NEW DATE/TIME API                                   │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  OLD (java.util)                    NEW (java.time)                     │
+│  ─────────────────                  ────────────────                    │
+│  Date, Calendar                     LocalDate, LocalTime, LocalDateTime │
+│                                     ZonedDateTime, Instant              │
+│                                                                         │
+│  Problems with OLD:                 Benefits of NEW:                    │
+│  ❌ Mutable (not thread-safe)       ✅ Immutable (thread-safe)          │
+│  ❌ Month starts at 0               ✅ Month is 1-12 (intuitive)        │
+│  ❌ Confusing API                   ✅ Clear, fluent API                │
+│  ❌ No timezone support             ✅ Full timezone support            │
+│  ❌ Hard to format                  ✅ Easy formatting                  │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Key Classes
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    JAVA.TIME CLASSES                                    │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  WITHOUT TIMEZONE:                                                      │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────────┐  │
+│  │   LocalDate     │  │   LocalTime     │  │    LocalDateTime        │  │
+│  │   2024-01-29    │  │   14:30:45      │  │  2024-01-29T14:30:45    │  │
+│  │   (date only)   │  │   (time only)   │  │    (date + time)        │  │
+│  └─────────────────┘  └─────────────────┘  └─────────────────────────┘  │
+│                                                                         │
+│  WITH TIMEZONE:                                                         │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │   ZonedDateTime                                                   │   │
+│  │   2024-01-29T14:30:45+05:30[Asia/Kolkata]                        │   │
+│  │   (date + time + timezone)                                        │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────────┐  │
+│  │    Instant      │  │    Duration     │  │       Period            │  │
+│  │ Point in time   │  │ Time-based      │  │   Date-based amount     │  │
+│  │ (epoch seconds) │  │ (hours, mins)   │  │   (years, months, days) │  │
+│  └─────────────────┘  └─────────────────┘  └─────────────────────────┘  │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Code Examples
+
+```java
+// CREATING DATES AND TIMES
+LocalDate date = LocalDate.now();                    // Today: 2024-01-29
+LocalTime time = LocalTime.now();                    // Now: 14:30:45.123
+LocalDateTime dateTime = LocalDateTime.now();        // 2024-01-29T14:30:45
+ZonedDateTime zdt = ZonedDateTime.now();             // With timezone
+
+// Creating specific date/time
+LocalDate birthday = LocalDate.of(1990, Month.JANUARY, 15);  // 1990-01-15
+LocalDate birthday2 = LocalDate.of(1990, 1, 15);             // Same
+LocalTime meeting = LocalTime.of(14, 30);                     // 14:30
+LocalTime meetingSec = LocalTime.of(14, 30, 45);             // 14:30:45
+
+// TIMEZONE HANDLING
+ZonedDateTime nyTime = ZonedDateTime.now(ZoneId.of("America/New_York"));
+ZonedDateTime tokyoTime = ZonedDateTime.now(ZoneId.of("Asia/Tokyo"));
+// Convert between timezones
+ZonedDateTime converted = nyTime.withZoneSameInstant(ZoneId.of("Asia/Kolkata"));
+
+// MANIPULATION (Returns new object - immutable!)
+LocalDate tomorrow = date.plusDays(1);
+LocalDate nextWeek = date.plusWeeks(1);
+LocalDate nextMonth = date.plusMonths(1);
+LocalDate lastYear = date.minusYears(1);
+
+LocalTime later = time.plusHours(2);
+LocalTime earlier = time.minusMinutes(30);
+
+// COMPARISON
+boolean isBefore = date1.isBefore(date2);
+boolean isAfter = date1.isAfter(date2);
+boolean isEqual = date1.isEqual(date2);
+
+// FORMATTING AND PARSING
+DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd-MM-yyyy");
+String formatted = date.format(formatter);                    // "29-01-2024"
+LocalDate parsed = LocalDate.parse("29-01-2024", formatter);  // Back to LocalDate
+
+// Common patterns
+DateTimeFormatter.ofPattern("dd/MM/yyyy");          // 29/01/2024
+DateTimeFormatter.ofPattern("yyyy-MM-dd");          // 2024-01-29
+DateTimeFormatter.ofPattern("dd MMM yyyy");         // 29 Jan 2024
+DateTimeFormatter.ofPattern("EEEE, MMMM dd, yyyy"); // Monday, January 29, 2024
+
+// DURATION (for time-based) and PERIOD (for date-based)
+Duration duration = Duration.between(time1, time2);
+long hours = duration.toHours();
+long minutes = duration.toMinutes();
+
+Period period = Period.between(date1, date2);
+int years = period.getYears();
+int months = period.getMonths();
+int days = period.getDays();
+```
+
+#### When to Use Which Class
+
+| Class | Use For | Example |
+|-------|---------|---------|
+| `LocalDate` | Birthdays, holidays | "2024-01-29" |
+| `LocalTime` | Alarm times, store hours | "14:30:00" |
+| `LocalDateTime` | Event timestamps (local) | "2024-01-29T14:30" |
+| `ZonedDateTime` | Global events, flights | With timezone info |
+| `Instant` | Machine timestamps, logs | Epoch milliseconds |
+| `Duration` | Hours, minutes between times | "2 hours 30 minutes" |
+| `Period` | Years, months between dates | "2 years 3 months" |
 
 ---
 
 ## JVM & Memory Management
 
 ### Q56: JVM Architecture?
+
+#### What Is JVM?
+
+**JVM (Java Virtual Machine)** is the engine that runs Java bytecode. It's what makes Java "Write Once, Run Anywhere" possible. The JVM is platform-specific (different for Windows, Mac, Linux), but the bytecode it runs is platform-independent.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         JVM COMPONENTS                                  │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  1. CLASS LOADER SUBSYSTEM                                              │
+│     ├── Loading    - Read .class files                                  │
+│     ├── Linking    - Verify, prepare, resolve                           │
+│     └── Initialize - Execute static blocks                              │
+│                                                                         │
+│  2. RUNTIME DATA AREAS (Memory)                                         │
+│     ├── Method Area  - Class data, static variables (shared)            │
+│     ├── Heap         - Objects live here (shared, GC'd)                 │
+│     ├── Stack        - Local variables, method calls (per thread)       │
+│     ├── PC Register  - Current instruction address (per thread)         │
+│     └── Native Stack - For native method calls (per thread)             │
+│                                                                         │
+│  3. EXECUTION ENGINE                                                    │
+│     ├── Interpreter  - Execute bytecode line by line                    │
+│     ├── JIT Compiler - Compile hot code to native                       │
+│     └── GC           - Clean up unused objects                          │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -2376,6 +3204,37 @@ Period period = Period.between(date1, date2);
 
 ### Q57: Heap vs Stack memory?
 
+#### What Are They?
+
+Java uses two main memory areas: **Stack** (for method execution and local variables) and **Heap** (for objects). Understanding the difference is crucial for memory management and debugging.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    STACK vs HEAP VISUALIZATION                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   Your Code:                                                            │
+│   void method() {                                                       │
+│       int x = 10;                    // x stored in STACK              │
+│       String name = "John";          // "name" reference in STACK       │
+│       Employee emp = new Employee(); // "emp" reference in STACK        │
+│   }                                  // Employee object in HEAP         │
+│                                                                         │
+│   ┌─────────────────────────────────────────────────────────────────┐   │
+│   │  STACK (Thread-1)         HEAP (Shared by all threads)          │   │
+│   │  ─────────────────        ──────────────────────────            │   │
+│   │  ┌─────────────┐          ┌───────────────────────────┐         │   │
+│   │  │ x = 10      │          │ ┌─────────────────────┐   │         │   │
+│   │  │ name ───────┼──────────┼►│ String: "John"      │   │         │   │
+│   │  │ emp  ───────┼──────────┼►│ Employee object     │   │         │   │
+│   │  └─────────────┘          │ └─────────────────────┘   │         │   │
+│   │  ↑ References point       │                           │         │   │
+│   │    to objects in heap     │                           │         │   │
+│   └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  STACK (Per Thread)              HEAP (Shared)              │
@@ -2396,20 +3255,63 @@ Period period = Period.between(date1, date2);
 └─────────────────────────────────────────────────────────────┘
 ```
 
-| Stack | Heap |
-|-------|------|
-| Per thread | Shared by all threads |
-| Stores primitives, references | Stores objects |
-| LIFO (fast) | Complex structure |
-| Auto cleanup (scope ends) | Garbage collected |
-| Fixed size | Dynamic size |
-| `StackOverflowError` | `OutOfMemoryError` |
+#### Key Differences
+
+| Feature | Stack | Heap |
+|---------|-------|------|
+| **Scope** | Per thread (private) | Shared by all threads |
+| **Stores** | Primitives, references, method frames | Objects |
+| **Size** | Fixed, small (usually 1-2 MB) | Dynamic, large |
+| **Speed** | Very fast (LIFO) | Slower (complex structure) |
+| **Cleanup** | Automatic (method ends) | Garbage Collector |
+| **Thread Safety** | Thread-safe (private) | Needs synchronization |
+| **Error** | `StackOverflowError` | `OutOfMemoryError` |
+
+#### What Goes Where?
+
+```java
+class Example {
+    int instanceVar = 10;  // HEAP (part of object)
+    static int staticVar;  // METHOD AREA (not heap, not stack)
+    
+    void method() {
+        int localVar = 5;           // STACK - primitive
+        String name = "Hello";      // STACK (reference) → HEAP (String object)
+        Object obj = new Object();  // STACK (reference) → HEAP (Object)
+        
+        // localVar gone when method ends (stack cleanup)
+        // obj reference gone, Object in heap may be GC'd
+    }
+}
+```
 
 ---
 
 ### Q58: What is Garbage Collection?
 
+#### What Is It?
+
+**Garbage Collection (GC)** is Java's automatic memory management. It finds objects that are no longer used and reclaims their memory. You don't need to manually `free()` memory like in C/C++.
+
 **Garbage Collection** = Automatic memory management - reclaims unused objects
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    HOW GC WORKS (SIMPLIFIED)                            │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   BEFORE GC:                         AFTER GC:                          │
+│   ┌───────────────────────┐          ┌───────────────────────┐          │
+│   │ ┌───┐ ┌───┐ ┌───┐     │          │ ┌───┐ ┌───┐           │          │
+│   │ │ A │ │ B │ │ C │     │          │ │ A │ │ C │           │          │
+│   │ └───┘ └───┘ └───┘     │    ══►   │ └───┘ └───┘           │          │
+│   │        ↑               │          │                       │          │
+│   │      (no reference     │          │  B is garbage         │          │
+│   │       to B anymore)    │          │  (memory reclaimed)   │          │
+│   └───────────────────────┘          └───────────────────────┘          │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -2642,6 +3544,148 @@ public enum Singleton {
 
 // Usage: Singleton.INSTANCE.doSomething();
 ```
+
+#### 🔓 How Singleton Can Be Broken & Protection
+
+**1. Reflection Attack:**
+```java
+// Breaking via Reflection
+Constructor<Singleton> constructor = Singleton.class.getDeclaredConstructor();
+constructor.setAccessible(true);  // Bypass private
+Singleton instance2 = constructor.newInstance();  // New instance! 💥
+
+// ✅ PROTECTION: Throw exception in constructor
+private Singleton() {
+    if (instance != null) {
+        throw new RuntimeException("Use getInstance() - Reflection not allowed!");
+    }
+}
+```
+
+**2. Serialization Attack:**
+```java
+// Breaking via Serialization
+ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream("singleton.ser"));
+oos.writeObject(instance);
+
+ObjectInputStream ois = new ObjectInputStream(new FileInputStream("singleton.ser"));
+Singleton instance2 = (Singleton) ois.readObject();  // New instance! 💥
+
+// ✅ PROTECTION: Add readResolve() method
+protected Object readResolve() {
+    return instance;  // Return existing instance, not new one
+}
+```
+
+**3. Cloning Attack:**
+```java
+// Breaking via Cloning
+Singleton instance2 = (Singleton) instance.clone();  // New instance! 💥
+
+// ✅ PROTECTION: Override clone() to throw exception
+@Override
+protected Object clone() throws CloneNotSupportedException {
+    throw new CloneNotSupportedException("Cloning not allowed!");
+}
+```
+
+#### ✅ Fully Protected Singleton (All Attacks Covered)
+
+```java
+class Singleton implements Serializable {
+    
+    private static volatile Singleton instance = null;
+
+    // Protection from Reflection
+    private Singleton() {
+        if (instance != null) {
+            throw new RuntimeException("Use getInstance()!");
+        }
+    }
+
+    // Double-checked locking
+    public static Singleton getInstance() {
+        if (instance == null) {                    // First check (no lock)
+            synchronized (Singleton.class) {
+                if (instance == null) {            // Second check (with lock)
+                    instance = new Singleton();
+                }
+            }
+        }
+        return instance;
+    }
+
+    // Protection from Serialization
+    protected Object readResolve() {
+        return instance;
+    }
+
+    // Protection from Cloning
+    @Override
+    protected Object clone() throws CloneNotSupportedException {
+        throw new CloneNotSupportedException("Cloning not allowed!");
+    }
+}
+```
+
+#### 🏆 Enum Singleton - Best Solution (Auto-Protected)
+
+Enum is the **BEST** way - automatically protected from ALL attacks:
+
+```java
+public enum DatabaseConnection {
+    INSTANCE;
+    
+    private Connection connection;
+    
+    // Constructor (called once when INSTANCE is first accessed)
+    DatabaseConnection() {
+        try {
+            connection = DriverManager.getConnection(
+                "jdbc:mysql://localhost:3306/mydb", "user", "password"
+            );
+            System.out.println("Database connected!");
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+    
+    public Connection getConnection() {
+        return connection;
+    }
+}
+
+// Usage - anywhere in your app
+Connection conn = DatabaseConnection.INSTANCE.getConnection();
+```
+
+```java
+// Another Example: Logger
+public enum Logger {
+    INSTANCE;
+    
+    public void log(String message) {
+        System.out.println("[LOG] " + LocalDateTime.now() + ": " + message);
+    }
+    
+    public void error(String message) {
+        System.err.println("[ERROR] " + LocalDateTime.now() + ": " + message);
+    }
+}
+
+// Usage
+Logger.INSTANCE.log("Application started");
+Logger.INSTANCE.error("Something went wrong!");
+```
+
+| Attack | Regular Singleton | Enum Singleton |
+|--------|------------------|----------------|
+| **Reflection** | ❌ Vulnerable | ✅ Protected (JVM blocks) |
+| **Serialization** | ❌ Vulnerable | ✅ Protected (built-in) |
+| **Cloning** | ❌ Vulnerable | ✅ Protected (no clone) |
+| **Thread Safety** | ❌ Need volatile/sync | ✅ Built-in |
+
+> **💡 Tip:** Enum Singleton is recommended by **Joshua Bloch (Effective Java)** as the best Singleton implementation!
 
 #### 🌍 Real-World Examples in Java
 
