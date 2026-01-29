@@ -348,6 +348,611 @@ int age2 = null;     // Compile error!
 
 ---
 
+### Q10.1: How to Make a Class Immutable?
+
+**Immutable class** = Once created, the object's state cannot be changed.
+
+#### Rules for Immutability:
+1. Make the class `final` (prevent subclassing)
+2. Make all fields `private` and `final`
+3. No setter methods
+4. Initialize all fields via constructor
+5. Return **deep copies** of mutable objects (List, Date, custom objects)
+
+---
+
+#### Case 1: Simple Class (Only Primitives/Strings)
+
+```java
+// ✅ IMMUTABLE - Simple case (no mutable fields)
+public final class Employee {
+    
+    private final int id;
+    private final String name;  // String is already immutable
+    
+    public Employee(int id, String name) {
+        this.id = id;
+        this.name = name;
+    }
+    
+    // Only getters, NO setters
+    public int getId() { return id; }
+    public String getName() { return name; }
+}
+
+// Usage
+Employee emp = new Employee(1, "John");
+// emp.setName("Jane");  // ❌ No setter exists
+// emp.name = "Jane";    // ❌ Field is private
+```
+
+---
+
+#### Case 2: Class with List (Mutable Collection)
+
+```java
+// ❌ WRONG - Mutable through List reference
+public final class Department {
+    private final List<String> employees;
+    
+    public Department(List<String> employees) {
+        this.employees = employees;  // ❌ Direct reference!
+    }
+    
+    public List<String> getEmployees() {
+        return employees;  // ❌ Returns original list!
+    }
+}
+
+// Problem:
+List<String> list = new ArrayList<>(Arrays.asList("John", "Jane"));
+Department dept = new Department(list);
+list.add("Hacker");                    // ❌ Modifies internal state!
+dept.getEmployees().add("Another");    // ❌ Also modifies internal state!
+```
+
+```java
+// ✅ CORRECT - Defensive copies for List
+public final class Department {
+    
+    private final List<String> employees;
+    
+    public Department(List<String> employees) {
+        // ✅ Create a COPY in constructor (defensive copy)
+        this.employees = new ArrayList<>(employees);
+    }
+    
+    public List<String> getEmployees() {
+        // ✅ Return a COPY (not the original)
+        return new ArrayList<>(employees);
+        
+        // OR return unmodifiable view:
+        // return Collections.unmodifiableList(employees);
+    }
+}
+
+// Now safe:
+List<String> list = new ArrayList<>(Arrays.asList("John", "Jane"));
+Department dept = new Department(list);
+list.add("Hacker");                    // ✅ Original list changes, dept unaffected
+dept.getEmployees().add("Another");    // ✅ Returns copy, dept unaffected
+```
+
+---
+
+#### Case 3: Class with Another Mutable Object
+
+```java
+// ❌ WRONG - Address is mutable
+public final class Person {
+    private final String name;
+    private final Address address;  // Address is mutable!
+    
+    public Person(String name, Address address) {
+        this.name = name;
+        this.address = address;  // ❌ Direct reference
+    }
+    
+    public Address getAddress() {
+        return address;  // ❌ Returns original object
+    }
+}
+
+class Address {
+    private String city;
+    private String state;
+    
+    public Address(String city, String state) {
+        this.city = city;
+        this.state = state;
+    }
+    
+    // Getters
+    public String getCity() { return city; }
+    public String getState() { return state; }
+    
+    // Setters - makes it MUTABLE!
+    public void setCity(String city) { this.city = city; }
+    public void setState(String state) { this.state = state; }
+}
+
+// Problem:
+Address addr = new Address("New York", "NY");
+Person person = new Person("John", addr);
+addr.setCity("Los Angeles");                  // ❌ Changes person's address!
+addr.setState("CA");                          // ❌ Changes person's address!
+person.getAddress().setCity("Boston");        // ❌ Also changes it!
+person.getAddress().setState("MA");           // ❌ Also changes it!
+```
+
+```java
+// ✅ CORRECT - Deep copy of mutable object
+public final class Person {
+    
+    private final String name;
+    private final Address address;
+    
+    public Person(String name, Address address) {
+        this.name = name;
+        // ✅ Create a DEEP COPY in constructor (copy ALL fields)
+        this.address = new Address(address.getCity(), address.getState());
+    }
+    
+    public String getName() { return name; }
+    
+    public Address getAddress() {
+        // ✅ Return a DEEP COPY (copy ALL fields)
+        return new Address(address.getCity(), address.getState());
+    }
+}
+
+// Now safe:
+Address addr = new Address("New York", "NY");
+Person person = new Person("John", addr);
+addr.setCity("Los Angeles");                  // ✅ person's address still "New York, NY"
+addr.setState("CA");                          // ✅ person's address still "New York, NY"
+person.getAddress().setCity("Boston");        // ✅ Returns copy, person unaffected
+person.getAddress().setState("MA");           // ✅ Returns copy, person unaffected
+```
+
+---
+
+#### Complete Immutable Class Example (All Cases Combined)
+
+```java
+// Mutable Address class (has setters)
+class Address {
+    private String city;
+    private String state;
+    
+    public Address(String city, String state) {
+        this.city = city;
+        this.state = state;
+    }
+    
+    public String getCity() { return city; }
+    public String getState() { return state; }
+    public void setCity(String city) { this.city = city; }
+    public void setState(String state) { this.state = state; }
+}
+
+// ✅ Immutable Student class
+public final class Student {
+    
+    private final int id;                    // Primitive - safe
+    private final String name;               // String - immutable, safe
+    private final List<String> subjects;     // List - needs defensive copy
+    private final Address address;           // Mutable object - needs deep copy
+    private final Date enrollmentDate;       // Date is mutable - needs copy
+    
+    public Student(int id, String name, List<String> subjects, 
+                   Address address, Date enrollmentDate) {
+        this.id = id;
+        this.name = name;
+        this.subjects = new ArrayList<>(subjects);           // ✅ Copy list
+        // ✅ Copy ALL fields of Address
+        this.address = new Address(address.getCity(), address.getState());
+        this.enrollmentDate = new Date(enrollmentDate.getTime()); // ✅ Copy date
+    }
+    
+    public int getId() { return id; }
+    public String getName() { return name; }
+    
+    public List<String> getSubjects() {
+        return new ArrayList<>(subjects);  // ✅ Return copy
+    }
+    
+    public Address getAddress() {
+        // ✅ Return copy with ALL fields
+        return new Address(address.getCity(), address.getState());
+    }
+    
+    public Date getEnrollmentDate() {
+        return new Date(enrollmentDate.getTime());  // ✅ Return copy
+    }
+}
+
+// Usage - completely safe:
+List<String> subjects = new ArrayList<>(Arrays.asList("Math", "Science"));
+Address addr = new Address("New York", "NY");
+Date date = new Date();
+
+Student student = new Student(1, "John", subjects, addr, date);
+
+// None of these affect the student object:
+subjects.add("History");           // ✅ Student's subjects unchanged
+addr.setCity("Boston");            // ✅ Student's address still "New York, NY"
+addr.setState("MA");               // ✅ Student's address still "New York, NY"
+date.setTime(0);                   // ✅ Student's enrollment date unchanged
+
+// Getting and modifying also doesn't affect:
+student.getSubjects().add("Art");  // ✅ Returns copy, student unaffected
+student.getAddress().setCity("LA");// ✅ Returns copy, student unaffected
+```
+
+---
+
+#### Quick Reference: Immutability Rules
+
+| Field Type | In Constructor | In Getter |
+|------------|----------------|-----------|
+| **Primitive** (int, double) | Direct assign | Return directly |
+| **String** | Direct assign | Return directly |
+| **Immutable Object** | Direct assign | Return directly |
+| **List/Set/Map** | `new ArrayList<>(list)` | Return `new ArrayList<>(list)` |
+| **Date** | `new Date(date.getTime())` | Return `new Date(date.getTime())` |
+| **Mutable Object** | Create deep copy | Return deep copy |
+
+---
+
+#### Case 4: What If the Nested Object is Already Immutable?
+
+**Key Insight:** If the nested object (like Address) is **already immutable**, you **DON'T need defensive copies!**
+
+```java
+// ✅ Address is IMMUTABLE (no setters, final fields)
+public final class Address {
+    private final String city;
+    private final String state;
+    
+    public Address(String city, String state) {
+        this.city = city;
+        this.state = state;
+    }
+    
+    // Only getters, NO setters
+    public String getCity() { return city; }
+    public String getState() { return state; }
+}
+
+// ✅ Student can use Address directly - no copy needed!
+public final class Student {
+    private final String name;
+    private final Address address;  // Address is immutable
+    
+    public Student(String name, Address address) {
+        this.name = name;
+        this.address = address;  // ✅ Direct reference is SAFE!
+    }
+    
+    public Address getAddress() {
+        return address;  // ✅ Return directly is SAFE!
+    }
+}
+
+// Usage - completely safe:
+Address addr = new Address("New York", "NY");
+Student student = new Student("John", addr);
+// addr.setCity("Boston");  // ❌ Can't do this - no setter exists!
+```
+
+---
+
+#### Case 5: Nested Object with List (Address has List of Zip Codes)
+
+When the nested object itself contains mutable fields like List, you must make that object immutable properly too:
+
+```java
+// ❌ WRONG - Address has mutable List
+public class Address {
+    private final String city;
+    private final List<String> zipCodes;  // List is mutable!
+    
+    public Address(String city, List<String> zipCodes) {
+        this.city = city;
+        this.zipCodes = zipCodes;  // ❌ Direct reference
+    }
+    
+    public List<String> getZipCodes() {
+        return zipCodes;  // ❌ Returns original list
+    }
+}
+
+// Problem:
+List<String> zips = new ArrayList<>(Arrays.asList("10001", "10002"));
+Address addr = new Address("New York", zips);
+zips.add("99999");                     // ❌ Modifies address's zip codes!
+addr.getZipCodes().add("88888");       // ❌ Also modifies it!
+```
+
+```java
+// ✅ CORRECT - Address is properly immutable with List
+public final class Address {
+    private final String city;
+    private final List<String> zipCodes;
+    
+    public Address(String city, List<String> zipCodes) {
+        this.city = city;
+        this.zipCodes = new ArrayList<>(zipCodes);  // ✅ Defensive copy
+    }
+    
+    public String getCity() { return city; }
+    
+    public List<String> getZipCodes() {
+        return new ArrayList<>(zipCodes);  // ✅ Return copy
+        // OR: return Collections.unmodifiableList(zipCodes);
+    }
+}
+
+// ✅ Now Student can use Address directly (Address is truly immutable)
+public final class Student {
+    private final String name;
+    private final Address address;
+    
+    public Student(String name, Address address) {
+        this.name = name;
+        this.address = address;  // ✅ Safe - Address handles its own immutability
+    }
+    
+    public Address getAddress() {
+        return address;  // ✅ Safe to return directly
+    }
+}
+
+// Completely safe:
+List<String> zips = new ArrayList<>(Arrays.asList("10001", "10002"));
+Address addr = new Address("New York", zips);
+Student student = new Student("John", addr);
+
+zips.add("99999");                     // ✅ student unaffected
+addr.getZipCodes().add("88888");       // ✅ Returns copy, addr unaffected
+student.getAddress().getZipCodes().add("77777"); // ✅ All copies, student unaffected
+```
+
+---
+
+#### Case 6: Student has List of Mutable Address Objects
+
+When you have a **List of mutable objects**, you need to deep copy **both the List AND each object inside it**.
+
+```java
+// ❌ WRONG - Just copying the List is NOT enough
+public final class Student {
+    private final String name;
+    private final List<Address> addresses;  // List of mutable Address
+    
+    public Student(String name, List<Address> addresses) {
+        this.name = name;
+        // ❌ WRONG - copies list but NOT the Address objects inside!
+        this.addresses = new ArrayList<>(addresses);
+    }
+    
+    public List<Address> getAddresses() {
+        // ❌ WRONG - copies list but NOT the Address objects inside!
+        return new ArrayList<>(addresses);
+    }
+}
+
+// Problem - Address objects inside are STILL the same references:
+Address addr1 = new Address("New York", "NY");
+Address addr2 = new Address("Boston", "MA");
+List<Address> addrList = new ArrayList<>(Arrays.asList(addr1, addr2));
+
+Student student = new Student("John", addrList);
+
+addr1.setCity("Los Angeles");                      // ❌ Changes student's first address!
+student.getAddresses().get(0).setCity("Chicago");  // ❌ Also changes it!
+```
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│              SHALLOW COPY OF LIST (WRONG!)                              │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   Original List              Student's List                             │
+│   ┌─────────────┐            ┌─────────────┐                            │
+│   │ [ref1, ref2]│            │ [ref1, ref2]│  ← Different lists         │
+│   └──┬──────┬───┘            └──┬──────┬───┘                            │
+│      │      │                   │      │                                │
+│      │      │     SAME objects! │      │                                │
+│      ▼      ▼                   ▼      ▼                                │
+│   ┌──────┐ ┌──────┐          ┌──────┐ ┌──────┐                          │
+│   │ NY   │ │ MA   │          │ NY   │ │ MA   │  ← Same Address objects! │
+│   └──────┘ └──────┘          └──────┘ └──────┘                          │
+│                                                                         │
+│   Change addr1 → Student affected! ❌                                   │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+```java
+// ✅ CORRECT - Deep copy List AND each object inside
+public final class Student {
+    private final String name;
+    private final List<Address> addresses;
+    
+    public Student(String name, List<Address> addresses) {
+        this.name = name;
+        // ✅ CORRECT - copy list AND each Address inside
+        this.addresses = new ArrayList<>();
+        for (Address addr : addresses) {
+            // Deep copy each Address object
+            this.addresses.add(new Address(addr.getCity(), addr.getState()));
+        }
+    }
+    
+    public List<Address> getAddresses() {
+        // ✅ CORRECT - return copy of list with copied Address objects
+        List<Address> copy = new ArrayList<>();
+        for (Address addr : addresses) {
+            copy.add(new Address(addr.getCity(), addr.getState()));
+        }
+        return copy;
+    }
+}
+
+// Now completely safe:
+Address addr1 = new Address("New York", "NY");
+Address addr2 = new Address("Boston", "MA");
+List<Address> addrList = new ArrayList<>(Arrays.asList(addr1, addr2));
+
+Student student = new Student("John", addrList);
+
+addr1.setCity("Los Angeles");                      // ✅ Student unaffected!
+student.getAddresses().get(0).setCity("Chicago");  // ✅ Returns copy, student unaffected!
+```
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│              DEEP COPY OF LIST (CORRECT!)                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   Original List              Student's List                             │
+│   ┌─────────────┐            ┌─────────────┐                            │
+│   │ [ref1, ref2]│            │ [ref3, ref4]│  ← Different lists         │
+│   └──┬──────┬───┘            └──┬──────┬───┘                            │
+│      │      │                   │      │                                │
+│      ▼      ▼                   ▼      ▼                                │
+│   ┌──────┐ ┌──────┐          ┌──────┐ ┌──────┐                          │
+│   │ NY   │ │ MA   │          │ NY   │ │ MA   │  ← DIFFERENT objects!    │
+│   └──────┘ └──────┘          └──────┘ └──────┘    (copies)              │
+│                                                                         │
+│   Change addr1 → Student NOT affected! ✅                               │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**Using Java 8 Streams (cleaner syntax):**
+
+```java
+public final class Student {
+    private final String name;
+    private final List<Address> addresses;
+    
+    public Student(String name, List<Address> addresses) {
+        this.name = name;
+        // ✅ Using Stream to deep copy
+        this.addresses = addresses.stream()
+            .map(addr -> new Address(addr.getCity(), addr.getState()))
+            .collect(Collectors.toList());
+    }
+    
+    public List<Address> getAddresses() {
+        // ✅ Using Stream to deep copy
+        return addresses.stream()
+            .map(addr -> new Address(addr.getCity(), addr.getState()))
+            .collect(Collectors.toList());
+    }
+}
+```
+
+**If Address is IMMUTABLE, just copy the List:**
+
+```java
+// ✅ Address is IMMUTABLE (no setters, private final fields)
+public final class Address {
+    private final String city;
+    private final String state;
+    
+    public Address(String city, String state) {
+        this.city = city;
+        this.state = state;
+    }
+    
+    public String getCity() { return city; }
+    public String getState() { return state; }
+    // NO setters!
+}
+
+// ✅ Student only needs to copy the List, not each Address
+public final class Student {
+    private final String name;
+    private final List<Address> addresses;
+    
+    public Student(String name, List<Address> addresses) {
+        this.name = name;
+        // ✅ Just copy the list (Address objects can't be modified)
+        this.addresses = new ArrayList<>(addresses);
+    }
+    
+    public List<Address> getAddresses() {
+        // ✅ Just copy the list
+        return new ArrayList<>(addresses);
+    }
+}
+```
+
+**Quick Reference for List Fields:**
+
+| Scenario | Constructor | Getter |
+|----------|-------------|--------|
+| `List<String>` | `new ArrayList<>(list)` | `new ArrayList<>(list)` |
+| `List<ImmutableObject>` | `new ArrayList<>(list)` | `new ArrayList<>(list)` |
+| `List<MutableObject>` | Copy list + copy each object | Copy list + copy each object |
+
+---
+
+#### Decision Tree: Do I Need Defensive Copy?
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                  DO I NEED DEFENSIVE COPY?                              │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  Is the field a primitive (int, double, boolean)?                       │
+│      └── NO defensive copy needed                                       │
+│                                                                         │
+│  Is the field a String?                                                 │
+│      └── NO defensive copy needed (String is immutable)                 │
+│                                                                         │
+│  Is the field an immutable object (final class, no setters)?            │
+│      └── NO defensive copy needed                                       │
+│                                                                         │
+│  Is the field a List/Set/Map of immutable objects?                      │
+│      └── YES! Copy the collection in constructor AND getter             │
+│                                                                         │
+│  Is the field a List/Set/Map of mutable objects?                        │
+│      └── YES! Copy collection AND each object inside                    │
+│                                                                         │
+│  Is the field a mutable object (has setters)?                           │
+│      └── YES! Deep copy in constructor AND getter                       │
+│          OR make that object immutable first                            │
+│                                                                         │
+│  Is the field Date/Calendar?                                            │
+│      └── YES! Copy in constructor AND getter                            │
+│          OR use java.time (LocalDate, etc.) which is immutable          │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 💡 Pro Tip: Use Immutable Classes from java.time
+
+```java
+// ❌ OLD - Date is mutable, needs copying
+private final Date enrollmentDate;
+
+// ✅ NEW - LocalDate is immutable, no copying needed!
+private final LocalDate enrollmentDate;  // Java 8+ java.time package
+```
+
+#### Why Immutability?
+- ✅ **Thread-safe** - No synchronization needed
+- ✅ **Can be cached** - Safe to reuse
+- ✅ **Good HashMap keys** - Hashcode never changes
+- ✅ **Predictable** - No unexpected state changes
+
+---
+
 ## OOP Concepts
 
 ### Q11: What are the 4 pillars of OOP?
