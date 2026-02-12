@@ -10,7 +10,9 @@
 7. [REST API with Database (JPA + H2/MySQL)](#rest-api-with-database)
 8. [Exception Handling](#exception-handling)
 9. [Validation](#validation)
-10. [Spring Boot Interview Questions](#spring-boot-interview-questions)
+10. [Authentication & Authorization](#authentication--authorization)
+11. [Production Auth — API Gateway Pattern](#production-auth--api-gateway-pattern)
+12. [Spring Boot Interview Questions](#spring-boot-interview-questions)
 
 ---
 
@@ -1480,6 +1482,1514 @@ public ResponseEntity<Map<String, Object>> handleValidationException(
     return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(error);
 }
 ```
+
+---
+
+## Authentication & Authorization
+
+### How Auth Works in REST APIs
+
+REST APIs are **stateless** — no sessions. Every request must carry its own proof of identity. The most common approaches:
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                    AUTH APPROACHES FOR REST APIs                     │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  1. Basic Auth        → Username:Password in every request (Base64) │
+│  2. JWT (Token-based) → Login once → get token → send token         │
+│  3. OAuth2            → Delegate auth to Google/GitHub/etc.         │
+│  4. API Key           → Static key in header (for service-to-svc)   │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+| Approach | Use Case | Stateless? | Security |
+|----------|----------|------------|----------|
+| **Basic Auth** | Internal APIs, dev/test | Yes | Low (credentials every request) |
+| **JWT** | Most REST APIs, SPAs, mobile | Yes | High |
+| **OAuth2** | Third-party login, SSO | Yes | High |
+| **API Key** | Service-to-service, public APIs | Yes | Medium |
+
+---
+
+### Spring Security Basics
+
+#### How Spring Security Works
+
+Spring Security is a **filter chain** — every HTTP request passes through a series of security filters before reaching your controller.
+
+```
+HTTP Request
+    │
+    ▼
+┌──────────────────────────────────────────────────┐
+│              Spring Security Filter Chain         │
+│                                                   │
+│  ┌─────────────────────────────────────────────┐  │
+│  │ 1. CORS Filter                              │  │
+│  ├─────────────────────────────────────────────┤  │
+│  │ 2. CSRF Filter (disabled for REST APIs)     │  │
+│  ├─────────────────────────────────────────────┤  │
+│  │ 3. Authentication Filter                    │  │
+│  │    → Extracts credentials/token from request│  │
+│  │    → Validates against UserDetailsService   │  │
+│  │    → Sets SecurityContext if valid          │  │
+│  ├─────────────────────────────────────────────┤  │
+│  │ 4. Authorization Filter                     │  │
+│  │    → Checks roles/permissions               │  │
+│  │    → Returns 403 if not authorized          │  │
+│  ├─────────────────────────────────────────────┤  │
+│  │ 5. Exception Translation Filter             │  │
+│  │    → Converts auth exceptions to HTTP 401   │  │
+│  └─────────────────────────────────────────────┘  │
+│                                                   │
+└──────────────────────────────────────────────────┘
+    │
+    ▼
+Controller (your code)
+```
+
+#### Key Concepts
+
+| Concept | What It Is |
+|---------|------------|
+| **Authentication** | Who are you? (verify identity) |
+| **Authorization** | What can you do? (check permissions) |
+| **SecurityContext** | Holds the authenticated user for the current request |
+| **UserDetailsService** | Interface to load user from your database |
+| **PasswordEncoder** | Hashes passwords (BCrypt is standard) |
+| **SecurityFilterChain** | Configures which URLs need auth, which don't |
+
+#### Why CSRF is Disabled for REST
+
+CSRF (Cross-Site Request Forgery) protection is for browser-based apps that use cookies/sessions. REST APIs use tokens in headers (not cookies), so CSRF doesn't apply.
+
+```java
+http.csrf(csrf -> csrf.disable());  // Always disable for REST APIs
+```
+
+---
+
+### Dependency
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-security</artifactId>
+</dependency>
+
+<!-- For JWT -->
+<dependency>
+    <groupId>io.jsonwebtoken</groupId>
+    <artifactId>jjwt-api</artifactId>
+    <version>0.12.3</version>
+</dependency>
+<dependency>
+    <groupId>io.jsonwebtoken</groupId>
+    <artifactId>jjwt-impl</artifactId>
+    <version>0.12.3</version>
+    <scope>runtime</scope>
+</dependency>
+<dependency>
+    <groupId>io.jsonwebtoken</groupId>
+    <artifactId>jjwt-jackson</artifactId>
+    <version>0.12.3</version>
+    <scope>runtime</scope>
+</dependency>
+```
+
+---
+
+### Approach 1: Basic Auth (Simplest)
+
+Every request sends `Authorization: Basic base64(username:password)` header.
+
+#### Security Config
+
+```java
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig {
+
+    @Bean
+    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        http
+            .csrf(csrf -> csrf.disable())
+            .authorizeHttpRequests(auth -> auth
+                .requestMatchers("/api/public/**").permitAll()   // No auth needed
+                .requestMatchers("/api/admin/**").hasRole("ADMIN")
+                .anyRequest().authenticated()                     // Everything else needs auth
+            )
+            .httpBasic(Customizer.withDefaults());  // Enable Basic Auth
+
+        return http.build();
+    }
+
+    @Bean
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
+    }
+
+    // In-memory users (for testing only)
+    @Bean
+    public UserDetailsService userDetailsService() {
+        UserDetails user = User.builder()
+                .username("user")
+                .password(passwordEncoder().encode("password"))
+                .roles("USER")
+                .build();
+
+        UserDetails admin = User.builder()
+                .username("admin")
+                .password(passwordEncoder().encode("admin123"))
+                .roles("ADMIN", "USER")
+                .build();
+
+        return new InMemoryUserDetailsManager(user, admin);
+    }
+}
+```
+
+#### Test with cURL
+
+```bash
+# Without auth → 401
+curl http://localhost:8080/api/employees
+
+# With Basic Auth → 200
+curl -u user:password http://localhost:8080/api/employees
+
+# Admin endpoint
+curl -u admin:admin123 http://localhost:8080/api/admin/dashboard
+```
+
+**Limitation:** Credentials sent with every request. Even Base64-encoded, it's not encrypted (use HTTPS always).
+
+---
+
+### Approach 2: JWT Authentication (Industry Standard)
+
+This is how most production REST APIs handle auth.
+
+#### JWT Flow
+
+```
+1. LOGIN
+   Client ──── POST /api/auth/login {username, password} ────► Server
+   Client ◄─── 200 OK { "token": "eyJhbGciOi..." } ──────── Server
+
+2. SUBSEQUENT REQUESTS
+   Client ──── GET /api/employees                      ────► Server
+               Header: Authorization: Bearer eyJhbGciOi...
+   Client ◄─── 200 OK [employees data] ────────────────── Server
+
+3. TOKEN EXPIRED
+   Client ──── GET /api/employees                      ────► Server
+               Header: Authorization: Bearer <expired>
+   Client ◄─── 401 Unauthorized ───────────────────────── Server
+   Client ──── POST /api/auth/login (re-login)         ────► Server
+```
+
+#### What is a JWT?
+
+JWT = JSON Web Token. A self-contained token with 3 parts:
+
+```
+eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyMSIsImlhdCI6MTcw...  .SflKxwRJSMeKKF2QT4fwpM...
+└────── HEADER ───────┘ └──────────── PAYLOAD ──────────────┘ └────── SIGNATURE ──────┘
+```
+
+| Part | Contains | Encoded |
+|------|----------|---------|
+| **Header** | Algorithm (HS256), type (JWT) | Base64 |
+| **Payload** | Claims — username, roles, expiry time | Base64 |
+| **Signature** | HMAC(header + payload, SECRET_KEY) | Hashed |
+
+**Key point:** The payload is Base64 (readable), NOT encrypted. Never put passwords or sensitive data in JWT. The signature proves the token wasn't tampered with.
+
+#### Step 1: JWT Utility Class
+
+```java
+@Component
+public class JwtUtil {
+
+    @Value("${jwt.secret}")
+    private String secretKey;    // from application.properties
+
+    @Value("${jwt.expiration}")
+    private long expirationMs;   // e.g., 86400000 (24 hours)
+
+    private SecretKey getSigningKey() {
+        return Keys.hmacShaKeyFor(secretKey.getBytes());
+    }
+
+    // Generate token for a user
+    public String generateToken(String username, List<String> roles) {
+        return Jwts.builder()
+                .subject(username)
+                .claim("roles", roles)
+                .issuedAt(new Date())
+                .expiration(new Date(System.currentTimeMillis() + expirationMs))
+                .signWith(getSigningKey())
+                .compact();
+    }
+
+    // Extract username from token
+    public String extractUsername(String token) {
+        return extractClaims(token).getSubject();
+    }
+
+    // Check if token is valid
+    public boolean isTokenValid(String token, UserDetails userDetails) {
+        String username = extractUsername(token);
+        return username.equals(userDetails.getUsername()) && !isTokenExpired(token);
+    }
+
+    private boolean isTokenExpired(String token) {
+        return extractClaims(token).getExpiration().before(new Date());
+    }
+
+    private Claims extractClaims(String token) {
+        return Jwts.parser()
+                .verifyWith(getSigningKey())
+                .build()
+                .parseSignedClaims(token)
+                .getPayload();
+    }
+}
+```
+
+#### Step 2: Custom UserDetailsService (Load User from DB)
+
+```java
+@Service
+public class CustomUserDetailsService implements UserDetailsService {
+
+    @Autowired
+    private UserRepository userRepository;
+
+    @Override
+    public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
+        User user = userRepository.findByUsername(username)
+                .orElseThrow(() -> new UsernameNotFoundException("User not found: " + username));
+
+        return org.springframework.security.core.userdetails.User.builder()
+                .username(user.getUsername())
+                .password(user.getPassword())  // Already BCrypt-hashed in DB
+                .roles(user.getRoles().toArray(new String[0]))
+                .build();
+    }
+}
+```
+
+#### Step 3: JWT Authentication Filter
+
+This filter runs before every request — extracts the JWT from the header, validates it, and sets the authenticated user in the SecurityContext.
+
+```java
+@Component
+public class JwtAuthenticationFilter extends OncePerRequestFilter {
+
+    @Autowired
+    private JwtUtil jwtUtil;
+
+    @Autowired
+    private CustomUserDetailsService userDetailsService;
+
+    @Override
+    protected void doFilterInternal(HttpServletRequest request,
+                                    HttpServletResponse response,
+                                    FilterChain filterChain)
+            throws ServletException, IOException {
+
+        // 1. Extract token from "Authorization: Bearer <token>" header
+        String authHeader = request.getHeader("Authorization");
+
+        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+            filterChain.doFilter(request, response);  // No token → continue (might be public endpoint)
+            return;
+        }
+
+        String token = authHeader.substring(7);  // Remove "Bearer "
+
+        try {
+            // 2. Extract username from token
+            String username = jwtUtil.extractUsername(token);
+
+            // 3. If not already authenticated
+            if (username != null && SecurityContextHolder.getContext().getAuthentication() == null) {
+
+                // 4. Load user from DB
+                UserDetails userDetails = userDetailsService.loadUserByUsername(username);
+
+                // 5. Validate token
+                if (jwtUtil.isTokenValid(token, userDetails)) {
+
+                    // 6. Set authentication in SecurityContext
+                    UsernamePasswordAuthenticationToken authToken =
+                            new UsernamePasswordAuthenticationToken(
+                                    userDetails, null, userDetails.getAuthorities());
+                    authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+
+                    SecurityContextHolder.getContext().setAuthentication(authToken);
+                }
+            }
+        } catch (Exception e) {
+            // Invalid token — don't set auth, let Spring return 401
+        }
+
+        filterChain.doFilter(request, response);
+    }
+}
+```
+
+#### Step 4: Security Config (JWT)
+
+```java
+@Configuration
+@EnableWebSecurity
+@EnableMethodSecurity  // Enables @PreAuthorize, @Secured
+public class SecurityConfig {
+
+    @Autowired
+    private JwtAuthenticationFilter jwtAuthFilter;
+
+    @Autowired
+    private CustomUserDetailsService userDetailsService;
+
+    @Bean
+    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        http
+            .csrf(csrf -> csrf.disable())                          // No CSRF for REST
+            .sessionManagement(session ->
+                session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))  // No sessions
+            .authorizeHttpRequests(auth -> auth
+                .requestMatchers("/api/auth/**").permitAll()        // Login/register = public
+                .requestMatchers("/api/public/**").permitAll()      // Public endpoints
+                .requestMatchers("/api/admin/**").hasRole("ADMIN")  // Admin only
+                .anyRequest().authenticated()                       // Everything else = auth needed
+            )
+            .authenticationProvider(authenticationProvider())
+            .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
+
+        return http.build();
+    }
+
+    @Bean
+    public AuthenticationProvider authenticationProvider() {
+        DaoAuthenticationProvider provider = new DaoAuthenticationProvider();
+        provider.setUserDetailsService(userDetailsService);
+        provider.setPasswordEncoder(passwordEncoder());
+        return provider;
+    }
+
+    @Bean
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
+    }
+
+    @Bean
+    public AuthenticationManager authenticationManager(AuthenticationConfiguration config)
+            throws Exception {
+        return config.getAuthenticationManager();
+    }
+}
+```
+
+#### Step 5: Auth Controller (Login & Register)
+
+```java
+@RestController
+@RequestMapping("/api/auth")
+public class AuthController {
+
+    @Autowired
+    private AuthenticationManager authenticationManager;
+
+    @Autowired
+    private CustomUserDetailsService userDetailsService;
+
+    @Autowired
+    private UserRepository userRepository;
+
+    @Autowired
+    private PasswordEncoder passwordEncoder;
+
+    @Autowired
+    private JwtUtil jwtUtil;
+
+    // POST /api/auth/register
+    @PostMapping("/register")
+    public ResponseEntity<String> register(@RequestBody RegisterRequest request) {
+        if (userRepository.findByUsername(request.getUsername()).isPresent()) {
+            return ResponseEntity.badRequest().body("Username already exists");
+        }
+
+        User user = new User();
+        user.setUsername(request.getUsername());
+        user.setPassword(passwordEncoder.encode(request.getPassword()));  // Hash password
+        user.setRoles(List.of("USER"));
+        userRepository.save(user);
+
+        return ResponseEntity.status(HttpStatus.CREATED).body("User registered successfully");
+    }
+
+    // POST /api/auth/login
+    @PostMapping("/login")
+    public ResponseEntity<AuthResponse> login(@RequestBody LoginRequest request) {
+        // Authenticate credentials
+        authenticationManager.authenticate(
+                new UsernamePasswordAuthenticationToken(
+                        request.getUsername(), request.getPassword()));
+
+        // Load user details
+        UserDetails userDetails = userDetailsService.loadUserByUsername(request.getUsername());
+
+        // Generate JWT
+        List<String> roles = userDetails.getAuthorities().stream()
+                .map(GrantedAuthority::getAuthority)
+                .toList();
+        String token = jwtUtil.generateToken(request.getUsername(), roles);
+
+        return ResponseEntity.ok(new AuthResponse(token));
+    }
+}
+```
+
+#### Step 6: Request/Response DTOs
+
+```java
+// LoginRequest.java
+public class LoginRequest {
+    private String username;
+    private String password;
+    // getters, setters
+}
+
+// RegisterRequest.java
+public class RegisterRequest {
+    private String username;
+    private String password;
+    // getters, setters
+}
+
+// AuthResponse.java
+public class AuthResponse {
+    private String token;
+
+    public AuthResponse(String token) {
+        this.token = token;
+    }
+    // getter
+}
+```
+
+#### Step 7: User Entity & Repository
+
+```java
+@Entity
+@Table(name = "users")
+public class User {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(unique = true, nullable = false)
+    private String username;
+
+    @Column(nullable = false)
+    private String password;  // BCrypt hashed
+
+    @ElementCollection(fetch = FetchType.EAGER)
+    private List<String> roles;  // ["USER", "ADMIN"]
+
+    // getters, setters
+}
+
+public interface UserRepository extends JpaRepository<User, Long> {
+    Optional<User> findByUsername(String username);
+}
+```
+
+#### application.properties
+
+```properties
+# JWT Configuration
+jwt.secret=mySecretKeyThatIsAtLeast32CharactersLong123456
+jwt.expiration=86400000
+```
+
+#### Test JWT Flow with cURL
+
+```bash
+# 1. Register
+curl -X POST http://localhost:8080/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username": "john", "password": "pass123"}'
+# → "User registered successfully"
+
+# 2. Login → get token
+curl -X POST http://localhost:8080/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "john", "password": "pass123"}'
+# → {"token": "eyJhbGciOiJIUzI1NiJ9..."}
+
+# 3. Access protected endpoint with token
+curl http://localhost:8080/api/employees \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9..."
+# → [employee data]
+
+# 4. Without token → 401
+curl http://localhost:8080/api/employees
+# → 401 Unauthorized
+```
+
+---
+
+### Method-Level Authorization
+
+Beyond URL-based rules, you can secure individual methods:
+
+```java
+@RestController
+@RequestMapping("/api/employees")
+public class EmployeeController {
+
+    // Any authenticated user
+    @GetMapping
+    public List<Employee> getAll() {
+        return employeeService.findAll();
+    }
+
+    // Only ADMIN role
+    @PreAuthorize("hasRole('ADMIN')")
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Void> delete(@PathVariable Long id) {
+        employeeService.delete(id);
+        return ResponseEntity.noContent().build();
+    }
+
+    // ADMIN or the user themselves
+    @PreAuthorize("hasRole('ADMIN') or #username == authentication.name")
+    @GetMapping("/profile/{username}")
+    public UserProfile getProfile(@PathVariable String username) {
+        return userService.getProfile(username);
+    }
+
+    // Must have specific authority
+    @Secured("ROLE_MANAGER")
+    @PostMapping("/approve/{id}")
+    public ResponseEntity<Void> approve(@PathVariable Long id) {
+        return ResponseEntity.ok().build();
+    }
+}
+```
+
+| Annotation | Usage |
+|------------|-------|
+| `@PreAuthorize("hasRole('ADMIN')")` | Check role before method executes |
+| `@PreAuthorize("hasAnyRole('ADMIN','MANAGER')")` | Multiple roles |
+| `@PreAuthorize("#id == authentication.principal.id")` | Check against current user |
+| `@Secured("ROLE_ADMIN")` | Simpler alternative (no SpEL) |
+| `@PostAuthorize("returnObject.owner == authentication.name")` | Check after method returns |
+
+---
+
+### CORS (Cross-Origin Resource Sharing)
+
+When your frontend (React on `localhost:3000`) calls your API (`localhost:8080`), browsers block it by default. CORS allows it.
+
+```java
+// Option 1: Per controller
+@CrossOrigin(origins = "http://localhost:3000")
+@RestController
+@RequestMapping("/api/employees")
+public class EmployeeController { }
+
+// Option 2: Global config (recommended)
+@Configuration
+public class CorsConfig {
+
+    @Bean
+    public WebMvcConfigurer corsConfigurer() {
+        return new WebMvcConfigurer() {
+            @Override
+            public void addCorsMappings(CorsRegistry registry) {
+                registry.addMapping("/api/**")
+                        .allowedOrigins("http://localhost:3000", "https://myapp.com")
+                        .allowedMethods("GET", "POST", "PUT", "DELETE", "PATCH")
+                        .allowedHeaders("*")
+                        .allowCredentials(true)
+                        .maxAge(3600);  // Cache preflight for 1 hour
+            }
+        };
+    }
+}
+
+// Option 3: In SecurityFilterChain
+http.cors(cors -> cors.configurationSource(request -> {
+    CorsConfiguration config = new CorsConfiguration();
+    config.setAllowedOrigins(List.of("http://localhost:3000"));
+    config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE"));
+    config.setAllowedHeaders(List.of("*"));
+    return config;
+}));
+```
+
+---
+
+### OAuth2 Login (Social Login)
+
+Let users log in with Google, GitHub, etc. Spring Boot makes this very simple.
+
+#### Dependency
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-oauth2-client</artifactId>
+</dependency>
+```
+
+#### application.properties
+
+```properties
+# Google OAuth2
+spring.security.oauth2.client.registration.google.client-id=your-google-client-id
+spring.security.oauth2.client.registration.google.client-secret=your-google-secret
+spring.security.oauth2.client.registration.google.scope=email,profile
+
+# GitHub OAuth2
+spring.security.oauth2.client.registration.github.client-id=your-github-client-id
+spring.security.oauth2.client.registration.github.client-secret=your-github-secret
+```
+
+#### Security Config
+
+```java
+@Bean
+public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    http
+        .authorizeHttpRequests(auth -> auth
+            .requestMatchers("/", "/login").permitAll()
+            .anyRequest().authenticated()
+        )
+        .oauth2Login(Customizer.withDefaults());  // One line enables social login!
+
+    return http.build();
+}
+```
+
+#### OAuth2 Flow
+
+```
+1. User clicks "Login with Google"
+2. Redirected to Google's consent screen
+3. User approves → Google redirects back with auth code
+4. Spring exchanges auth code for access token
+5. Spring fetches user info from Google
+6. User is authenticated in your app
+```
+
+---
+
+### Password Encoding
+
+Never store plain-text passwords. Always hash with BCrypt.
+
+```java
+@Bean
+public PasswordEncoder passwordEncoder() {
+    return new BCryptPasswordEncoder();  // Industry standard
+}
+
+// Usage
+String raw = "password123";
+String hashed = passwordEncoder.encode(raw);
+// → "$2a$10$N9qo8uLOickgx2ZMRZoMye..."
+
+boolean matches = passwordEncoder.matches(raw, hashed);  // true
+```
+
+| Encoder | Use Case |
+|---------|----------|
+| `BCryptPasswordEncoder` | Default choice, adaptive cost |
+| `Argon2PasswordEncoder` | Memory-hard (stronger against GPU attacks) |
+| `SCryptPasswordEncoder` | Memory-hard alternative |
+| `NoOpPasswordEncoder` | **Never use in production** (plain text, for testing only) |
+
+---
+
+### Complete Project Structure with Security
+
+```
+src/main/java/com/example/demo/
+├── DemoApplication.java
+├── config/
+│   ├── SecurityConfig.java           # SecurityFilterChain, providers
+│   └── CorsConfig.java               # CORS settings
+├── security/
+│   ├── JwtUtil.java                   # Token generation & validation
+│   ├── JwtAuthenticationFilter.java   # Intercepts requests, validates JWT
+│   └── CustomUserDetailsService.java  # Loads user from DB
+├── controller/
+│   ├── AuthController.java            # /api/auth/login, /register
+│   └── EmployeeController.java        # Protected endpoints
+├── entity/
+│   ├── User.java                      # User entity with roles
+│   └── Employee.java
+├── repository/
+│   ├── UserRepository.java
+│   └── EmployeeRepository.java
+├── dto/
+│   ├── LoginRequest.java
+│   ├── RegisterRequest.java
+│   └── AuthResponse.java
+├── service/
+│   └── EmployeeService.java
+└── exception/
+    ├── ResourceNotFoundException.java
+    └── GlobalExceptionHandler.java
+```
+
+---
+
+### Security Interview Questions
+
+**Q: How does JWT authentication work in Spring Boot?**
+
+> 1. User sends `POST /login` with credentials
+> 2. Server validates credentials via `AuthenticationManager`
+> 3. Server generates a JWT (signed with secret key) containing username, roles, expiry
+> 4. Client stores the token and sends it in `Authorization: Bearer <token>` header
+> 5. `JwtAuthenticationFilter` intercepts every request, extracts and validates the token
+> 6. If valid, sets `SecurityContext` — request proceeds as authenticated
+> 7. If expired/invalid — returns 401
+
+---
+
+**Q: Why use JWT instead of sessions?**
+
+> | Sessions | JWT |
+> |----------|-----|
+> | Stored on server | Stored on client |
+> | Needs sticky sessions in load balancer | Stateless — any server can validate |
+> | Doesn't scale well horizontally | Scales perfectly |
+> | Server memory overhead | No server storage needed |
+> | Native CSRF vulnerability | No CSRF risk (no cookies) |
+
+---
+
+**Q: What is the difference between authentication and authorization?**
+
+> **Authentication** = verifying who you are (login). Returns 401 if failed.
+> **Authorization** = verifying what you can access (permissions). Returns 403 if failed.
+
+---
+
+**Q: What happens when `spring-boot-starter-security` is added without any config?**
+
+> Spring auto-configures security with:
+> - All endpoints require authentication
+> - A default user `user` with a random password (printed in console logs)
+> - Form-based login at `/login`
+> - Basic Auth enabled
+> - CSRF enabled
+
+---
+
+**Q: How does `@PreAuthorize` work?**
+
+> It's a method-level security annotation that uses Spring Expression Language (SpEL) to check permissions before the method executes. Requires `@EnableMethodSecurity` on your config class. Examples: `hasRole('ADMIN')`, `hasAnyRole('ADMIN','MANAGER')`, `#id == authentication.principal.id`.
+
+---
+
+**Q: What is the SecurityFilterChain?**
+
+> It's a bean that defines the security rules for your application — which URLs need auth, which HTTP methods are allowed, what authentication mechanism to use (Basic, JWT, OAuth2), session policy, CORS/CSRF settings, and custom filters. It replaced the old `WebSecurityConfigurerAdapter` (deprecated in Spring Security 6).
+
+---
+
+**Q: How do you store passwords securely?**
+
+> Never store plain text. Use `BCryptPasswordEncoder` which produces a one-way hash with a random salt. Each hash is unique even for the same password. On login, `passwordEncoder.matches(raw, hashed)` compares without decrypting.
+
+---
+
+**Q: What is the purpose of `OncePerRequestFilter`?**
+
+> It guarantees the filter executes exactly once per request (not on forwards/includes). `JwtAuthenticationFilter` extends it to avoid validating the token multiple times if the request is internally forwarded.
+
+---
+
+## Production Auth — API Gateway Pattern
+
+The Spring Security approach above is how **monoliths and standalone apps** handle auth. In production **microservices**, auth is handled differently — it moves out of individual services into a centralized **API Gateway**.
+
+### Why Move Auth Out of the App?
+
+```
+❌ WITHOUT Gateway (each service handles auth):
+
+  ┌──────────┐     ┌──────────┐     ┌──────────┐
+  │ Service A │     │ Service B │     │ Service C │
+  │ JWT check │     │ JWT check │     │ JWT check │
+  │ Rate limit│     │ Rate limit│     │ Rate limit│
+  │ CORS      │     │ CORS      │     │ CORS      │
+  │ TLS       │     │ TLS       │     │ TLS       │
+  └──────────┘     └──────────┘     └──────────┘
+  
+  Problem: Duplicated code, inconsistent policies,
+           one service forgets to validate → security hole
+
+
+✅ WITH Gateway (centralized — production pattern):
+
+                  ┌──────────────┐
+                  │  API Gateway │
+                  │  JWT check   │
+                  │  Rate limit  │
+                  │  CORS / TLS  │
+                  │  Routing     │
+                  └──────┬───────┘
+                         │ (trusted, already validated)
+           ┌─────────────┼─────────────┐
+           ▼             ▼             ▼
+      ┌──────────┐ ┌──────────┐ ┌──────────┐
+      │ Service A │ │ Service B │ │ Service C │
+      │ (business │ │ (business │ │ (business │
+      │  logic    │ │  logic    │ │  logic    │
+      │  only)    │ │  only)    │ │  only)    │
+      └──────────┘ └──────────┘ └──────────┘
+```
+
+---
+
+### The Three Components
+
+Every production auth system has 3 parts:
+
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                    PRODUCTION MICROSERVICES AUTH                          │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  ┌──────────────────────┐                                                  │
+│  │  1. Identity Provider│  ← Authenticates users, issues tokens            │
+│  │     (IdP)            │     e.g., Keycloak, Auth0, Okta, AWS Cognito     │
+│  └──────────┬───────────┘                                                  │
+│             │ JWT (signed)                                                 │
+│             ▼                                                              │
+│  ┌──────────────────────┐                                                  │
+│  │  2. API Gateway      │  ← Validates tokens, routes, rate limits         │
+│  │                      │     e.g., Kong, Tyk, Apigee, AWS API Gateway     │
+│  └──────────┬───────────┘                                                  │
+│             │ (request forwarded, auth header intact)                      │
+│             ▼                                                              │
+│  ┌──────────────────────┐                                                  │
+│  │  3. Backend Service  │  ← Business logic only, trusts the gateway       │
+│  │                      │     No Spring Security, no JWT validation         │
+│  └──────────────────────┘                                                  │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+| Component | Responsibility | Examples |
+|-----------|---------------|----------|
+| **Identity Provider (IdP)** | Stores users, validates passwords, manages roles, issues signed JWTs | Keycloak, Auth0, Okta, AWS Cognito, Azure AD |
+| **API Gateway** | Validates JWT signature + expiry, checks role permissions, rate limiting, TLS termination, request routing | Kong, Tyk, Apigee, AWS API Gateway, Envoy, Nginx |
+| **Backend Service** | Business logic only — trusts gateway, reads JWT claims for audit logging | Any Spring Boot / Node.js / Go microservice |
+
+---
+
+### Complete Auth Flow
+
+```
+  STEP 1: LOGIN
+  ─────────────
+
+  User ──── POST /auth/login {username, password} ────► Identity Provider
+                                                              │
+                                                    ┌────────▼────────┐
+                                                    │  IdP does:      │
+                                                    │  1. Check creds │
+                                                    │     vs user DB  │
+                                                    │  2. Verify role │
+                                                    │  3. Generate JWT│
+                                                    │     claims:     │
+                                                    │     - username  │
+                                                    │     - roles     │
+                                                    │     - expiry    │
+                                                    │  4. Sign with   │
+                                                    │     secret key  │
+                                                    └────────┬────────┘
+                                                             │
+  User ◄──── 200 OK { "token": "eyJhb..." } ────────────────┘
+
+
+  STEP 2: API CALL
+  ─────────────────
+
+  User ──── GET /api/orders ──────────────────────► API Gateway
+            Header: Authorization: Bearer eyJhb...       │
+                                                   ┌─────▼──────────┐
+                                                   │ Gateway does:  │
+                                                   │ 1. Extract JWT │
+                                                   │ 2. Verify sig  │
+                                                   │    (same key   │
+                                                   │     IdP used)  │
+                                                   │ 3. Check expiry│
+                                                   │ 4. Check role  │
+                                                   │    permissions │
+                                                   │ 5. Route to    │
+                                                   │    backend     │
+                                                   └─────┬──────────┘
+                                                         │
+                                                   ┌─────▼──────────┐
+                                                   │ Backend does:  │
+                                                   │ 1. Parse JWT   │
+                                                   │    (decode,    │
+                                                   │    NOT verify) │
+                                                   │ 2. Extract     │
+                                                   │    username +  │
+                                                   │    role for    │
+                                                   │    audit log   │
+                                                   │ 3. Process     │
+                                                   │    request     │
+                                                   │ 4. Return data │
+                                                   └────────────────┘
+```
+
+---
+
+### Gateway Config Example
+
+API Gateways use **route definitions** (usually JSON/YAML) to map URLs to backend services and define auth rules:
+
+```json
+{
+    "api_id": "order-service",
+    "api_name": "Order Management APIs",
+    "listen_path": "/api/orders/",
+    "strip_listen_path": true,
+    "target_url": "http://order-service:8080/",
+    "auth": {
+        "auth_header_name": "Authorization"
+    },
+    "jwt_signing_method": "hmac",
+    "jwt_source": "shared-secret-key",
+    "rate_limit": {
+        "rate": 100,
+        "per": 60
+    },
+    "allowed_roles": ["admin", "operator"]
+}
+```
+
+| Field | What It Does |
+|-------|--------------|
+| `listen_path` | Public URL prefix the gateway listens on |
+| `strip_listen_path` | Remove prefix before forwarding (e.g., `/api/orders/123` → `/123`) |
+| `target_url` | Internal service URL (Kubernetes service DNS) |
+| `auth_header_name` | Which header contains the JWT |
+| `jwt_signing_method` | How to verify the token signature |
+| `jwt_source` | Secret key / JWKS URL to validate signature |
+| `rate_limit` | Max requests per time window |
+| `allowed_roles` | Which JWT roles can access this API |
+
+---
+
+### What the Backend Service Looks Like
+
+Notice — **no Spring Security dependency**, no `SecurityFilterChain`, no JWT filter. The backend only parses the JWT for audit logging:
+
+```java
+// Interceptor — reads JWT for audit, does NOT validate
+public class AuditInterceptor implements HandlerInterceptor {
+
+    @Override
+    public boolean preHandle(HttpServletRequest request,
+                             HttpServletResponse response, Object handler) {
+
+        // Parse JWT from header (decode only, no signature check)
+        String authHeader = request.getHeader("Authorization");
+        if (authHeader != null && authHeader.startsWith("Bearer ")) {
+            String token = authHeader.substring(7);
+
+            // Decode payload (Base64) — NOT verifying signature
+            String[] parts = token.split("\\.");
+            String payload = new String(Base64.getUrlDecoder().decode(parts[1]));
+            // payload = {"sub": "john", "roles": ["admin"], "exp": 1739...}
+
+            String username = extractFromJson(payload, "sub");
+            String role = extractFromJson(payload, "roles");
+            String clientIp = request.getRemoteAddr();
+
+            AUDIT_LOG.info("Request: {} {} by user={} role={} ip={}",
+                    request.getMethod(), request.getRequestURI(),
+                    username, role, clientIp);
+        }
+
+        return true;  // Always proceed — gateway already validated
+    }
+}
+
+// Controller — pure business logic, no auth annotations
+@RestController
+@RequestMapping("/v1")
+public class OrderController {
+
+    @Autowired
+    private OrderService orderService;
+
+    @GetMapping("/orders")
+    public List<Order> getAllOrders() {
+        return orderService.findAll();  // No @PreAuthorize, no role checks
+    }
+
+    @PostMapping("/orders")
+    public ResponseEntity<Order> createOrder(@Valid @RequestBody Order order) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(orderService.create(order));
+    }
+}
+
+// Register the interceptor
+@Configuration
+public class WebConfig implements WebMvcConfigurer {
+    @Override
+    public void addInterceptors(InterceptorRegistry registry) {
+        registry.addInterceptor(new AuditInterceptor());
+    }
+}
+```
+
+**Key point:** The backend app has **zero** auth logic. No `spring-boot-starter-security`, no `SecurityFilterChain`, no `@PreAuthorize`. The gateway already rejected unauthorized requests — they never reach this code.
+
+---
+
+### Shared Secret Chain
+
+```
+Identity Provider signs JWT with SECRET_KEY
+        │
+        ▼
+API Gateway verifies JWT with SAME SECRET_KEY
+        │
+        ▼
+Backend just Base64-decodes the payload (no secret needed)
+   └── Extracts username, role, IP for audit logs
+```
+
+The IdP and Gateway share the signing secret (or use JWKS public keys). The backend doesn't need the secret at all — it trusts that if a request reached it, the gateway already validated it.
+
+---
+
+### Monolith vs Microservices Auth — Comparison
+
+| Aspect | Monolith (Spring Security) | Microservices (Gateway Pattern) |
+|--------|---------------------------|----------------------------------|
+| **Auth logic location** | Inside the app | In the API Gateway |
+| **Token validation** | `JwtAuthenticationFilter` in each app | Gateway validates once |
+| **Spring Security needed?** | Yes | No |
+| **Rate limiting** | Custom code per app | Gateway handles globally |
+| **TLS termination** | Each app or load balancer | Gateway handles it |
+| **CORS** | `@CrossOrigin` or `CorsConfig` per app | Gateway config |
+| **Adding new auth method** | Change every service | Change gateway config only |
+| **Backend complexity** | High (auth + business logic) | Low (business logic only) |
+| **When to use** | Single app, small team | Multiple services, production |
+
+---
+
+### Deep Dive: Identity Provider (IdP)
+
+An Identity Provider is a dedicated service that handles **user management and token issuance**. Your backend services never touch passwords — the IdP does it all.
+
+#### What an IdP Does
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                     IDENTITY PROVIDER (IdP)                         │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  1. USER MANAGEMENT                                                 │
+│     ├── Store users + hashed passwords                              │
+│     ├── Manage roles (admin, operator, viewer)                      │
+│     ├── User registration / self-service password reset             │
+│     └── Multi-factor authentication (MFA / 2FA)                     │
+│                                                                     │
+│  2. AUTHENTICATION                                                  │
+│     ├── Validate username + password                                │
+│     ├── Support OAuth2, OpenID Connect, SAML, LDAP                  │
+│     ├── Social login (Google, GitHub, Microsoft)                    │
+│     └── SSO (Single Sign-On) across multiple apps                   │
+│                                                                     │
+│  3. TOKEN ISSUANCE                                                  │
+│     ├── Generate signed JWT with claims:                            │
+│     │   { "sub": "john", "roles": ["admin"], "exp": 1739... }      │
+│     ├── Issue refresh tokens (long-lived, for re-login)             │
+│     ├── Issue access tokens (short-lived, for API calls)            │
+│     └── Sign with HMAC (shared secret) or RSA (public/private key) │
+│                                                                     │
+│  4. TOKEN MANAGEMENT                                                │
+│     ├── Token revocation (logout / force-expire)                    │
+│     ├── Token introspection endpoint (is this token valid?)         │
+│     └── JWKS endpoint (public keys for signature verification)      │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+#### Popular Identity Providers
+
+| IdP | Type | Best For |
+|-----|------|----------|
+| **Keycloak** | Open-source, self-hosted | Full control, on-prem deployments, enterprise SSO |
+| **Auth0** | SaaS (Okta-owned) | Quick setup, managed service, startups |
+| **Okta** | SaaS | Enterprise workforce identity, SSO |
+| **AWS Cognito** | Cloud-managed | AWS-native apps, serverless |
+| **Azure AD (Entra ID)** | Cloud-managed | Microsoft ecosystem, enterprise |
+| **Firebase Auth** | Cloud-managed | Mobile apps, Google ecosystem |
+| **Dex** | Open-source, lightweight | Kubernetes-native, OIDC federation |
+
+#### Keycloak Example (Most Common Self-Hosted IdP)
+
+Keycloak runs as a separate service (Docker container or K8s pod). You configure it via its admin UI:
+
+```
+Keycloak Admin UI:
+├── Realm: "my-platform"          ← Tenant / namespace
+│   ├── Users:
+│   │   ├── john (admin, operator)
+│   │   ├── jane (operator)
+│   │   └── viewer1 (viewer)
+│   ├── Roles:
+│   │   ├── admin    → full access
+│   │   ├── operator → read + write
+│   │   └── viewer   → read only
+│   ├── Clients:
+│   │   ├── frontend-app (public client)
+│   │   └── api-gateway  (confidential client)
+│   └── Token Settings:
+│       ├── Access token TTL: 5 minutes
+│       ├── Refresh token TTL: 30 days
+│       └── Signing algorithm: RS256
+```
+
+**Login flow with Keycloak:**
+
+```bash
+# 1. Get token from Keycloak
+curl -X POST http://keycloak:8080/realms/my-platform/protocol/openid-connect/token \
+  -d "grant_type=password" \
+  -d "client_id=frontend-app" \
+  -d "username=john" \
+  -d "password=secret123"
+
+# Response:
+{
+  "access_token": "eyJhbGciOiJSUzI1NiJ9...",    ← Short-lived (5 min)
+  "refresh_token": "eyJhbGciOiJSUzI1NiJ9...",   ← Long-lived (30 days)
+  "expires_in": 300,
+  "token_type": "Bearer"
+}
+
+# 2. Use access token for API calls
+curl http://api-gateway/api/orders \
+  -H "Authorization: Bearer eyJhbGciOiJSUzI1NiJ9..."
+
+# 3. When access token expires, use refresh token to get a new one
+curl -X POST http://keycloak:8080/realms/my-platform/protocol/openid-connect/token \
+  -d "grant_type=refresh_token" \
+  -d "client_id=frontend-app" \
+  -d "refresh_token=eyJhbGciOiJSUzI1NiJ9..."
+```
+
+#### Access Token vs Refresh Token
+
+| Token | Lifetime | Purpose | Where Stored |
+|-------|----------|---------|--------------|
+| **Access Token** | Short (5–15 min) | Sent with every API request | Memory (JavaScript variable) |
+| **Refresh Token** | Long (7–30 days) | Used to get new access token without re-login | HttpOnly cookie or secure storage |
+
+**Why two tokens?** If an access token is stolen, the attacker has only minutes to use it. The refresh token is stored more securely and is only sent to the IdP (not the API gateway), limiting its exposure.
+
+---
+
+### Deep Dive: API Gateway
+
+The API Gateway is the **single entry point** for all external traffic. It sits between clients and backend services, handling security, routing, and cross-cutting concerns.
+
+#### What a Gateway Does
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         API GATEWAY                                 │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  1. AUTHENTICATION                                                  │
+│     ├── Extract JWT from Authorization header                       │
+│     ├── Verify signature (HMAC secret or RSA/JWKS public key)       │
+│     ├── Check token expiry                                          │
+│     └── Reject with 401 if invalid/expired                          │
+│                                                                     │
+│  2. AUTHORIZATION                                                   │
+│     ├── Read roles from JWT claims                                  │
+│     ├── Match against route permission policies                     │
+│     └── Reject with 403 if insufficient permissions                 │
+│                                                                     │
+│  3. ROUTING                                                         │
+│     ├── Map public URL → internal service URL                       │
+│     │   /api/orders/*  → http://order-service:8080/                 │
+│     │   /api/users/*   → http://user-service:8080/                  │
+│     │   /api/reports/* → http://report-service:8080/                │
+│     ├── Strip path prefix before forwarding                         │
+│     └── Load balance across service replicas                        │
+│                                                                     │
+│  4. RATE LIMITING                                                   │
+│     ├── Per user: 100 requests/minute                               │
+│     ├── Per IP: 1000 requests/minute                                │
+│     └── Per API: custom limits                                      │
+│                                                                     │
+│  5. TLS TERMINATION                                                 │
+│     ├── HTTPS (client → gateway)                                    │
+│     └── HTTP (gateway → backend, inside trusted network)            │
+│                                                                     │
+│  6. CROSS-CUTTING CONCERNS                                          │
+│     ├── CORS headers                                                │
+│     ├── Request/response logging                                    │
+│     ├── Request transformation (add headers, modify body)           │
+│     ├── Response caching                                            │
+│     └── Analytics & monitoring                                      │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+#### Popular API Gateways
+
+| Gateway | Type | Best For |
+|---------|------|----------|
+| **Tyk** | Open-source + Enterprise | Full-featured, dashboard UI, K8s-native |
+| **Kong** | Open-source + Enterprise | Plugin ecosystem, Lua-extensible, high performance |
+| **Apigee** | SaaS (Google-owned) | Enterprise API management, analytics |
+| **AWS API Gateway** | Cloud-managed | AWS Lambda integration, serverless |
+| **Azure API Management** | Cloud-managed | Azure ecosystem, enterprise policies |
+| **Envoy** | Open-source proxy | Service mesh (Istio), L7 load balancing |
+| **Nginx** | Open-source + Plus | Lightweight reverse proxy, battle-tested |
+| **Spring Cloud Gateway** | Java-based | Spring ecosystem, Java teams |
+
+#### Tyk Gateway — How It Works
+
+Tyk is an open-source API Gateway written in Go. It's lightweight, fast, and commonly used in Kubernetes environments.
+
+**Architecture:**
+
+```
+                            ┌─────────────────────────────┐
+                            │       Tyk Dashboard          │
+                            │  (API management UI)         │
+                            │  - Define APIs               │
+                            │  - Set policies               │
+                            │  - View analytics             │
+                            └──────────────┬──────────────┘
+                                           │ pushes config
+                                           ▼
+  Client ──── HTTPS ────► ┌─────────────────────────────┐
+                          │       Tyk Gateway            │
+                          │  (reverse proxy)             │
+                          │                              │
+                          │  For each request:           │
+                          │  1. Match route              │
+                          │  2. Run auth middleware      │
+                          │  3. Run rate limit middleware│
+                          │  4. Run transform middleware │
+                          │  5. Forward to upstream      │
+                          │                              │
+                          └──────────┬───────────────────┘
+                                     │ HTTP (internal)
+                    ┌────────────────┼────────────────┐
+                    ▼                ▼                ▼
+             ┌───────────┐   ┌───────────┐    ┌───────────┐
+             │  Order    │   │  User     │    │  License  │
+             │  Service  │   │  Service  │    │  Service  │
+             └───────────┘   └───────────┘    └───────────┘
+```
+
+**Tyk API Definition (JSON config per service):**
+
+```json
+{
+    "name": "Order Service API",
+    "api_id": "order-api",
+    "active": true,
+
+    "proxy": {
+        "listen_path": "/api/orders/",
+        "strip_listen_path": true,
+        "target_url": "http://order-service:8080/"
+    },
+
+    "use_keyless": false,
+
+    "jwt_signing_method": "rsa",
+    "jwt_source": "http://keycloak:8080/realms/my-platform/protocol/openid-connect/certs",
+    "jwt_identity_base_field": "sub",
+    "jwt_policy_field_name": "policy_id",
+
+    "enable_jwt": true,
+    "auth": {
+        "auth_header_name": "Authorization"
+    },
+
+    "global_rate_limit": {
+        "rate": 100,
+        "per": 60
+    },
+
+    "enable_context_vars": true,
+
+    "version_data": {
+        "not_versioned": true,
+        "versions": {
+            "Default": {
+                "name": "Default",
+                "use_extended_paths": true,
+                "extended_paths": {
+                    "white_list": [
+                        { "path": "/v1/orders", "method_actions": { "GET": { "action": "no_action" } } },
+                        { "path": "/v1/orders", "method_actions": { "POST": { "action": "no_action" } } },
+                        { "path": "/v1/orders/{id}", "method_actions": { "GET": { "action": "no_action" } } }
+                    ]
+                }
+            }
+        }
+    }
+}
+```
+
+| Tyk Config Field | What It Does |
+|-----------------|--------------|
+| `proxy.listen_path` | Public URL that clients call (`/api/orders/`) |
+| `proxy.strip_listen_path` | Remove `/api/orders` before forwarding, so backend sees `/v1/orders` |
+| `proxy.target_url` | Internal K8s service URL |
+| `use_keyless: false` | Auth is required (not open access) |
+| `enable_jwt: true` | Enable JWT validation |
+| `jwt_signing_method` | RSA or HMAC — how to verify the token signature |
+| `jwt_source` | URL to fetch JWKS public keys from Keycloak (auto-rotating) |
+| `jwt_identity_base_field` | Which JWT claim = the user identity (usually `sub`) |
+| `global_rate_limit` | Max 100 requests per 60 seconds |
+| `white_list` | Allowed URL + method combinations |
+
+**How Tyk validates a request:**
+
+```
+1. Request arrives: GET /api/orders/v1/orders
+                    Header: Authorization: Bearer eyJhb...
+
+2. Route match:     /api/orders/ → order-api config loaded
+
+3. JWT validation:
+   a. Extract token from Authorization header
+   b. Decode header → get "kid" (key ID)
+   c. Fetch public key from Keycloak JWKS endpoint (cached)
+   d. Verify signature using RSA public key
+   e. Check "exp" claim → not expired?
+   f. Check "nbf" claim → not before valid time?
+
+4. Permission check:
+   a. Extract "sub" and roles from JWT payload
+   b. Match against policy rules
+
+5. Rate limit check:
+   a. Count requests from this user in last 60 seconds
+   b. Under 100? → proceed. Over? → 429 Too Many Requests
+
+6. Forward:
+   a. Strip "/api/orders" from path → "/v1/orders"
+   b. Forward to http://order-service:8080/v1/orders
+   c. JWT header forwarded as-is (backend can read claims)
+```
+
+#### Kong vs Tyk vs Envoy
+
+| Feature | Tyk | Kong | Envoy |
+|---------|-----|------|-------|
+| **Language** | Go | Lua + Nginx | C++ |
+| **Config** | JSON/API | YAML/API | YAML/xDS |
+| **Dashboard** | Built-in UI | Kong Manager (enterprise) | No native UI |
+| **JWT Auth** | Built-in | Plugin | Built-in filter |
+| **Rate Limiting** | Built-in | Plugin | Filter |
+| **Service Mesh** | No (gateway only) | Kong Mesh (optional) | Yes (Istio sidecar) |
+| **K8s Integration** | Tyk Operator | Kong Ingress Controller | Istio / standalone |
+| **Best For** | API management + gateway | Plugin-heavy, API marketplace | Service mesh, L7 proxy |
+
+---
+
+### Real-World Stacks
+
+| Stack | Identity Provider | API Gateway | Backend |
+|-------|-------------------|-------------|---------|
+| **AWS** | Cognito | API Gateway | Lambda / ECS |
+| **Azure** | Azure AD (Entra ID) | API Management | App Service / AKS |
+| **Google Cloud** | Firebase Auth | Cloud Endpoints / Apigee | Cloud Run / GKE |
+| **Self-hosted** | Keycloak | Kong / Tyk / Envoy | Spring Boot / Node.js |
+| **Kubernetes-native** | Dex / Keycloak | Istio / Envoy sidecar | Pods |
+
+---
+
+### Interview Q&A — Gateway Auth Pattern
+
+**Q: How is auth handled in production microservices?**
+
+> In monoliths, auth lives inside the app (Spring Security + JWT filter). In microservices, auth is centralized at the **API Gateway**. An **Identity Provider** (Keycloak, Auth0) issues JWTs on login. The **API Gateway** (Kong, Tyk) validates every token, checks permissions, and forwards trusted requests. Backend services have no auth code — they only parse JWT claims for audit logging. This avoids duplicating auth logic across dozens of services.
+
+---
+
+**Q: Why don't backend services validate the JWT themselves?**
+
+> Because the gateway already did it. The backend runs inside a trusted internal network — only traffic from the gateway can reach it. Re-validating would be redundant. The backend only *reads* the JWT payload (Base64 decode) to extract username/role for audit logs, not to make auth decisions.
+
+---
+
+**Q: What is the difference between an Identity Provider and an API Gateway?**
+
+> **Identity Provider** = who are you? It authenticates users (username + password), manages roles/permissions, and **issues** signed JWTs.
+> **API Gateway** = are you allowed? It **validates** the JWT on every API request, checks if the user's role permits the operation, and routes to the correct backend service.
+> One creates tokens, the other checks them.
+
+---
+
+**Q: What if the gateway goes down?**
+
+> No API requests can reach backends — total outage for external traffic. That's why gateways are deployed with high availability (multiple replicas, load balanced). This is the trade-off of centralization: single point of control = single point of failure if not made redundant.
+
+---
+
+**Q: Can a backend service be accessed without going through the gateway?**
+
+> In production, **no**. Network policies (Kubernetes NetworkPolicy, firewall rules) ensure backends only accept traffic from the gateway's internal network. Direct access from outside is blocked. This is what makes "no auth in backend" safe.
+
+---
+
+**Q: When should I use Spring Security inside the app vs the gateway pattern?**
+
+> | Use Spring Security When | Use Gateway Pattern When |
+> |--------------------------|-------------------------|
+> | Single monolithic app | Multiple microservices |
+> | Small team, simple deployment | Large team, K8s/cloud deployment |
+> | No API gateway available | Gateway already in infrastructure |
+> | Need fine-grained method-level auth | Role-based route-level auth is enough |
+> | Learning / prototyping | Production at scale |
+
+---
+
+**Q: What does the backend's interceptor/filter do if it doesn't validate?**
+
+> It reads the JWT payload (Base64 decode — not signature verification) to extract the username, role, and client IP. This is used for:
+> 1. **Audit logging** — "User X called endpoint Y at time Z"
+> 2. **Business logic** — e.g., showing different data based on role
+> 3. **Tracing** — correlating logs across services with user identity
 
 ---
 
