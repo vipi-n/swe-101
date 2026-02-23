@@ -1,5 +1,20 @@
 # REST API Design — Complete Guide
 
+### Table of Contents
+
+| # | Section | # | Section |
+|---|---|---|---|
+| 1 | [URL Design Rules](#1-url-design-rules) | 11 | [HATEOAS (Hypermedia)](#11-hateoas-hypermedia) |
+| 2 | [HTTP Methods](#2-http-methods--when-to-use-what) | 12 | [Idempotency](#12-idempotency) |
+| 3 | [HTTP Status Codes](#3-http-status-codes--use-them-correctly) | 13 | [Scalability Patterns](#13-scalability-patterns) |
+| 4 | [Request & Response Design](#4-request--response-design) | 14 | [Bulk Operations](#14-bulk-operations) |
+| 5 | [Versioning](#5-versioning) | 15 | [API Documentation](#15-api-documentation) |
+| 6 | [Pagination](#6-pagination) | 16 | [Common Anti-Patterns](#16-common-anti-patterns-what-not-to-do) |
+| 7 | [Filtering, Sorting & Searching](#7-filtering-sorting-and-searching) | 17 | [Headers You Should Know](#17-headers-you-should-know) |
+| 8 | [Authentication & Authorization](#8-authentication--authorization) | 18 | [Content Negotiation](#18-content-negotiation) |
+| 9 | [Rate Limiting & Throttling](#9-rate-limiting--throttling) | 19 | [Quick Reference Cheat Sheet](#19-quick-reference-cheat-sheet) |
+| 10 | [Caching](#10-caching) | | |
+
 ---
 
 ## 1. URL Design Rules
@@ -407,35 +422,204 @@ POST /v1/users → 201 Created
 
 ## 5. Versioning
 
-### Why Version?
+### Why Do We Need Versioning?
 
-Once clients depend on your API, you **cannot** change request/response contracts without breaking them. Versioning lets you evolve the API while keeping old clients working.
+Once your API is live and clients (mobile apps, third-party integrations, frontend SPAs) depend on it, **any change to the request/response contract can break them**. Without versioning:
+
+- A mobile app released 6 months ago still expects `{ "name": "Vipin" }` — if you rename it to `{ "full_name": "Vipin" }`, the app crashes for every user who hasn't updated.
+- A partner's integration that sends `{ "amount": 500 }` will break if you change the field to `{ "amount_in_cents": 50000 }`.
+- You can never remove, rename, or change the type of a field without risking production outages across all consumers.
+
+**Versioning lets you evolve the API while keeping old clients working** until they migrate to the new version on their own schedule.
+
+### Real-World Example — Why It Matters
+
+```
+v1 (current):
+GET /v1/users/42 → { "name": "Vipin Kumar", "phone": "9999999999" }
+
+v2 (new requirement — split name into first/last):
+GET /v2/users/42 → { "first_name": "Vipin", "last_name": "Kumar", "phone": "9999999999" }
+```
+
+Without versioning, changing `name` → `first_name` + `last_name` breaks every existing client. With versioning, v1 clients continue to work while new clients adopt v2.
+
+---
 
 ### Versioning Strategies
 
 | Strategy | Example | Pros | Cons |
 |---|---|---|---|
-| **URI Path (recommended)** | `/v1/users`, `/v2/users` | Simple, visible, cacheable | URL changes between versions |
-| **Query Parameter** | `/users?version=1` | Easy to add | Easy to forget, less visible |
-| **Header** | `Accept: application/vnd.myapi.v1+json` | Clean URLs | Hidden, harder to test in browser |
-| **Content Negotiation** | `Accept: application/vnd.myapi+json; version=1` | Follows HTTP spec closely | Complex, rarely used |
+| **URI Path (recommended)** | `/v1/users`, `/v2/users` | Simple, visible, cacheable, easy to route | URL changes between versions |
+| **Query Parameter** | `/users?version=1` | Easy to add | Easy to forget, less visible, breaks caching |
+| **Custom Header** | `X-API-Version: 1` | Clean URLs | Hidden from browser, harder to test/debug |
+| **Accept Header** | `Accept: application/vnd.myapi.v1+json` | Follows HTTP spec, clean URLs | Complex, rarely used in practice |
+
+**Recommendation:** Use **URI Path versioning** (`/v1/`, `/v2/`). It's the industry standard used by Stripe, GitHub, Google, Twitter, and most major APIs. It's immediately visible, easy to route at the gateway level, and works naturally with caching.
+
+---
+
+### Breaking vs Non-Breaking Changes
+
+Understanding what constitutes a **breaking change** is critical — you should only bump the version for breaking changes.
+
+#### Non-Breaking Changes (No new version needed)
+
+| Change | Why It's Safe |
+|---|---|
+| Adding a new **optional** field to the response | Existing clients ignore fields they don't know about |
+| Adding a new **optional** query parameter | Existing clients simply don't send it |
+| Adding a new endpoint (`POST /v1/reports`) | Doesn't affect existing endpoints |
+| Adding a new enum value to a response field | Clients should handle unknown enum values gracefully |
+| Adding a new optional field to the request body | Existing clients don't send it; server uses default |
+| Increasing a rate limit | Only makes things better for clients |
+| Improving error messages | Clients should not parse error message strings |
+
+#### Breaking Changes (Require a new version)
+
+| Change | Why It Breaks Clients |
+|---|---|
+| **Removing** a field from the response | Client code accessing that field throws an error |
+| **Renaming** a field (`name` → `full_name`) | Same as removing — old field name no longer exists |
+| **Changing a field's data type** (`"age": "25"` → `"age": 25`) | Client's JSON parser may fail or produce wrong results |
+| **Changing the URL structure** (`/users/{id}` → `/accounts/{id}`) | Client's hardcoded URLs return 404 |
+| **Removing an endpoint** | Clients calling it get 404 |
+| **Making an optional field required** | Existing clients that don't send it get 400 |
+| **Changing the meaning/behavior of a field** | Silent data corruption — worst kind of bug |
+| **Changing authentication mechanism** | All existing clients lose access |
+| **Changing error response format** | Client error-handling code breaks |
+
+---
 
 ### Best Practice
 
 ```
-/v1/users      ← version 1
-/v2/users      ← version 2 (breaking changes)
+/v1/users      ← version 1 (original)
+/v2/users      ← version 2 (breaking changes to user schema)
 ```
 
 **Rules:**
-1. **Only increment the version for breaking changes** (removed field, changed data type, changed behavior).
-2. **Additive changes are NOT breaking** — adding a new optional field to the response doesn't need a new version.
-3. **Support at least N-1 versions** — when you release v3, keep v2 alive. Deprecate v1.
-4. **Communicate deprecation** via a response header:
-   ```
-   Sunset: Sat, 01 Jan 2027 00:00:00 GMT
-   Deprecation: true
-   ```
+
+1. **Version from day one** — even if you think you'll never need v2, start with `/v1/`. Retrofitting versioning later is painful.
+
+2. **Only increment for breaking changes** — adding an optional field to the response? Keep it in v1. Removing a field? That's v2.
+
+3. **Support at least N-1 versions** — when you release v3, keep v2 alive. Deprecate v1. Give clients at least 6–12 months to migrate.
+
+4. **Never have more than 2–3 active versions** — maintaining 5 versions is an engineering nightmare. Deprecate aggressively.
+
+5. **Version the API, not individual endpoints** — don't do `/v1/users` + `/v2/orders`. Either the whole API is v1 or v2.
+
+---
+
+### Deprecation Strategy
+
+When you plan to sunset an old version, communicate it clearly:
+
+#### Step 1: Announce Deprecation (Response Headers)
+
+Add these headers to every response from the deprecated version:
+
+```
+Deprecation: true
+Sunset: Sat, 01 Jan 2027 00:00:00 GMT
+Link: <https://api.example.com/v2/users>; rel="successor-version"
+```
+
+| Header | Purpose |
+|---|---|
+| `Deprecation: true` | Signals this version is deprecated |
+| `Sunset` | The date after which this version may stop working |
+| `Link` | Points to the replacement version |
+
+#### Step 2: Documentation & Communication
+
+- Update API docs to mark v1 as deprecated with a migration guide.
+- Send emails / changelogs to API consumers.
+- Show warnings in developer dashboard (if you have one).
+
+#### Step 3: Monitor Usage
+
+Track how many clients are still calling v1. Don't kill a version that still has significant traffic without direct outreach.
+
+#### Step 4: Shutdown
+
+After the sunset date:
+- Option A: Return `410 Gone` with a message pointing to v2.
+- Option B: Redirect (`301 Moved Permanently`) to v2 equivalent (only if contracts are close enough).
+
+```
+HTTP 410 Gone
+{
+  "error": "VERSION_SUNSET",
+  "message": "API v1 was retired on 2027-01-01. Please migrate to v2.",
+  "migration_guide": "https://docs.example.com/migrate-v1-to-v2"
+}
+```
+
+---
+
+### How Versioning Works in Code (Spring Boot Example)
+
+```java
+// v1 Controller — returns "name" as a single field
+@RestController
+@RequestMapping("/v1/users")
+public class UserControllerV1 {
+
+    @GetMapping("/{id}")
+    public UserResponseV1 getUser(@PathVariable Long id) {
+        User user = userService.findById(id);
+        return new UserResponseV1(user.getId(), user.getFullName(), user.getPhone());
+    }
+}
+
+// v1 DTO
+public record UserResponseV1(Long id, String name, String phone) {}
+
+// ──────────────────────────────────────────
+
+// v2 Controller — splits name into first_name + last_name
+@RestController
+@RequestMapping("/v2/users")
+public class UserControllerV2 {
+
+    @GetMapping("/{id}")
+    public UserResponseV2 getUser(@PathVariable Long id) {
+        User user = userService.findById(id);
+        return new UserResponseV2(user.getId(), user.getFirstName(),
+                                  user.getLastName(), user.getPhone());
+    }
+}
+
+// v2 DTO
+public record UserResponseV2(Long id, String firstName, String lastName, String phone) {}
+```
+
+Both controllers share the **same service layer and database** — only the response shape differs. This is the standard pattern: version the **API layer (controllers + DTOs)**, not the business logic.
+
+---
+
+### Version Lifecycle
+
+```
+┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
+│  ACTIVE   │────▶│DEPRECATED│────▶│  SUNSET  │────▶│  RETIRED │
+│           │     │          │     │          │     │          │
+│ Fully     │     │ Still    │     │ Last     │     │ Returns  │
+│ supported │     │ works,   │     │ warning  │     │ 410 Gone │
+│           │     │ headers  │     │ period   │     │          │
+│           │     │ warn     │     │          │     │          │
+└──────────┘     └──────────┘     └──────────┘     └──────────┘
+     v2               v1            v1 (final)        v1 (dead)
+```
+
+| Phase | Duration | What Happens |
+|---|---|---|
+| **Active** | Indefinite | Fully supported, receives bug fixes |
+| **Deprecated** | 6–12 months | Still works, but response headers warn clients. No new features. |
+| **Sunset** | 1–3 months | Final warning period. Aggressive outreach to remaining clients. |
+| **Retired** | Permanent | Returns `410 Gone`. All traffic should be on the newer version. |
 
 ---
 
