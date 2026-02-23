@@ -35,6 +35,33 @@ Step 5: User sends money       →  POST /v1/wallets/{id}/transfers
 
 The `user_id` in the "Create Wallet" request comes from **Step 1** — the user must be registered first.
 
+### How Does the Wallet Know Which Bank to Use?
+
+The wallet **does not directly touch your bank**. Money flows in two separate hops:
+
+```
+┌──────────┐      LOAD (explicit bank_account_id)       ┌──────────┐
+│   Bank   │ ──────────────────────────────────────────▶ │  Wallet  │
+│ Account  │ ◀────────────────────────────────────────── │ (balance)│
+└──────────┘    WITHDRAW (explicit or default bank)      └──────────┘
+                                                              │
+                                                              │ TRANSFER
+                                                              │ (wallet ↔ wallet)
+                                                              ▼
+                                                        ┌──────────┐
+                                                        │  Other   │
+                                                        │  Wallet  │
+                                                        └──────────┘
+```
+
+| Operation | Who picks the bank? | How? |
+|---|---|---|
+| **Load** (bank → wallet) | **User** — passes `bank_account_id` in the request | `POST /wallets/{id}/load { "bank_account_id": 501 }` |
+| **Transfer** (wallet → wallet) | **Nobody** — no bank involved | Debit sender wallet balance, credit receiver wallet balance |
+| **Withdraw** (wallet → bank) | **User** — passes `bank_account_id`, or system uses the **default linked bank** | `POST /wallets/{id}/withdraw { "bank_account_id": 501 }` |
+
+> **Key insight:** When you "send money" to someone, the system only debits/credits **wallet balances** (numbers in the DB). No bank is contacted. Banks are only involved during **Load** and **Withdraw**.
+
 ---
 
 ### 2.1 Register User (Sign Up)
@@ -301,6 +328,51 @@ POST /v1/wallets/{walletId}/transfers
 
 ---
 
+### 2.10 Withdraw Money (Wallet → Bank)
+
+This is the reverse of Load — the user moves money **out** of the wallet back to their bank account.
+
+```
+POST /v1/wallets/{walletId}/withdraw
+```
+
+**Request**
+```json
+{
+  "bank_account_id": 501,
+  "amount": 2000.00,
+  "idempotency_key": "withdraw_req_abc456"
+}
+```
+
+> If `bank_account_id` is **omitted**, the system uses the wallet's `default_bank_account_id`.
+> If neither is set → `400 Bad Request: No bank account specified`.
+
+**Response — 201 Created**
+```json
+{
+  "transaction_id": "txn_wd_002",
+  "wallet_id": "wal_a1b2c3d4",
+  "bank_account_id": 501,
+  "amount": 2000.00,
+  "type": "WITHDRAW",
+  "status": "PENDING",
+  "new_balance": 3000.0000,
+  "created_at": "2026-02-23T16:00:00Z"
+}
+```
+
+> **Why `PENDING`?** Withdrawals hit the real banking system (NEFT/IMPS/UPI), which is async.
+> The wallet balance is debited immediately to prevent double-spend.
+> A callback/webhook from the payment gateway updates status to `SUCCESS` or `FAILED` (and refunds if failed).
+
+**Validations:**
+- `bank_account_id` must belong to the same `user_id` that owns the wallet → `403 Forbidden` otherwise.
+- Balance must be ≥ amount → `400 INSUFFICIENT_BALANCE`.
+- Wallet must be `ACTIVE`.
+
+---
+
 ## 3. Data Model
 
 ### ER Diagram
@@ -337,11 +409,14 @@ POST /v1/wallets/{walletId}/transfers
 | `display_name` | VARCHAR(100) | |
 | `currency` | ENUM('INR','USD','EUR') | NOT NULL, DEFAULT 'INR' |
 | `balance` | DECIMAL(19,4) | NOT NULL, DEFAULT 0.0000 |
+| `default_bank_account_id` | BIGINT | FK → BankAccount.id, NULLABLE |
 | `status` | ENUM('ACTIVE','CLOSED') | NOT NULL, DEFAULT 'ACTIVE' |
 | `created_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP |
 | `updated_at` | TIMESTAMP | ON UPDATE CURRENT_TIMESTAMP |
 
 > **Index:** `idx_wallet_user_id` on `user_id` for fast lookup by user.
+>
+> **`default_bank_account_id`** — optional convenience field. If set, withdrawals that don't specify a bank account will use this one.
 
 ### 4.3 BankAccount
 
@@ -364,7 +439,9 @@ POST /v1/wallets/{walletId}/transfers
 | `to_wallet_id` | UUID | FK → Wallet.id, NOT NULL |
 | `amount` | DECIMAL(19,4) | NOT NULL, CHECK > 0 |
 | `currency` | ENUM('INR','USD','EUR') | NOT NULL |
+| `type` | ENUM('TRANSFER','LOAD','WITHDRAW') | NOT NULL |
 | `status` | ENUM('PENDING','SUCCESS','FAILED') | NOT NULL |
+| `bank_account_id` | BIGINT | FK → BankAccount.id, NULLABLE (set for LOAD/WITHDRAW, NULL for TRANSFER) |
 | `idempotency_key` | VARCHAR(64) | UNIQUE |
 | `created_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP |
 | `updated_at` | TIMESTAMP | ON UPDATE CURRENT_TIMESTAMP |
@@ -699,7 +776,181 @@ For extreme scale (>10K TPS to one merchant), layer **Solution 2 (async batching
 
 ---
 
-## 8. Summary of Original Mistakes
+## 8. Wallet Model vs UPI / Direct-Bank Model (Google Pay, PhonePe)
+
+### The Key Difference
+
+| | **Wallet Model** (Paytm Wallet, MyPay) | **UPI / Direct-Bank Model** (Google Pay, PhonePe) |
+|---|---|---|
+| Where is the money? | In the **wallet balance** (a number in our DB) | In the **user's bank account** (at HDFC, SBI, etc.) |
+| Who holds the funds? | **We do** (we are a PPI — Prepaid Payment Instrument) | **The bank does** — we are just a pass-through |
+| Load step needed? | Yes — user must load money from bank → wallet | **No** — money stays in the bank always |
+| Transfer = ? | Debit our DB row, credit our DB row | Send an instruction to NPCI → user's bank debits → receiver's bank credits |
+| RBI license needed? | **PPI License** (we hold customer funds) | **TPAP Registration** (Third-Party App Provider — we hold nothing) |
+
+### How UPI (Google Pay / PhonePe) Actually Works
+
+```
+┌──────────┐     ┌──────────┐      ┌──────┐      ┌──────────┐     ┌──────────┐
+│  Sender  │     │ GPay /   │      │ NPCI │      │ Receiver │     │ Receiver │
+│  (User)  │     │ PhonePe  │      │ (UPI)│      │  Bank    │     │  (User)  │
+└────┬─────┘     └────┬─────┘      └──┬───┘      └────┬─────┘     └──────────┘
+     │                │               │               │
+     │── "Pay ₹500    │               │               │
+     │   to Vipin" ──▶│               │               │
+     │                │── UPI Collect/│               │
+     │                │   Pay Request▶│               │
+     │                │               │── Debit ₹500 ▶│ (Sender's bank)
+     │                │               │               │
+     │                │               │── Credit ₹500▶│ (Receiver's bank)
+     │                │               │               │
+     │                │◀── Response ──│               │
+     │◀── "Payment    │               │               │
+     │    Successful"─│               │               │
+```
+
+**Google Pay / PhonePe never touch the money. They are just the UI.**
+
+The actual flow:
+1. User opens GPay and says "Send ₹500 to vipin@upi"
+2. GPay sends a **UPI Collect/Pay request** to **NPCI** (National Payments Corporation of India)
+3. NPCI routes it to the **sender's bank** → bank debits ₹500
+4. NPCI routes it to the **receiver's bank** → bank credits ₹500
+5. NPCI sends success/failure back to GPay
+6. GPay shows the result to the user
+
+### Architecture Comparison
+
+```
+WALLET MODEL (Paytm Wallet / MyPay):
+─────────────────────────────────────
+User ──▶ Our API ──▶ Our DB (debit sender row, credit receiver row) ──▶ Done
+                     ↑
+                     We hold the balance. We are the "bank".
+
+UPI MODEL (Google Pay / PhonePe):
+─────────────────────────────────
+User ──▶ Our API ──▶ NPCI/UPI Switch ──▶ Sender's Bank (debit)
+                                        ──▶ Receiver's Bank (credit)
+                     ↑
+                     We hold NOTHING. Banks hold the balance.
+```
+
+### Data Model for UPI App (No Wallet)
+
+Since we don't hold money, our DB only stores **users, linked VPAs, and transaction history** (for display):
+
+```
+┌──────────┐       1:N       ┌──────────────┐
+│   User   │────────────────▶│   UPI VPA    │  (e.g., vipin@okaxis)
+└──────────┘                 └──────────────┘
+      │
+      │ 1:N
+      ▼
+┌──────────────┐
+│  Transaction │  ← just a log for the user's history screen
+│  (read-only) │     actual money is moved by NPCI, not us
+└──────────────┘
+```
+
+#### UPI VPA (Virtual Payment Address)
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | BIGINT | PK, AUTO_INCREMENT |
+| `user_id` | BIGINT | FK → User.id, NOT NULL |
+| `vpa` | VARCHAR(100) | UNIQUE, NOT NULL (e.g., `vipin@okaxis`) |
+| `linked_bank_account` | VARCHAR(255) | ENCRYPTED, NOT NULL |
+| `bank_name` | VARCHAR(100) | NOT NULL |
+| `ifsc_code` | VARCHAR(11) | NOT NULL |
+| `is_primary` | BOOLEAN | DEFAULT FALSE |
+| `created_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP |
+
+> The VPA (like `vipin@okaxis`) **maps to a bank account**. This mapping is stored at NPCI and at the bank.
+> Our app caches it for display, but the **bank** is the source of truth.
+
+#### Transaction (History / Audit Only)
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | UUID | PK |
+| `upi_txn_id` | VARCHAR(64) | UNIQUE — assigned by NPCI |
+| `sender_vpa` | VARCHAR(100) | NOT NULL |
+| `receiver_vpa` | VARCHAR(100) | NOT NULL |
+| `amount` | DECIMAL(19,4) | NOT NULL |
+| `status` | ENUM('PENDING','SUCCESS','FAILED') | NOT NULL |
+| `upi_response_code` | VARCHAR(10) | From NPCI (e.g., `00` = success) |
+| `created_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP |
+
+> **We don't have a `balance` column anywhere.** The user's balance lives at their bank.
+> To check balance, we send a **Balance Inquiry** request via UPI to the user's bank.
+
+### Transfer API for UPI App
+
+```
+POST /v1/payments
+```
+
+**Request**
+```json
+{
+  "sender_vpa": "vipin@okaxis",
+  "receiver_vpa": "merchant@ybl",
+  "amount": 500.00,
+  "upi_pin": "******",
+  "idempotency_key": "pay_req_abc123"
+}
+```
+
+**What happens server-side:**
+```java
+@Service
+public class UpiPaymentService {
+
+    public PaymentResponse pay(PaymentRequest req) {
+        // 1. Validate sender_vpa belongs to the authenticated user
+        // 2. Check idempotency_key for duplicate
+        // 3. Call NPCI UPI API:
+        //      POST https://upi.npci.org.in/api/v1/pay
+        //      { senderVpa, receiverVpa, amount, encryptedUpiPin }
+        // 4. NPCI talks to sender's bank → debit
+        // 5. NPCI talks to receiver's bank → credit
+        // 6. NPCI returns success/failure
+        // 7. Save transaction record in our DB (for history)
+        // 8. Return result to user
+    }
+}
+```
+
+> **We never debit or credit anything ourselves.** We just forward the request to NPCI.
+> The UPI PIN is encrypted end-to-end — our server never sees it in plaintext.
+
+### Hot Wallet Problem — Does It Exist in UPI?
+
+**No!** Because there is no single row being updated.
+
+| Model | 1000 users pay a merchant | Bottleneck? |
+|---|---|---|
+| **Wallet** | 1000 UPDATEs to same wallet row in our DB | **Yes** — hot row |
+| **UPI** | 1000 requests go to NPCI → distributed across many banks | **No** — each user's bank handles its own debit independently |
+
+In UPI, the merchant's bank handles the credits, and banks are built for this scale. NPCI processes **10 billion+ transactions/month** across all banks.
+
+### When to Use Which?
+
+| Use Case | Model | Example |
+|---|---|---|
+| Instant closed-loop payments | **Wallet** | Paytm Wallet, Amazon Pay Balance |
+| UPI / bank-to-bank payments | **UPI Pass-through** | Google Pay, PhonePe, CRED Pay |
+| Both | **Hybrid** | Paytm (wallet + UPI), PhonePe (was wallet, now UPI-first) |
+| International remittances | **Wallet + Forex** | Wise, Revolut |
+| Crypto/DeFi | **Wallet (custodial)** | Coinbase, WazirX |
+
+> **MyPay as designed** is a **Wallet model**. To support UPI-style direct-bank transfers, you'd integrate with NPCI's UPI APIs and the architecture fundamentally changes from "we manage balances" to "we route payment instructions."
+
+---
+
+## 9. Summary of Original Mistakes
 
 | # | Mistake | Fix |
 |---|---|---|
