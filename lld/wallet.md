@@ -23,7 +23,109 @@
 https://api.mypay.com/v1
 ```
 
-### 3.1 Create Wallet
+### Flow: How Does a User Get Created Before a Wallet?
+
+```
+Step 1: User signs up          →  POST /v1/users         → user_id = 1001
+Step 2: User links bank        →  POST /v1/users/1001/bank-accounts
+Step 3: User creates wallet    →  POST /v1/wallets       → { "user_id": 1001 }
+Step 4: User loads money       →  POST /v1/wallets/{id}/load
+Step 5: User sends money       →  POST /v1/wallets/{id}/transfers
+```
+
+The `user_id` in the "Create Wallet" request comes from **Step 1** — the user must be registered first.
+
+---
+
+### 2.1 Register User (Sign Up)
+
+```
+POST /v1/users
+```
+
+**Request**
+```json
+{
+  "name": "Vipin Kumar",
+  "email": "vipin@example.com",
+  "mobile_no": "+919999999999"
+}
+```
+
+**Response — 201 Created**
+```json
+{
+  "id": 1001,
+  "name": "Vipin Kumar",
+  "email": "vipin@example.com",
+  "mobile_no": "+919999999999",
+  "created_at": "2026-02-23T09:00:00Z"
+}
+```
+
+> This is where `user_id = 1001` is generated. The client uses this ID in all subsequent calls.
+
+**Validations:**
+- `email` must be unique → `409 Conflict` if duplicate.
+- `mobile_no` must be unique → `409 Conflict` if duplicate.
+- All three fields are required → `400 Bad Request` if missing.
+
+---
+
+### 2.2 Get User Profile
+
+```
+GET /v1/users/{userId}
+```
+
+**Response — 200 OK**
+```json
+{
+  "id": 1001,
+  "name": "Vipin Kumar",
+  "email": "vipin@example.com",
+  "mobile_no": "+919999999999",
+  "wallets": [
+    { "id": "wal_a1b2c3d4", "display_name": "My Primary Wallet", "currency": "INR" }
+  ],
+  "created_at": "2026-02-23T09:00:00Z"
+}
+```
+
+---
+
+### 2.3 Link Bank Account
+
+```
+POST /v1/users/{userId}/bank-accounts
+```
+
+**Request**
+```json
+{
+  "account_number": "1234567890",
+  "bank_name": "HDFC Bank",
+  "ifsc_code": "HDFC0001234"
+}
+```
+
+**Response — 201 Created**
+```json
+{
+  "id": 501,
+  "user_id": 1001,
+  "bank_name": "HDFC Bank",
+  "ifsc_code": "HDFC0001234",
+  "account_number_masked": "XXXXXX7890",
+  "created_at": "2026-02-23T09:30:00Z"
+}
+```
+
+> `account_number` is stored **encrypted** in the DB. The response only returns the last 4 digits.
+
+---
+
+### 2.4 Create Wallet
 
 ```
 POST /v1/wallets
@@ -37,6 +139,8 @@ POST /v1/wallets
   "currency": "INR"
 }
 ```
+
+> `user_id: 1001` comes from the user created in Step 2.1. If this user doesn't exist → `404 Not Found`.
 
 **Response — 201 Created**
 ```json
@@ -53,7 +157,39 @@ POST /v1/wallets
 
 ---
 
-### 3.2 Get Wallet Details
+### 2.5 Load Money into Wallet
+
+Before a user can send money, they need to **load** money from their linked bank account into the wallet.
+
+```
+POST /v1/wallets/{walletId}/load
+```
+
+**Request**
+```json
+{
+  "bank_account_id": 501,
+  "amount": 5000.00,
+  "idempotency_key": "load_req_xyz789"
+}
+```
+
+**Response — 201 Created**
+```json
+{
+  "transaction_id": "txn_load_001",
+  "wallet_id": "wal_a1b2c3d4",
+  "amount": 5000.00,
+  "type": "LOAD",
+  "status": "SUCCESS",
+  "new_balance": 5000.0000,
+  "created_at": "2026-02-23T10:30:00Z"
+}
+```
+
+---
+
+### 2.6 Get Wallet Details
 
 ```
 GET /v1/wallets/{walletId}
@@ -75,7 +211,7 @@ GET /v1/wallets/{walletId}
 
 ---
 
-### 3.3 Update Wallet Metadata
+### 2.7 Update Wallet Metadata
 
 ```
 PATCH /v1/wallets/{walletId}
@@ -103,7 +239,7 @@ PATCH /v1/wallets/{walletId}
 
 ---
 
-### 3.4 Deactivate / Close Wallet
+### 2.8 Deactivate / Close Wallet
 
 ```
 DELETE /v1/wallets/{walletId}
@@ -126,7 +262,7 @@ DELETE /v1/wallets/{walletId}
 
 ---
 
-### 3.5 Transfer Money
+### 2.9 Transfer Money
 
 ```
 POST /v1/wallets/{walletId}/transfers
