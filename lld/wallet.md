@@ -519,7 +519,187 @@ Client                WalletService         TransferService            DB
 
 ---
 
-## 7. Summary of Original Mistakes
+## 7. Hot Wallet Problem — Thousands of Users Paying a Single Merchant
+
+### The Problem
+
+When thousands of users send money to the **same merchant wallet** at the same time,
+every transfer must lock-and-update the **same row** (`SELECT ... FOR UPDATE` on the merchant's wallet).
+
+```
+User A ──┐
+User B ──┤                    ┌───────────────────┐
+User C ──┼── all need lock ──▶│ Merchant Wallet    │  ← single row, one lock at a time
+  ...    │                    │ balance: XXXXXXX   │
+User N ──┘                    └───────────────────┘
+```
+
+**Consequences:**
+- Only **one** transaction can update the merchant balance at a time.
+- All others wait → **lock contention**, high latency, timeouts, deadlocks.
+- Throughput collapses under load (100s–1000s TPS to a single wallet).
+
+---
+
+### Solution 1 — Sharded Sub-Wallets (Recommended for Wallets)
+
+Split the merchant's **single wallet** into **N sub-wallets** (e.g., 64 shards).
+Incoming payments are distributed across shards — each shard has its own row and its own lock.
+
+```
+                               ┌── sub_wallet_0  (balance: 500)
+User A ──▶ hash(txn_id) % N ──┼── sub_wallet_1  (balance: 320)
+User B ──▶ hash(txn_id) % N ──┼── sub_wallet_2  (balance: 710)
+   ...                         │       ...
+User N ──▶ hash(txn_id) % N ──└── sub_wallet_63 (balance: 440)
+
+Merchant's actual balance = SUM of all sub-wallet balances
+```
+
+#### Schema Change
+
+```sql
+CREATE TABLE wallet_shard (
+    id           UUID        PRIMARY KEY,
+    wallet_id    UUID        NOT NULL REFERENCES wallet(id),
+    shard_index  INT         NOT NULL,          -- 0 .. N-1
+    balance      DECIMAL(19,4) NOT NULL DEFAULT 0,
+    version      BIGINT      NOT NULL DEFAULT 0, -- optimistic lock
+    UNIQUE (wallet_id, shard_index)
+);
+```
+
+#### Credit Flow (many users → one merchant)
+
+```java
+@Transactional
+public Transaction transferToMerchant(UUID fromWalletId, UUID merchantWalletId,
+                                       BigDecimal amount, String idempotencyKey) {
+    // 1. Debit sender wallet (normal SELECT ... FOR UPDATE — no contention, one sender)
+    // 2. Pick a random shard:  shardIndex = hash(idempotencyKey) % N
+    // 3. Credit that shard:
+    //      UPDATE wallet_shard
+    //        SET balance = balance + ?, version = version + 1
+    //      WHERE wallet_id = ? AND shard_index = ? AND version = ?
+    //    (optimistic lock — retry on conflict)
+    // 4. Insert Transaction record
+}
+```
+
+#### Read Merchant Balance
+
+```sql
+SELECT SUM(balance) FROM wallet_shard WHERE wallet_id = :merchantWalletId;
+```
+
+> Cache this sum in Redis with a short TTL (1–5 s) so balance reads don't scan all shards every time.
+
+#### Merchant Payout / Debit
+
+When the merchant **spends** (withdraws), try shards in order until enough balance is collected.
+Or periodically **rebalance** shards to consolidate funds into fewer shards.
+
+**Pros:** High write throughput; each shard is an independent row lock.
+**Cons:** Slightly more complex reads; debit from merchant requires multi-shard logic.
+
+---
+
+### Solution 2 — Async Credit via Message Queue
+
+Debit the sender **synchronously** (critical — must not overspend).
+Credit the merchant **asynchronously** through a message queue.
+
+```
+User ──▶ API ──▶ Debit sender (sync, DB lock)
+                  │
+                  └──▶ Publish CreditEvent to Kafka / RabbitMQ
+                              │
+                       ┌──────▼──────┐
+                       │  Consumer   │  ← single-threaded per merchant
+                       │  batches    │     or micro-batched
+                       │  credits    │
+                       └──────┬──────┘
+                              │
+                    UPDATE wallet SET balance = balance + <batch_sum>
+                    (one DB write per batch, e.g., every 100 ms)
+```
+
+#### Key Details
+
+| Aspect | Detail |
+|---|---|
+| Debit | **Synchronous** — must reject if insufficient balance |
+| Credit | **Async** — merchant sees funds after a short delay (100 ms – 1 s) |
+| Batching | Consumer accumulates N credits or waits T ms, then issues **one** UPDATE |
+| Idempotency | Store processed `idempotency_key` in a dedup table |
+| Failure | If consumer crashes, Kafka retries; idempotency prevents double-credit |
+
+**Pros:** Massively reduces DB writes on the merchant row (1 write per batch instead of per transaction).
+**Cons:** Merchant balance is **eventually consistent** — not instant.
+
+---
+
+### Solution 3 — In-Memory Aggregation (Redis) + Periodic Flush
+
+Use Redis `INCRBY` to accumulate merchant credits in memory, then flush to the DB periodically.
+
+```
+User A ── INCRBY merchant:wal_xyz 500 ──▶ Redis (atomic, sub-ms)
+User B ── INCRBY merchant:wal_xyz 300 ──▶ Redis
+   ...
+
+Every 1 second (or every 100 increments):
+   Flush job ──▶ GETSET merchant:wal_xyz 0  → returns accumulated delta
+               ──▶ UPDATE wallet SET balance = balance + delta WHERE id = 'wal_xyz'
+```
+
+**Pros:** Extremely fast writes (Redis handles 100K+ ops/s).
+**Cons:** If Redis crashes before flush, in-flight credits are lost (mitigate with AOF persistence + Kafka backup).
+
+---
+
+### Solution 4 — Optimistic Locking with Retry (Simplest)
+
+Replace `SELECT ... FOR UPDATE` (pessimistic) with a **version column** (optimistic).
+
+```sql
+-- Read
+SELECT balance, version FROM wallet WHERE id = :walletId;
+
+-- Update
+UPDATE wallet
+   SET balance = balance + :amount, version = version + 1
+ WHERE id = :walletId AND version = :expectedVersion;
+-- If rows_updated == 0 → version conflict → RETRY
+```
+
+- Works well at **moderate** concurrency (tens of concurrent writers).
+- At **thousands** of concurrent writers, retry storms make this worse than pessimistic locking.
+- Best combined with **sharding** (Solution 1) so each shard sees low contention.
+
+---
+
+### Comparison
+
+| Strategy | Write Throughput | Consistency | Complexity | Best For |
+|---|---|---|---|---|
+| **Sharded Sub-Wallets** | Very High | Strong | Medium | Payment platforms (PhonePe, Razorpay) |
+| **Async Queue + Batch** | Very High | Eventual | Medium | High-scale marketplaces |
+| **Redis Aggregation** | Highest | Eventual | High | Flash sales, ticketing |
+| **Optimistic Locking** | Moderate | Strong | Low | Low–moderate concurrency |
+
+### Recommended Approach for MyPay
+
+Use **Solution 1 (Sharded Sub-Wallets)** as the primary strategy:
+- Maintains **strong consistency** (no eventual-consistency surprises).
+- Scales horizontally by increasing shard count.
+- Combine with **optimistic locking per shard** to avoid pessimistic lock overhead.
+
+For extreme scale (>10K TPS to one merchant), layer **Solution 2 (async batching)** on top of sharding.
+
+---
+
+## 8. Summary of Original Mistakes
 
 | # | Mistake | Fix |
 |---|---|---|
