@@ -12,7 +12,10 @@
 9. [Validation](#validation)
 10. [Authentication & Authorization](#authentication--authorization)
 11. [Production Auth — API Gateway Pattern](#production-auth--api-gateway-pattern)
-12. [Spring Boot Interview Questions](#spring-boot-interview-questions)
+12. [Project Structure](#project-structure)
+13. [Spring Boot Interview Questions](#spring-boot-interview-questions)
+14. [Spring Boot Internal Working](#spring-boot-internal-working)
+15. [Spring Boot Annotations — How They Work](#spring-boot-annotations--how-they-work)
 
 ---
 
@@ -3575,3 +3578,528 @@ public class UserService {
     private UserRepository repo;  // Hidden dependency
 }
 ```
+
+---
+
+## Spring Boot Internal Working
+
+> **TLDR:** `main()` → `SpringApplication.run()` → detect app type → load properties → component scan → auto-configure beans → start Tomcat → ready. Requests go through DispatcherServlet → HandlerMapping → Controller → Service → Repository → DB → JSON response.
+
+### Startup Flow
+
+```
+java -jar myapp.jar
+      │
+      ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ 1. JVM calls main() → SpringApplication.run()                   │
+│ 2. Detect app type: SERVLET / REACTIVE / NONE                   │
+│ 3. Load Environment (properties, env vars, CLI args)            │
+│ 4. Create ApplicationContext (IoC container)                     │
+│ 5. Component Scan → find @Component/@Service/@Controller etc.   │
+│ 6. Auto-Configuration → evaluate @Conditional → create beans    │
+│ 7. Instantiate beans → Dependency Injection → @PostConstruct    │
+│ 8. Start embedded Tomcat on port 8080                            │
+│ 9. Register DispatcherServlet                                    │
+│ 10. Run CommandLineRunner beans                                  │
+│ 11. Log "Started in X seconds" → App ready ✅                   │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Auto-Configuration (The Magic)
+
+When you add a starter dependency (e.g., `spring-boot-starter-data-jpa`), Spring Boot automatically creates the beans you need.
+
+```java
+// Spring Boot checks conditions before creating beans:
+@AutoConfiguration
+@ConditionalOnClass(DataSource.class)        // Is DataSource on classpath?
+@ConditionalOnProperty("spring.datasource.url")  // Is URL configured?
+public class DataSourceAutoConfiguration {
+    @Bean
+    @ConditionalOnMissingBean   // Only if user hasn't defined their own
+    public DataSource dataSource() {
+        return new HikariDataSource();  // Auto-created for you!
+    }
+}
+```
+
+**Key @Conditional annotations:**
+
+| Annotation | Creates bean if... |
+|------------|-------------------|
+| `@ConditionalOnClass` | Class exists on classpath |
+| `@ConditionalOnMissingBean` | No existing bean of this type (user can override) |
+| `@ConditionalOnProperty` | Property is set in config |
+
+**Philosophy:** Opinionated defaults you can always override by defining your own `@Bean`.
+
+---
+
+### Component Scanning
+
+`@SpringBootApplication` scans its own package + all sub-packages:
+
+```
+com.example.demo/              ← @SpringBootApplication here
+├── controller/UserController  ← @RestController → FOUND ✅
+├── service/UserService        ← @Service → FOUND ✅
+├── repository/UserRepo        ← @Repository → FOUND ✅
+
+com.example.other/             ← Different package tree
+└── HelperService              ← @Service → NOT FOUND ❌
+```
+
+---
+
+### Bean Lifecycle
+
+```
+Constructor → @Autowired injection → @PostConstruct → Bean Ready
+                                                          │
+                                               ... app runs ...
+                                                          │
+                                              @PreDestroy → Destroyed
+```
+
+```java
+@Component
+public class CacheManager {
+    @PostConstruct
+    public void init() { /* load cache on startup */ }
+
+    @PreDestroy
+    public void cleanup() { /* clear cache on shutdown */ }
+}
+```
+
+---
+
+### Request Handling Flow
+
+```
+Client: GET /api/employees/42
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 1. Tomcat receives request                                   │
+│ 2. DispatcherServlet (front controller) catches it           │
+│ 3. HandlerMapping → finds EmployeeController.getById()       │
+│    (matches @GetMapping("/api/employees/{id}"))              │
+│ 4. ArgumentResolvers → @PathVariable id = 42                │
+│ 5. Controller → Service → Repository → Database              │
+│ 6. Returns Employee object                                    │
+│ 7. Jackson (HttpMessageConverter) → Employee → JSON          │
+│ 8. Response: 200 OK {"id":42, "name":"John"}                 │
+└─────────────────────────────────────────────────────────────┘
+```
+
+| Component | Role |
+|-----------|------|
+| `DispatcherServlet` | Front controller — entry point for all requests |
+| `HandlerMapping` | Maps URL → controller method |
+| `ArgumentResolver` | Converts `@PathVariable`, `@RequestBody` etc. into method params |
+| `HttpMessageConverter` | Converts Java objects ↔ JSON (Jackson) |
+| `ExceptionResolver` | Routes exceptions to `@ControllerAdvice` handlers |
+
+---
+
+### ApplicationContext
+
+The IoC container that holds all beans:
+
+```java
+@Component
+public class MyComponent implements ApplicationContextAware {
+    private ApplicationContext context;
+
+    @Override
+    public void setApplicationContext(ApplicationContext ctx) {
+        this.context = ctx;
+    }
+
+    public void example() {
+        UserService svc = context.getBean(UserService.class);  // Get bean by type
+        String port = context.getEnvironment().getProperty("server.port");
+    }
+}
+```
+
+---
+
+### Property Loading Priority
+
+Higher priority wins (top overrides bottom):
+
+```
+1. Command line args:     --server.port=9090
+2. System properties:     -Dserver.port=9090
+3. OS environment vars:    SERVER_PORT=9090
+4. application-{profile}.properties
+5. application.properties
+6. @PropertySource
+7. Default properties
+```
+
+---
+
+### Interview Q&A — Spring Boot Internals
+
+**Q: What happens when you run a Spring Boot application?**
+
+> `main()` → `SpringApplication.run()` → detects app type → loads properties → creates ApplicationContext → component scan finds annotated classes → auto-configuration creates beans based on classpath → DI resolves dependencies → starts embedded Tomcat → registers DispatcherServlet → runs CommandLineRunners → app is ready.
+
+**Q: How does auto-configuration work?**
+
+> Spring Boot reads auto-config classes from `META-INF/spring/AutoConfiguration.imports`. Each has `@Conditional` annotations. If conditions pass (class on classpath, property set, no existing bean), beans are created. `@ConditionalOnMissingBean` lets you override any default.
+
+**Q: What is DispatcherServlet?**
+
+> The front controller — every HTTP request goes through it. It finds the right controller method via HandlerMapping, resolves method arguments, invokes the method, and converts the return value to JSON via HttpMessageConverter.
+
+**Q: What is the bean lifecycle?**
+
+> Constructor → DI (`@Autowired`) → `@PostConstruct` → **ready** → `@PreDestroy` → destroyed. AOP proxies (`@Transactional`, `@Async`) are created during BeanPostProcessor phase after initialization.
+
+---
+
+## Spring Boot Annotations — How They Work
+
+> **TLDR:** `@SpringBootApplication` = scan + auto-config + config. Stereotype annotations (`@Component/@Service/@Repository/@Controller`) register beans. `@GetMapping` etc. map URLs to methods. `@PathVariable/@RequestParam/@RequestBody` extract data from requests. `@Transactional/@Async/@Cacheable` work via AOP proxies — self-invocation (`this.method()`) bypasses the proxy. `@Valid` + `@NotNull/@Email` trigger Bean Validation. `@ControllerAdvice` handles exceptions globally.
+
+### How Spring Finds and Creates Beans
+
+```java
+@Component    // Generic bean
+@Service      // Business layer (same as @Component, semantic only)
+@Repository   // Data layer (adds DB exception translation)
+@Controller   // Web MVC (returns view names)
+@RestController  // = @Controller + @ResponseBody (returns JSON)
+```
+
+All are meta-annotated with `@Component` → all detected by `@ComponentScan`.
+
+**@Configuration + @Bean — for third-party classes:**
+
+```java
+@Configuration
+public class AppConfig {
+    @Bean   // Registers this RestTemplate as a bean
+    public RestTemplate restTemplate() {
+        return new RestTemplate();
+    }
+}
+// Use @Bean for classes you can't annotate (RestTemplate, ObjectMapper, etc.)
+// Use @Component for your own classes
+```
+
+**Note:** `@Configuration` classes are CGLIB-proxied so calling one `@Bean` method from another returns the same singleton, not a new instance.
+
+---
+
+### How Request Mapping Works
+
+```java
+@GetMapping("/users")        // = @RequestMapping(method=GET)
+@PostMapping("/users")       // = @RequestMapping(method=POST)
+@PutMapping("/users/{id}")   // = @RequestMapping(method=PUT)
+@DeleteMapping("/users/{id}")// = @RequestMapping(method=DELETE)
+```
+
+At startup, `RequestMappingHandlerMapping` scans all `@Controller` beans, collects all mappings into a Map. On each request, it matches URL + HTTP method → finds the handler method. No match → 404. URL matches but wrong method → 405.
+
+---
+
+### How Parameter Annotations Work
+
+Each annotation has a dedicated `ArgumentResolver` that extracts the value:
+
+```java
+@GetMapping("/users/{id}")
+public User getUser(
+    @PathVariable Long id,            // From URL path → PathVariableResolver
+    @RequestParam String name,         // From query string → RequestParamResolver
+    @RequestBody User user,            // From JSON body → Jackson deserializes
+    @RequestHeader("Auth") String h,   // From HTTP header
+    @CookieValue("session") String c   // From cookie
+) { }
+```
+
+**@RequestBody + Jackson flow:**
+1. Read `Content-Type: application/json`
+2. Jackson `ObjectMapper.readValue()` → needs **no-arg constructor**
+3. Populates fields via setters
+4. If `@Valid` present → runs Bean Validation (`@NotNull`, `@Email`, etc.)
+5. Validation fails → `MethodArgumentNotValidException` → 400
+
+---
+
+### How AOP Proxy Annotations Work
+
+`@Transactional`, `@Async`, `@Cacheable`, `@PreAuthorize` all work the same way:
+
+```
+Spring creates a PROXY that wraps your bean:
+  Caller → Proxy → Real Object
+
+The proxy adds behavior BEFORE/AFTER the real method.
+```
+
+```java
+// What you write:
+@Service
+public class OrderService {
+    @Transactional
+    public void placeOrder(Order order) { ... }
+}
+
+// What Spring creates (simplified):
+public class OrderService$$Proxy extends OrderService {
+    public void placeOrder(Order order) {
+        BEGIN TRANSACTION
+        try {
+            realObject.placeOrder(order);   // call real method
+            COMMIT
+        } catch (RuntimeException ex) {
+            ROLLBACK
+            throw ex;
+        }
+    }
+}
+```
+
+**The Golden Rule — Self-Invocation Bypasses Proxy:**
+
+```java
+@Service
+public class OrderService {
+    @Transactional
+    public void methodA() {
+        this.methodB();   // ⚠️ "this" = real object, NOT proxy
+    }                     //    @Cacheable is IGNORED!
+
+    @Cacheable("data")
+    public Data methodB() { ... }
+}
+
+// Fix: inject self or move methodB to a separate bean
+@Autowired private OrderService self;
+self.methodB();  // ✅ Goes through proxy
+```
+
+**Applies to ALL proxy-based annotations:** `@Transactional`, `@Async`, `@Cacheable`, `@Retryable`, `@PreAuthorize`
+
+---
+
+### @Transactional Cheat Sheet
+
+```java
+@Transactional                              // Default: REQUIRED propagation, rollback on RuntimeException
+@Transactional(readOnly = true)             // Read optimization
+@Transactional(propagation = REQUIRES_NEW)  // Always new transaction
+@Transactional(rollbackFor = Exception.class) // Rollback on checked exceptions too
+@Transactional(timeout = 30)                // 30 second timeout
+```
+
+| Propagation | Meaning |
+|-------------|---------|
+| `REQUIRED` (default) | Join existing or create new |
+| `REQUIRES_NEW` | Always create new, suspend existing |
+| `SUPPORTS` | Join if exists, else run without |
+| `MANDATORY` | Must exist, else throw exception |
+
+---
+
+### @Async Cheat Sheet
+
+```java
+@EnableAsync   // Required on @Configuration class
+
+@Async         // Runs in separate thread, caller doesn't wait
+public void sendEmail(String to) { ... }
+
+@Async
+public CompletableFuture<String> process() {   // Return result async
+    return CompletableFuture.completedFuture("done");
+}
+```
+
+**Custom thread pool (recommended):**
+
+```java
+@Bean("emailExecutor")
+public Executor emailExecutor() {
+    ThreadPoolTaskExecutor exec = new ThreadPoolTaskExecutor();
+    exec.setCorePoolSize(5);
+    exec.setMaxPoolSize(10);
+    exec.setQueueCapacity(25);
+    exec.setThreadNamePrefix("email-");
+    return exec;
+}
+
+@Async("emailExecutor")   // Use specific pool
+public void sendEmail() { ... }
+```
+
+---
+
+### @Scheduled Cheat Sheet
+
+```java
+@EnableScheduling  // Required on @Configuration class
+
+@Scheduled(fixedRate = 60000)           // Every 60 seconds
+@Scheduled(fixedDelay = 30000)          // 30s after last execution finishes
+@Scheduled(cron = "0 0 2 * * ?")       // Daily at 2:00 AM
+@Scheduled(initialDelay = 10000, fixedRate = 60000)  // Wait 10s, then every 60s
+```
+
+Cron: `second minute hour day month weekday`
+- `"0 */15 * * * *"` → every 15 minutes
+- `"0 0 9-17 * * MON-FRI"` → weekdays 9 AM–5 PM hourly
+
+---
+
+### Scope & Lifecycle
+
+```java
+@Scope("singleton")   // DEFAULT — one instance per container
+@Scope("prototype")   // New instance every time
+@Scope("request")     // One per HTTP request
+@Scope("session")     // One per HTTP session
+@Lazy                 // Create on first use, not at startup
+```
+
+**⚠️ Singleton injecting Prototype gotcha:**
+
+```java
+@Service  // Singleton — created once
+public class OrderService {
+    @Autowired
+    private ShoppingCart cart;  // Prototype — but injected ONCE!
+    // Same cart instance forever!
+
+    // Fix: use ObjectFactory
+    @Autowired
+    private ObjectFactory<ShoppingCart> cartFactory;
+    ShoppingCart cart = cartFactory.getObject();  // New instance each time ✅
+}
+```
+
+---
+
+### Value Injection
+
+```java
+@Value("${server.port}")            // From properties
+@Value("${app.name:MyApp}")         // With default
+@Value("${JAVA_HOME}")              // Environment variable
+
+// For groups of related properties, prefer @ConfigurationProperties:
+@ConfigurationProperties(prefix = "app.mail")
+public class MailProperties {
+    private String host;    // app.mail.host
+    private int port;       // app.mail.port
+}
+```
+
+| `@Value` | `@ConfigurationProperties` |
+|----------|---------------------------|
+| Single values | Groups of related properties |
+| SpEL support | Type-safe, validated |
+| Good for 1-2 props | Good for many related props |
+
+---
+
+### Exception Handling
+
+```java
+// Global handler for all controllers
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    @ExceptionHandler(ResourceNotFoundException.class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    public ErrorResponse handleNotFound(ResourceNotFoundException ex) {
+        return new ErrorResponse(404, ex.getMessage());
+    }
+
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public ErrorResponse handleValidation(MethodArgumentNotValidException ex) {
+        Map<String, String> errors = new HashMap<>();
+        ex.getBindingResult().getFieldErrors()
+           .forEach(e -> errors.put(e.getField(), e.getDefaultMessage()));
+        return new ErrorResponse(400, "Validation failed", errors);
+    }
+}
+```
+
+How it works: DispatcherServlet catches exception → `ExceptionHandlerExceptionResolver` finds matching `@ExceptionHandler` (most specific type wins) → invokes it → returns error response.
+
+---
+
+### Annotation Quick Reference
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                SPRING BOOT ANNOTATIONS — COMPLETE REFERENCE              │
+├──────────────────────────────────────────────────────────────────────────┤
+│  STARTUP        @SpringBootApplication, @Configuration, @Bean,          │
+│                 @ComponentScan, @EnableAutoConfiguration                 │
+│                                                                          │
+│  BEANS          @Component, @Service, @Repository, @Controller,         │
+│                 @RestController                                          │
+│                                                                          │
+│  DI             @Autowired, @Qualifier, @Primary, @Value,               │
+│                 @ConfigurationProperties                                 │
+│                                                                          │
+│  WEB            @RequestMapping, @GetMapping, @PostMapping,              │
+│                 @PutMapping, @DeleteMapping                              │
+│                                                                          │
+│  PARAMS         @PathVariable, @RequestParam, @RequestBody,              │
+│                 @RequestHeader, @CookieValue                             │
+│                                                                          │
+│  RESPONSE       @ResponseBody, @ResponseStatus, ResponseEntity          │
+│                                                                          │
+│  VALIDATION     @Valid, @NotNull, @NotBlank, @Size, @Email, @Pattern    │
+│                                                                          │
+│  LIFECYCLE      @PostConstruct, @PreDestroy, @Scope, @Lazy              │
+│                                                                          │
+│  AOP/PROXY      @Transactional, @Async, @Cacheable, @Scheduled,         │
+│                 @PreAuthorize, @Retryable                                │
+│                                                                          │
+│  ERRORS         @ExceptionHandler, @ControllerAdvice                     │
+│                                                                          │
+│  CONDITIONAL    @ConditionalOnClass, @ConditionalOnMissingBean,          │
+│                 @ConditionalOnProperty                                   │
+│                                                                          │
+│  PROFILES       @Profile, @ActiveProfiles                                │
+│                                                                          │
+│  TESTING        @SpringBootTest, @WebMvcTest, @DataJpaTest, @MockBean   │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Interview Q&A — Annotations
+
+**Q: What's the difference between @Bean and @Component?**
+
+> `@Component` goes on your own classes — auto-detected by scan. `@Bean` goes on a method in `@Configuration` — for third-party classes you can't annotate.
+
+**Q: How do @Transactional and @Async work?**
+
+> Both use AOP proxies. Spring creates a proxy subclass that wraps your bean. The proxy adds behavior (begin/commit transaction, submit to thread pool) around the real method call. Self-invocation (`this.method()`) bypasses the proxy.
+
+**Q: Why does @RequestBody need a no-arg constructor?**
+
+> Jackson creates the object using the no-arg constructor, then populates fields via setters. Without it, Jackson can't instantiate the class. Alternative: use `@JsonCreator` on a parameterized constructor.
+
+**Q: What is @RestControllerAdvice?**
+
+> Global exception handler for all controllers. `@ExceptionHandler` methods inside it catch exceptions thrown by any controller and return structured error responses.
+
+#### Step 1: `SpringApplication` Constructor
