@@ -23,6 +23,7 @@
 12. [Distributed System Concepts](#12-distributed-system-concepts)
 13. [Security Patterns](#13-security-patterns)
 14. [Observability — The Three Pillars](#14-observability--the-three-pillars)
+15. [Microservices Architecture — Complete Guide](#15-microservices-architecture--complete-guide)
 
 ---
 
@@ -1774,3 +1775,562 @@ Total: 78ms
 ---
 
 > **Pro Tip for Interviews:** Don't just name-drop patterns. Explain the **problem** the pattern solves, the **trade-offs**, and when you would **NOT** use it. That's what separates a good answer from a great one.
+
+---
+
+## 15. Microservices Architecture — Complete Guide
+
+### 15.1 What Are Microservices?
+
+A **microservice architecture** structures an application as a collection of **small, autonomous, loosely coupled services**, each:
+- Responsible for a **single business capability**
+- Independently **deployable** and **scalable**
+- Owning its **own data store**
+- Communicating via well-defined **APIs** (REST, gRPC, messaging)
+
+```
+┌──────────────────────────────────────────────────────┐
+│                    API Gateway                        │
+└─────┬──────────┬──────────┬──────────┬───────────────┘
+      │          │          │          │
+┌─────▼───┐ ┌───▼────┐ ┌───▼────┐ ┌───▼─────┐
+│  User   │ │Product │ │ Order  │ │ Payment │
+│ Service │ │Service │ │Service │ │ Service │
+│ (Java)  │ │(Python)│ │ (Go)  │ │ (Java)  │
+└────┬────┘ └───┬────┘ └───┬────┘ └────┬────┘
+     │          │          │           │
+  [MySQL]   [MongoDB]  [PostgreSQL]  [Redis]
+```
+
+---
+
+### 15.2 Monolith vs Microservices
+
+#### What Is a Monolith?
+
+A **monolithic architecture** is a single, unified application where all components (UI, business logic, data access) are packaged and deployed together as **one unit**.
+
+```
+Monolith:                              Microservices:
+┌────────────────────────────┐        ┌────────┐ ┌────────┐ ┌────────┐
+│         Single App         │        │ User   │ │ Order  │ │Payment │
+│  ┌──────────────────────┐  │        │Service │ │Service │ │Service │
+│  │     UI / API Layer   │  │        │  DB1   │ │  DB2   │ │  DB3   │
+│  ├──────────────────────┤  │        └───┬────┘ └───┬────┘ └───┬────┘
+│  │   Business Logic     │  │            │          │          │
+│  │  (Users, Orders,     │  │            └──── API Gateway ────┘
+│  │   Payments, etc.)    │  │
+│  ├──────────────────────┤  │
+│  │     Data Access      │  │
+│  ├──────────────────────┤  │
+│  │   Single Database    │  │
+│  └──────────────────────┘  │
+└────────────────────────────┘
+```
+
+#### Detailed Comparison
+
+| Aspect | Monolith | Microservices |
+|--------|----------|---------------|
+| **Deployment** | Single deployable unit | Each service deployed independently |
+| **Scaling** | Scale entire app (even if only one module needs it) | Scale individual services as needed |
+| **Technology** | One tech stack for everything | Each service can use different language/framework |
+| **Database** | Single shared database | Database per service |
+| **Team Structure** | One large team or tightly coordinated teams | Small, autonomous teams (2-pizza rule) |
+| **Development Speed** | Fast initially, slows as app grows | Slower initially, faster as teams work independently |
+| **Testing** | Simpler (unit + integration in one codebase) | Complex (contract testing, integration testing across services) |
+| **Debugging** | Easy (single process, single log) | Hard (distributed tracing, correlated logs) |
+| **Data Consistency** | ACID transactions on single DB | Eventual consistency, Saga pattern |
+| **Deployment Risk** | One bug can bring down entire app | Failure isolated to one service |
+| **Communication** | In-process method calls (fast) | Network calls (latency, failures) |
+| **Operational Cost** | Low (one server, one pipeline) | High (multiple services, Kubernetes, monitoring) |
+| **Code Reuse** | Shared libraries easily | Shared libraries or duplicate code |
+| **Onboarding** | Harder (understand entire codebase) | Easier (understand one service) |
+
+---
+
+### 15.3 When to Use Monolith
+
+**Choose Monolith when:**
+
+| Scenario | Why Monolith Works |
+|----------|-------------------|
+| **Early-stage startup / MVP** | Speed to market > architecture. Validate the idea first. |
+| **Small team (< 5-8 developers)** | Microservices overhead isn't justified. Communication cost is low. |
+| **Simple domain** | CRUD apps, blogs, internal tools don't need distributed systems. |
+| **Tight budget / limited DevOps** | No Kubernetes, no service mesh, no distributed tracing to manage. |
+| **Strong data consistency needed** | Single DB with ACID transactions is simpler than Sagas. |
+| **Low traffic / scale** | Vertical scaling (bigger server) is sufficient. |
+| **Rapid prototyping** | Change features fast without cross-service coordination. |
+
+**Real-world examples that started as monoliths:** Amazon, Netflix, Uber, Shopify, Twitter — all started monolithic and migrated to microservices when they outgrew it.
+
+> **"If you can't build a well-structured monolith, what makes you think you can build a well-structured set of microservices?"** — Simon Brown
+
+---
+
+### 15.4 When to Use Microservices
+
+**Choose Microservices when:**
+
+| Scenario | Why Microservices Work |
+|----------|----------------------|
+| **Large team (> 10-15 developers)** | Teams can own services independently without stepping on each other. |
+| **Different scaling requirements** | Search service needs 20 instances; user profile needs 2. |
+| **Multiple technology needs** | ML team wants Python; backend team wants Java; real-time team wants Go. |
+| **Independent deployment** | Deploy payment service fix without redeploying the entire app. |
+| **High availability requirement** | Failure in recommendation service shouldn't affect checkout. |
+| **Frequent releases** | Each team deploys on their own schedule (multiple times/day). |
+| **Complex, large domain** | Natural bounded contexts (Orders, Payments, Inventory, Shipping). |
+| **Organizational scaling** | Following Conway's Law — team structure mirrors architecture. |
+
+---
+
+### 15.5 Pros and Cons — Deep Dive
+
+#### Pros of Microservices
+
+| Benefit | Explanation |
+|---------|-------------|
+| **Independent Deployment** | Deploy one service without touching others. A bug fix in Payment doesn't require redeploying User service. |
+| **Independent Scaling** | Scale only what needs it. During a sale, scale Order service to 50 instances while User service stays at 5. |
+| **Fault Isolation** | If Recommendation service crashes, users can still browse and buy. Circuit breakers prevent cascading. |
+| **Technology Freedom** | Use Python for ML, Go for high-performance API, Java for enterprise logic. Best tool for each job. |
+| **Faster Development** | Small codebases are easier to understand, test, and deploy. Teams move independently. |
+| **Organizational Alignment** | Teams own services end-to-end (dev + ops). Follows Conway's Law. |
+| **Reusability** | Auth service can be shared across multiple products. |
+
+#### Cons of Microservices
+
+| Drawback | Explanation |
+|----------|-------------|
+| **Distributed System Complexity** | Network failures, latency, partial failures, timeout handling, retries, idempotency. |
+| **Data Consistency** | No cross-service ACID. Must use Saga pattern, eventual consistency. |
+| **Operational Overhead** | Need Kubernetes, CI/CD per service, centralized logging, distributed tracing, service mesh. |
+| **Testing Complexity** | Integration tests across services are hard. Contract testing (Pact) needed. |
+| **Debugging Difficulty** | A request touches 5 services — need correlated logs, Jaeger/Zipkin traces. |
+| **Network Latency** | In-process method call: ~nanoseconds. Network call: ~milliseconds. Adds up. |
+| **Data Duplication** | Each service owns its data. Joins across services require API calls or data replication. |
+| **DevOps Maturity Required** | Without proper CI/CD, monitoring, and infrastructure automation, microservices become a nightmare. |
+| **Service Discovery** | Services need to find each other dynamically (Eureka, Consul, K8s DNS). |
+| **Versioning** | API changes must be backward-compatible. Breaking changes require coordination. |
+
+---
+
+### 15.6 Key Components of Microservices Architecture
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                        MICROSERVICES ECOSYSTEM                       │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  ┌─────────────┐    ┌──────────────┐    ┌───────────────────────┐   │
+│  │ API Gateway  │    │Service       │    │ Config Server         │   │
+│  │ (Kong,NGINX) │    │Discovery     │    │ (Spring Cloud Config, │   │
+│  │              │    │(Eureka,      │    │  Consul, Vault)       │   │
+│  │ Routing      │    │ Consul, K8s) │    │                       │   │
+│  │ Auth         │    │              │    │ Centralized config    │   │
+│  │ Rate Limit   │    │ Find services│    │ for all services      │   │
+│  └──────────────┘    └──────────────┘    └───────────────────────┘   │
+│                                                                      │
+│  ┌─────────────┐    ┌──────────────┐    ┌───────────────────────┐   │
+│  │ Circuit      │    │ Message      │    │ Distributed Tracing   │   │
+│  │ Breaker      │    │ Broker       │    │ (Zipkin, Jaeger,      │   │
+│  │(Resilience4j)│    │(Kafka,       │    │  OpenTelemetry)       │   │
+│  │              │    │ RabbitMQ)    │    │                       │   │
+│  │ Fail fast    │    │              │    │ Track requests across │   │
+│  │ Fallback     │    │ Async comms  │    │ all services          │   │
+│  └──────────────┘    └──────────────┘    └───────────────────────┘   │
+│                                                                      │
+│  ┌─────────────┐    ┌──────────────┐    ┌───────────────────────┐   │
+│  │ Container    │    │ CI/CD        │    │ Centralized Logging   │   │
+│  │ Orchestration│    │ Pipeline     │    │ (ELK Stack, Loki,     │   │
+│  │(Kubernetes,  │    │(Jenkins,     │    │  Fluentd)             │   │
+│  │ Docker)      │    │ GitLab CI)   │    │                       │   │
+│  └──────────────┘    └──────────────┘    └───────────────────────┘   │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+| Component | Purpose | Tools |
+|-----------|---------|-------|
+| **API Gateway** | Single entry point, routing, auth, rate limiting | Kong, NGINX, Spring Cloud Gateway, AWS API Gateway |
+| **Service Discovery** | Services register & find each other dynamically | Eureka, Consul, Kubernetes DNS, Zookeeper |
+| **Config Server** | Externalized, centralized configuration | Spring Cloud Config, Consul KV, HashiCorp Vault |
+| **Circuit Breaker** | Fail fast when downstream is unhealthy | Resilience4j, Hystrix (deprecated) |
+| **Message Broker** | Async communication, event-driven architecture | Kafka, RabbitMQ, ActiveMQ, AWS SQS |
+| **Distributed Tracing** | Track a request across multiple services | Zipkin, Jaeger, OpenTelemetry |
+| **Centralized Logging** | Aggregate logs from all services in one place | ELK (Elasticsearch + Logstash + Kibana), Loki + Grafana |
+| **Container Orchestration** | Deploy, scale, manage containerized services | Kubernetes, Docker Swarm, AWS ECS |
+| **CI/CD Pipeline** | Automated build, test, deploy per service | Jenkins, GitLab CI, GitHub Actions, ArgoCD |
+| **Service Mesh** | Handle mTLS, retries, load balancing at infra level | Istio, Linkerd, Consul Connect |
+
+---
+
+### 15.7 Communication Patterns
+
+#### Synchronous Communication
+
+```
+Service A ──── HTTP/REST or gRPC ────► Service B
+         ◄──── response ──────────────┘
+
+Pros: Simple, immediate response
+Cons: Tight coupling, cascading failures, latency chains
+```
+
+| Protocol | Format | Speed | Use Case |
+|----------|--------|-------|----------|
+| **REST** | JSON over HTTP/1.1 | Moderate | Public APIs, CRUD |
+| **gRPC** | Protobuf over HTTP/2 | Fast (binary, streaming) | Internal service-to-service |
+| **GraphQL** | JSON over HTTP | Moderate | Frontend-driven queries |
+
+#### Asynchronous Communication
+
+```
+Service A ──► [Message Broker] ──► Service B
+              (Kafka / RabbitMQ)    (processes later)
+
+Pros: Loose coupling, resilient, buffering
+Cons: Eventual consistency, harder to debug, message ordering
+```
+
+| Pattern | Description | Use Case |
+|---------|-------------|----------|
+| **Event-Driven** | Service publishes event, others react | Order placed → notify inventory, payment, email |
+| **Command Queue** | Send specific command to a service | "Process Payment for Order #123" |
+| **Request-Reply** | Async request with correlation ID for response | Long-running operations |
+
+#### When to Use Which?
+
+```
+Need immediate response?
+  ├── YES → Synchronous (REST/gRPC)
+  └── NO
+       ├── Fire-and-forget? → Async Event (Kafka)
+       ├── Need guaranteed delivery? → Message Queue (RabbitMQ)
+       └── Long-running process? → Async with callback/polling
+```
+
+---
+
+### 15.8 Best Practices
+
+#### Design Principles
+
+| Practice | Description |
+|----------|-------------|
+| **Single Responsibility** | Each service does ONE business capability well. Don't create "god services". |
+| **Database per Service** | Each service owns its data. No direct DB access across services. Share data via APIs only. |
+| **Design for Failure** | Every network call can fail. Use retries, circuit breakers, timeouts, fallbacks, bulkheads. |
+| **Smart Endpoints, Dumb Pipes** | Business logic lives in services, not in the messaging infrastructure. Keep message brokers simple. |
+| **Decentralized Governance** | Each team decides their tech stack, CI/CD, deployment cadence. No central committee. |
+| **Automate Everything** | CI/CD, infrastructure (IaC), testing, monitoring. Manual ops doesn't scale with 50+ services. |
+| **API-First Design** | Define API contracts (OpenAPI, Protobuf) before implementation. Enables parallel development. |
+| **Backward-Compatible Changes** | Never break existing consumers. Add fields, don't remove or rename. Use API versioning. |
+| **Idempotent Operations** | Network retries will send duplicate requests. Ensure processing the same request twice is safe. |
+| **Correlation IDs** | Generate a unique ID at the API Gateway, pass it through every service. Essential for debugging. |
+
+#### API Versioning Strategies
+
+```
+// 1. URL Versioning (most common)
+GET /api/v1/users
+GET /api/v2/users
+
+// 2. Header Versioning
+GET /api/users
+Accept: application/vnd.myapp.v2+json
+
+// 3. Query Parameter
+GET /api/users?version=2
+```
+
+#### Health Checks
+
+Every service should expose health endpoints:
+
+```java
+// Spring Boot Actuator
+GET /actuator/health
+
+// Response:
+{
+    "status": "UP",
+    "components": {
+        "db": { "status": "UP" },
+        "redis": { "status": "UP" },
+        "kafka": { "status": "DOWN" }  // Problem detected!
+    }
+}
+```
+
+**Liveness probe:** Is the service running? (restart if not)
+**Readiness probe:** Is the service ready to accept traffic? (remove from load balancer if not)
+
+#### Logging Best Practices
+
+```json
+{
+    "timestamp": "2026-02-25T10:30:00Z",
+    "level": "ERROR",
+    "service": "order-service",
+    "correlationId": "abc-123-xyz",
+    "traceId": "4bf92f3577b34da6",
+    "message": "Payment failed for order #456",
+    "userId": "user-789",
+    "errorCode": "PAYMENT_TIMEOUT",
+    "duration_ms": 5023
+}
+```
+
+- Use **structured logs** (JSON), not plain text
+- Include **correlation ID** in every log
+- Use **log levels** properly: ERROR (action needed), WARN (potential issue), INFO (business events), DEBUG (dev only)
+- **Never log** sensitive data (passwords, tokens, PII)
+
+---
+
+### 15.9 Migrating from Monolith to Microservices
+
+#### Step-by-Step Strategy
+
+```
+Phase 1: Understand          Phase 2: Prepare            Phase 3: Extract
+┌──────────────────┐        ┌──────────────────┐        ┌──────────────────┐
+│ Identify bounded │        │ Modularize the   │        │ Extract services │
+│ contexts / seams │        │ monolith first   │        │ one at a time    │
+│                  │        │ (clean code)     │        │                  │
+│ Map dependencies │        │ Add API Gateway  │        │ Use Strangler    │
+│ between modules  │        │ in front         │        │ Fig pattern      │
+│                  │        │                  │        │                  │
+│ Identify data    │        │ Set up CI/CD,    │        │ Start with least │
+│ ownership        │        │ monitoring, K8s  │        │ coupled module   │
+└──────────────────┘        └──────────────────┘        └──────────────────┘
+```
+
+#### Phase 1: Identify Bounded Contexts (Domain-Driven Design)
+
+A **Bounded Context** is a boundary within which a particular domain model applies. Each bounded context is a candidate for a microservice.
+
+```
+E-Commerce Monolith — Bounded Contexts:
+
+┌─────────────────────────────────────────────────────────┐
+│                    MONOLITH                              │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌───────────┐  │
+│  │  User    │ │  Product │ │  Order   │ │  Payment  │  │
+│  │ Context  │ │ Context  │ │ Context  │ │  Context  │  │
+│  │          │ │          │ │          │ │           │  │
+│  │ -Register│ │ -Catalog │ │ -Cart    │ │ -Charge   │  │
+│  │ -Login   │ │ -Search  │ │ -Checkout│ │ -Refund   │  │
+│  │ -Profile │ │ -Reviews │ │ -History │ │ -Invoices │  │
+│  └──────────┘ └──────────┘ └──────────┘ └───────────┘  │
+│       ▲              ▲            ▲            ▲        │
+│       │              │            │            │        │
+│       └──── These are natural service boundaries ──┘    │
+└─────────────────────────────────────────────────────────┘
+```
+
+**How to identify bounded contexts:**
+1. **Look at the nouns** in your domain: Users, Products, Orders, Payments → each is a context
+2. **Look at team ownership**: Who owns what? Each team's responsibility = a context
+3. **Identify data ownership**: Which tables belong together? Tables that are always queried/updated together = same context
+4. **Find the seams**: Where are the natural boundaries? Where is coupling lowest?
+
+#### Phase 2: Modularize the Monolith
+
+**Before extracting services**, clean up the monolith internally:
+
+```
+BEFORE (Big Ball of Mud):        AFTER (Modular Monolith):
+┌────────────────────────┐      ┌─────────────────────────────┐
+│ Everything mixed       │      │  ┌──────┐  ┌──────┐        │
+│ together, circular     │      │  │ User │  │Order │        │
+│ dependencies, shared   │  ──► │  │Module│  │Module│        │
+│ tables, no boundaries  │      │  │  API │  │  API │        │
+│                        │      │  └──┬───┘  └──┬───┘        │
+└────────────────────────┘      │     │         │             │
+                                │  (internal APIs, no direct  │
+                                │   database sharing)         │
+                                └─────────────────────────────┘
+```
+
+Steps:
+1. **Separate packages/modules** per bounded context
+2. **Remove circular dependencies** between modules
+3. **Define clear internal APIs** between modules (no direct cross-module DB queries)
+4. **Separate database schemas** per module (even within the same DB)
+5. **Write integration tests** at module boundaries
+
+#### Phase 3: Extract Services (Strangler Fig Pattern)
+
+Extract one service at a time, starting with the **least coupled, highest-value** module.
+
+```
+Step 1: Add API Gateway in front of monolith
+  Client ──► [API Gateway] ──► Monolith (handles everything)
+
+Step 2: Extract User Service
+  Client ──► [API Gateway] ──┬──► User Service (NEW)
+                              └──► Monolith (everything else)
+
+Step 3: Extract Order Service
+  Client ──► [API Gateway] ──┬──► User Service
+                              ├──► Order Service (NEW)
+                              └──► Monolith (remaining)
+
+Step 4: Extract Payment Service
+  Client ──► [API Gateway] ──┬──► User Service
+                              ├──► Order Service
+                              ├──► Payment Service (NEW)
+                              └──► Monolith (shrinking...)
+
+Step N: Monolith fully decomposed → decommission
+```
+
+#### Which Service to Extract First?
+
+| Factor | Score | Example |
+|--------|-------|---------|
+| **Low coupling with monolith** | High priority | Notification service — few dependencies |
+| **High business value** | High priority | Payment service — critical, needs scaling |
+| **Clear bounded context** | High priority | Auth service — well-defined scope |
+| **Independent scaling need** | High priority | Search service — compute heavy |
+| **Frequent changes** | Medium priority | Recommendation engine — changes often |
+| **Different tech requirement** | Medium priority | ML model — needs Python |
+
+**Bad first choice:** Order service that tightly touches users, products, payments, inventory — too many dependencies.
+
+#### Data Migration Strategy
+
+This is the **hardest part** of decomposition. Options:
+
+```
+1. Shared Database (TEMPORARY stepping stone — NOT recommended long-term)
+   ┌──────────┐  ┌──────────┐
+   │ Service A│  │ Service B│
+   └────┬─────┘  └────┬─────┘
+        │              │
+        └──── Shared DB ────┘     ← Anti-pattern but useful during migration
+
+2. Database per Service (TARGET state)
+   ┌──────────┐  ┌──────────┐
+   │ Service A│  │ Service B│
+   │   DB A   │  │   DB B   │
+   └──────────┘  └──────────┘
+
+3. Data Sync During Migration
+   ┌──────────┐           ┌──────────┐
+   │ Monolith │──CDC──►   │ New      │
+   │  (old DB)│ (Change   │ Service  │
+   └──────────┘  Data     │ (new DB) │
+                Capture)   └──────────┘
+```
+
+**Steps for data split:**
+1. Identify which tables belong to the new service
+2. Create a new database for the service
+3. Set up **Change Data Capture (CDC)** to sync data from monolith's DB to new DB (e.g., Debezium)
+4. Route reads to new service, writes still to monolith (dual-write or sync)
+5. Once confident, route writes to new service
+6. Remove old tables from monolith
+7. Turn off CDC
+
+#### Common Anti-Patterns to Avoid
+
+| Anti-Pattern | Problem | Fix |
+|-------------|---------|-----|
+| **Distributed Monolith** | Services are tightly coupled, must be deployed together | Ensure independent deployability. If services can't be deployed independently, they shouldn't be separate. |
+| **Shared Database** | Multiple services read/write the same tables | Database per service. Share data via APIs/events. |
+| **Too Many Services Too Soon** | Nano-services with high overhead, hard to manage | Start with a modular monolith. Extract when you have a clear reason. |
+| **Chatty Communication** | Service A calls Service B 20 times per request | Batch APIs, aggregate data, consider merging services. |
+| **No API Gateway** | Clients coupled to internal service URLs | Add gateway for routing, auth, rate limiting. |
+| **Ignoring Data Consistency** | Assuming ACID works across services | Use Saga pattern, eventual consistency, idempotent operations. |
+| **Big Bang Migration** | Rewrite entire monolith as microservices at once | Use Strangler Fig. Incremental migration. |
+| **God Service** | One service does too much (mini-monolith) | Re-evaluate bounded contexts. Split further. |
+
+---
+
+### 15.10 Microservices Decision Framework
+
+Use this flowchart to decide:
+
+```
+START
+  │
+  ├── Is your team < 5 developers?
+  │     └── YES → Monolith (not enough people to manage microservices)
+  │
+  ├── Is the domain simple (CRUD, few modules)?
+  │     └── YES → Monolith (microservices is overkill)
+  │
+  ├── Do you have DevOps maturity (CI/CD, K8s, monitoring)?
+  │     └── NO → Monolith or Modular Monolith first
+  │
+  ├── Do different modules need independent scaling?
+  │     └── YES → Microservices
+  │
+  ├── Do teams need to deploy independently?
+  │     └── YES → Microservices
+  │
+  ├── Is the system complex with clear bounded contexts?
+  │     └── YES → Microservices
+  │
+  └── DEFAULT → Start with Modular Monolith,
+                 extract microservices when pain points emerge
+```
+
+### 15.11 The Modular Monolith — Best of Both Worlds
+
+A **Modular Monolith** is the middle ground — a single deployable with well-defined internal module boundaries:
+
+```
+┌──────────────────────────────────────────┐
+│            Modular Monolith              │
+│                                          │
+│  ┌──────────┐  ┌──────────┐  ┌────────┐ │
+│  │  User    │  │  Order   │  │Payment │ │
+│  │  Module  │  │  Module  │  │Module  │ │
+│  │          │  │          │  │        │ │
+│  │  Own     │  │  Own     │  │ Own    │ │
+│  │  Schema  │  │  Schema  │  │ Schema │ │
+│  └────┬─────┘  └────┬─────┘  └───┬────┘ │
+│       │              │            │      │
+│       └── Internal APIs only ─────┘      │
+│                                          │
+│  ┌──────────────────────────────────┐    │
+│  │          Shared Database         │    │
+│  │   (separate schemas per module)  │    │
+│  └──────────────────────────────────┘    │
+└──────────────────────────────────────────┘
+```
+
+| Benefit | Description |
+|---------|-------------|
+| **Simple deployment** | One artifact, one pipeline, one server |
+| **Clear boundaries** | Modules communicate through internal APIs |
+| **Easy extraction** | When a module needs to become a service, the boundary is already clean |
+| **No network overhead** | In-process calls, no latency |
+| **ACID transactions** | Single database, full consistency |
+
+**Migration path:** `Monolith → Modular Monolith → Microservices (as needed)`
+
+---
+
+### 15.12 Interview Cheat Sheet — Quick Reference
+
+| Question | Answer |
+|----------|--------|
+| When to use monolith? | Small team, simple domain, early stage, MVP, tight budget |
+| When to use microservices? | Large team, complex domain, independent scaling/deployment needed |
+| How to decompose? | Identify bounded contexts (DDD), Strangler Fig pattern, extract least-coupled first |
+| How to handle transactions across services? | Saga pattern (choreography or orchestration) |
+| How do services communicate? | Sync: REST/gRPC. Async: Kafka/RabbitMQ |
+| How to handle service failures? | Circuit breaker, retry with backoff, bulkhead, fallback |
+| How to find services? | Service discovery (Eureka, Consul, K8s DNS) |
+| How to ensure data consistency? | Eventual consistency, Saga, Outbox pattern, idempotent consumers |
+| What's the biggest challenge? | Data management — splitting the database and maintaining consistency |
+| What's a distributed monolith? | Anti-pattern: services that must be deployed together — worst of both worlds |
+| What DevOps is needed? | CI/CD per service, containerization (Docker/K8s), centralized logging, distributed tracing, monitoring |
+| What's the recommended migration path? | Monolith → Modular Monolith → Extract services incrementally |
