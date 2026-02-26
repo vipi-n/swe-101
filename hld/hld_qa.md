@@ -1,11 +1,11 @@
 # High-Level Design — Interview Q&A
 
 ## Table of Contents
-1. [AP System: Reconciling Data After Partition Heals](#q1-ap-system-reconciling-data-after-partition-heals)
-2. [CP System: Handling Prolonged Partitions](#q2-cp-system-handling-prolonged-partitions)
-3. [Designing a Rate Limiter](#q3-designing-a-rate-limiter-for-a-high-traffic-api)
+1. [AP System: Reconciling Data After Partition Heals](#q1-ap-system--reconciling-data-after-partition-heals)
+2. [CP System: Handling Prolonged Partitions](#q2-cp-system--handling-prolonged-partitions)
+3. [Designing a Rate Limiter for a High-Traffic API](#q3-designing-a-rate-limiter-for-a-high-traffic-api)
 4. [Data Consistency Across Microservices](#q4-data-consistency-across-microservices)
-5. [Distributed Transactions: Saga vs 2PC](#q5-distributed-transactions-saga-vs-two-phase-commit)
+5. [Distributed Transactions: Saga vs Two-Phase Commit](#q5-distributed-transactions--saga-vs-two-phase-commit)
 
 ---
 
