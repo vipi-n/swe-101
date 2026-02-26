@@ -3079,6 +3079,1235 @@ int total = futures.stream()
 
 ---
 
+### Q48.1: What is ThreadLocal? When to use it?
+
+**Definition:** `ThreadLocal` provides **thread-local variables** — each thread that accesses the variable gets its own, independently initialized copy. No synchronization needed because there is **zero sharing**.
+
+#### How It Works
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    THREADLOCAL - PER-THREAD STORAGE                     │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   ThreadLocal<String> userContext = new ThreadLocal<>();                │
+│                                                                         │
+│   ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────┐   │
+│   │    Thread 1      │   │    Thread 2      │   │    Thread 3      │   │
+│   │  ┌────────────┐  │   │  ┌────────────┐  │   │  ┌────────────┐  │   │
+│   │  │ "user-A"   │  │   │  │ "user-B"   │  │   │  │ "user-C"   │  │   │
+│   │  └────────────┘  │   │  └────────────┘  │   │  └────────────┘  │   │
+│   └──────────────────┘   └──────────────────┘   └──────────────────┘   │
+│                                                                         │
+│   Each thread sees ONLY its own value — completely isolated!            │
+│   No locks, no synchronization, no contention.                          │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Basic Usage
+
+```java
+public class ThreadLocalDemo {
+    // Create a ThreadLocal variable
+    private static final ThreadLocal<String> currentUser = new ThreadLocal<>();
+
+    public static void main(String[] args) {
+        // Thread 1 sets its own value
+        Thread t1 = new Thread(() -> {
+            currentUser.set("Alice");
+            System.out.println(Thread.currentThread().getName() 
+                + ": " + currentUser.get());  // Alice
+            currentUser.remove();  // ⚠️ Always clean up!
+        });
+
+        // Thread 2 sets its own value — completely independent
+        Thread t2 = new Thread(() -> {
+            currentUser.set("Bob");
+            System.out.println(Thread.currentThread().getName() 
+                + ": " + currentUser.get());  // Bob
+            currentUser.remove();
+        });
+
+        t1.start();
+        t2.start();
+    }
+}
+```
+
+#### Real-World Use Case: Per-Request User Context
+
+```java
+// Common pattern in web applications (Spring, servlets)
+public class UserContext {
+    private static final ThreadLocal<String> currentUser = new ThreadLocal<>();
+    private static final ThreadLocal<String> requestId = new ThreadLocal<>();
+
+    public static void set(String user, String reqId) {
+        currentUser.set(user);
+        requestId.set(reqId);
+    }
+
+    public static String getUser()     { return currentUser.get(); }
+    public static String getRequestId() { return requestId.get(); }
+
+    public static void clear() {
+        currentUser.remove();
+        requestId.remove();
+    }
+}
+
+// In a servlet filter or Spring interceptor:
+public class RequestFilter implements Filter {
+    @Override
+    public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain) {
+        try {
+            UserContext.set(extractUser(req), generateRequestId());
+            chain.doFilter(req, res);  // All downstream code can access UserContext
+        } finally {
+            UserContext.clear();  // ⚠️ CRITICAL: always clean up in thread pools!
+        }
+    }
+}
+
+// Any service/DAO can access the context without passing it as parameter:
+public class OrderService {
+    public void placeOrder(Order order) {
+        String user = UserContext.getUser();  // Get current user
+        String reqId = UserContext.getRequestId();
+        logger.info("[{}] User {} placing order", reqId, user);
+    }
+}
+```
+
+#### ThreadLocal with Initial Value
+
+```java
+// Method 1: Override initialValue
+ThreadLocal<SimpleDateFormat> dateFormat = new ThreadLocal<>() {
+    @Override
+    protected SimpleDateFormat initialValue() {
+        return new SimpleDateFormat("yyyy-MM-dd");  // Each thread gets its own
+    }
+};
+
+// Method 2: withInitial (Java 8+ — cleaner)
+ThreadLocal<SimpleDateFormat> dateFormat = 
+    ThreadLocal.withInitial(() -> new SimpleDateFormat("yyyy-MM-dd"));
+
+// Usage — no more thread-safety issues with SimpleDateFormat!
+String formatted = dateFormat.get().format(new Date());
+```
+
+#### InheritableThreadLocal
+
+```java
+// Regular ThreadLocal — child threads do NOT inherit parent's value
+ThreadLocal<String> tl = new ThreadLocal<>();
+tl.set("parent-value");
+new Thread(() -> System.out.println(tl.get())).start();  // null ❌
+
+// InheritableThreadLocal — child threads DO inherit
+InheritableThreadLocal<String> itl = new InheritableThreadLocal<>();
+itl.set("parent-value");
+new Thread(() -> System.out.println(itl.get())).start();  // "parent-value" ✅
+```
+
+#### ⚠️ Memory Leak Problem with Thread Pools
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                   MEMORY LEAK IN THREAD POOLS                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   Thread Pool (threads are REUSED, not destroyed)                       │
+│                                                                         │
+│   Request 1 → Thread-1: set("user-A") → process → FORGOT remove() ❌   │
+│   Request 2 → Thread-1: get() → still returns "user-A"! WRONG DATA!    │
+│                                                                         │
+│   Problems:                                                             │
+│   1. Stale data — next request sees previous user's data                │
+│   2. Memory leak — ThreadLocal values never garbage collected            │
+│   3. Security risk — user A's data leaks to user B's request            │
+│                                                                         │
+│   Solution: ALWAYS call remove() in a finally block                     │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+```java
+// ❌ WRONG — never cleaned up
+public void handleRequest() {
+    userContext.set("Alice");
+    processRequest();
+    // Thread goes back to pool with "Alice" still set!
+}
+
+// ✅ CORRECT — always clean up
+public void handleRequest() {
+    try {
+        userContext.set("Alice");
+        processRequest();
+    } finally {
+        userContext.remove();  // Always clean up!
+    }
+}
+```
+
+#### ThreadLocal vs volatile vs synchronized
+
+| Aspect | `ThreadLocal` | `volatile` | `synchronized` |
+|--------|---------------|------------|----------------|
+| **Purpose** | Per-thread private data | Visibility of shared data | Mutual exclusion + visibility |
+| **Sharing** | No sharing (each thread own copy) | All threads share one value | All threads share, one at a time |
+| **Thread safety** | No contention at all | Prevents stale reads only | Full safety (atomic + visible) |
+| **Performance** | Fastest (no contention) | Fast (no locking) | Slower (lock contention) |
+| **Use case** | User context, date formatters | Flags, status fields | Compound operations (read-modify-write) |
+
+#### Common Use Cases
+
+| Use Case | Why ThreadLocal? |
+|----------|------------------|
+| `SimpleDateFormat` | Not thread-safe, each thread needs its own |
+| User/Request context | Pass context without method parameters |
+| Database connections | Per-thread connection in non-pooled scenarios |
+| Transaction context | Track current transaction per thread |
+| Random number generator | `ThreadLocalRandom` — avoids contention |
+
+---
+
+### Q48.2: volatile vs synchronized vs Atomic — When to use which?
+
+**These three solve different levels of the thread-safety problem:**
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│              THREE LEVELS OF THREAD SAFETY                              │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  Level 1: VISIBILITY ──────────────────────── volatile                  │
+│  "All threads see the latest value"                                     │
+│  Example: boolean flag, status field                                    │
+│                                                                         │
+│  Level 2: VISIBILITY + ATOMICITY ──────────── Atomic classes            │
+│  "Thread-safe single variable operations"                               │
+│  Example: counter++, compare-and-swap                                   │
+│                                                                         │
+│  Level 3: VISIBILITY + ATOMICITY + MUTUAL EXCLUSION ── synchronized     │
+│  "Only one thread in critical section"                                  │
+│  Example: transfer money (read balance + write balance)                 │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### The Problem — Why `volatile` Isn't Enough for count++
+
+```java
+// count++ is NOT atomic! It's 3 operations:
+// 1. READ count from memory
+// 2. INCREMENT count
+// 3. WRITE count back to memory
+
+volatile int count = 0;  // volatile only guarantees visibility!
+
+// Thread 1: READ 5 → INCREMENT 6 → (not yet written)
+// Thread 2: READ 5 → INCREMENT 6 → WRITE 6
+// Thread 1: WRITE 6  ← Lost update! Should be 7!
+```
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│              volatile count++ = BROKEN!                                 │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  count = 5                                                              │
+│                                                                         │
+│  Thread 1             Thread 2                                          │
+│  ─────────            ─────────                                         │
+│  read(5)              read(5)       ← Both read 5                       │
+│  add(5+1=6)           add(5+1=6)    ← Both compute 6                   │
+│  write(6)             write(6)      ← Both write 6                      │
+│                                                                         │
+│  Expected: 7    Actual: 6  ← LOST UPDATE! ❌                           │
+│                                                                         │
+│  volatile ensures visibility, NOT atomicity of compound ops!            │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Solution Comparison
+
+```java
+// ═══════════════════════════════════════════════════════════════════════
+// SOLUTION 1: volatile — Only for simple read/write (no compound ops)
+// ═══════════════════════════════════════════════════════════════════════
+class VolatileExample {
+    volatile boolean running = true;  // ✅ Simple flag — perfect for volatile
+
+    void stop() {
+        running = false;  // ✅ Single write — atomic by nature
+    }
+
+    void run() {
+        while (running) {  // ✅ Single read — always sees latest value
+            doWork();
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// SOLUTION 2: AtomicInteger — For lock-free atomic compound operations
+// ═══════════════════════════════════════════════════════════════════════
+class AtomicExample {
+    AtomicInteger count = new AtomicInteger(0);
+
+    void increment() {
+        count.incrementAndGet();  // ✅ Atomic read-modify-write (CAS)
+    }
+
+    int getCount() {
+        return count.get();  // ✅ Always latest value
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// SOLUTION 3: synchronized — For multiple related operations
+// ═══════════════════════════════════════════════════════════════════════
+class SynchronizedExample {
+    private int balance = 1000;
+
+    synchronized void transfer(SynchronizedExample target, int amount) {
+        // ✅ Multiple operations that MUST happen together
+        if (this.balance >= amount) {
+            this.balance -= amount;
+            target.balance += amount;
+        }
+    }
+}
+```
+
+#### Quick Decision Guide
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    WHICH ONE TO USE?                                    │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  ► Is it a simple boolean flag or status?                               │
+│      → volatile ✅                                                      │
+│                                                                         │
+│  ► Is it a single counter/value with increment/compare-and-set?         │
+│      → AtomicInteger / AtomicLong / AtomicReference ✅                  │
+│                                                                         │
+│  ► Do you need to update MULTIPLE variables together atomically?        │
+│      → synchronized or Lock ✅                                          │
+│                                                                         │
+│  ► Do you need per-thread isolated data with no sharing?                │
+│      → ThreadLocal ✅                                                   │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+| Feature | `volatile` | `Atomic*` | `synchronized` |
+|---------|------------|-----------|----------------|
+| **Visibility** | ✅ Yes | ✅ Yes | ✅ Yes |
+| **Atomicity** | ❌ No (compound ops) | ✅ Yes (single variable) | ✅ Yes (block) |
+| **Mutual Exclusion** | ❌ No | ❌ No | ✅ Yes |
+| **Blocking** | No | No (lock-free) | Yes (waits for lock) |
+| **Performance** | Fastest | Fast | Slowest |
+| **Use for** | Flags, status | Counters, CAS | Complex operations |
+
+---
+
+### Q48.3: What are Atomic Classes? How do they work?
+
+**Definition:** Atomic classes (`java.util.concurrent.atomic`) provide **lock-free, thread-safe** operations on single variables using **CAS (Compare-And-Swap)** — a CPU-level instruction.
+
+#### What is CAS (Compare-And-Swap)?
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    CAS (Compare-And-Swap)                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  CAS(memory, expectedValue, newValue)                                   │
+│                                                                         │
+│  "If the value in memory is what I expect,                              │
+│   update it to the new value. Otherwise, retry."                        │
+│                                                                         │
+│  Step 1: Read current value      → currentVal = 5                       │
+│  Step 2: Compute new value       → newVal = 6                           │
+│  Step 3: CAS(memory, 5, 6)                                             │
+│           ├── If memory still 5 → Write 6 ✅ Success!                   │
+│           └── If memory changed → Retry from Step 1 🔄                  │
+│                                                                         │
+│  This is a SINGLE CPU instruction — cannot be interrupted!              │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│         WHY CAS IS BETTER THAN LOCKING                                 │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  LOCKING (synchronized):           CAS (Atomic):                        │
+│  ┌─────────────────────┐           ┌─────────────────────┐              │
+│  │ Thread 1: lock()    │           │ Thread 1: CAS(5→6) ✅│             │
+│  │ Thread 1: count++   │           │ Thread 2: CAS(5→6) ❌│ ← retry    │
+│  │ Thread 1: unlock()  │           │ Thread 2: CAS(6→7) ✅│             │
+│  │                     │           │                      │             │
+│  │ Thread 2: BLOCKED ⏳│           │ Thread 2: NEVER      │             │
+│  │ Thread 2: lock()    │           │ BLOCKED! Spins.      │             │
+│  │ Thread 2: count++   │           │                      │             │
+│  │ Thread 2: unlock()  │           │                      │             │
+│  └─────────────────────┘           └─────────────────────┘              │
+│                                                                         │
+│  Locking: Threads wait (context switch overhead)                        │
+│  CAS: Threads retry (no blocking, no context switch)                    │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Available Atomic Classes
+
+| Class | Wraps | Common Methods |
+|-------|-------|----------------|
+| `AtomicInteger` | `int` | `get()`, `set()`, `incrementAndGet()`, `compareAndSet()` |
+| `AtomicLong` | `long` | Same as AtomicInteger but for long |
+| `AtomicBoolean` | `boolean` | `get()`, `set()`, `compareAndSet()` |
+| `AtomicReference<V>` | Object ref | `get()`, `set()`, `compareAndSet()` |
+| `AtomicIntegerArray` | `int[]` | `get(i)`, `set(i, val)`, `incrementAndGet(i)` |
+| `LongAdder` | `long` | `add()`, `sum()` — better for high contention counters |
+
+#### Code Examples
+
+```java
+// ═══════════════════════════════════════════════════════════════════════
+// AtomicInteger — Thread-safe counter without locks
+// ═══════════════════════════════════════════════════════════════════════
+AtomicInteger counter = new AtomicInteger(0);
+
+counter.incrementAndGet();    // atomically: ++counter → returns 1
+counter.decrementAndGet();    // atomically: --counter → returns 0
+counter.addAndGet(5);         // atomically: counter += 5 → returns 5
+counter.getAndAdd(3);         // atomically: old=5, counter += 3 → returns 5 (old)
+counter.get();                // read current value → 8
+
+// compareAndSet — update ONLY IF current value matches expected
+counter.set(10);
+counter.compareAndSet(10, 20);  // if value==10, set to 20 → true
+counter.compareAndSet(10, 30);  // if value==10, set to 30 → false (it's 20 now)
+
+// ═══════════════════════════════════════════════════════════════════════
+// AtomicBoolean — Thread-safe flag
+// ═══════════════════════════════════════════════════════════════════════
+AtomicBoolean initialized = new AtomicBoolean(false);
+
+// Ensure initialization runs EXACTLY ONCE across all threads
+if (initialized.compareAndSet(false, true)) {
+    // Only one thread enters here!
+    performInitialization();
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// AtomicReference — Thread-safe object reference
+// ═══════════════════════════════════════════════════════════════════════
+AtomicReference<String> ref = new AtomicReference<>("initial");
+
+ref.set("updated");
+String old = ref.getAndSet("new-value");  // returns "updated", sets "new-value"
+ref.compareAndSet("new-value", "final");  // CAS on object reference
+
+// ═══════════════════════════════════════════════════════════════════════
+// LongAdder — High-performance counter (better than AtomicLong under contention)
+// ═══════════════════════════════════════════════════════════════════════
+LongAdder adder = new LongAdder();
+adder.increment();    // Thread-safe increment
+adder.add(10);        // Thread-safe add
+long total = adder.sum();  // Get final value (slightly stale under contention)
+```
+
+#### Practical Example: Thread-Safe Singleton with AtomicReference
+
+```java
+public class Singleton {
+    private static final AtomicReference<Singleton> INSTANCE = new AtomicReference<>();
+
+    private Singleton() {}
+
+    public static Singleton getInstance() {
+        Singleton current = INSTANCE.get();
+        if (current != null) return current;
+        
+        INSTANCE.compareAndSet(null, new Singleton());
+        return INSTANCE.get();
+    }
+}
+```
+
+#### AtomicInteger vs LongAdder
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│           AtomicInteger vs LongAdder                                   │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  AtomicInteger (single CAS):                                           │
+│  ┌─────────────────────┐                                                │
+│  │     value = 5       │ ← All threads CAS on same memory location      │
+│  └─────────────────────┘   High contention = many retries!              │
+│                                                                         │
+│  LongAdder (striped):                                                   │
+│  ┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐                               │
+│  │ cell0 │ │ cell1 │ │ cell2 │ │ cell3 │  ← Each thread writes to      │
+│  │ = 2   │ │ = 1   │ │ = 1   │ │ = 1   │     different cell             │
+│  └───────┘ └───────┘ └───────┘ └───────┘                               │
+│  sum() = 2 + 1 + 1 + 1 = 5       Low contention = fast!               │
+│                                                                         │
+│  Use AtomicInteger for: Low contention, need exact real-time value      │
+│  Use LongAdder for: High contention counters (metrics, stats)           │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Q48.4: What is ReentrantLock? How is it different from synchronized?
+
+**Definition:** `ReentrantLock` is an explicit lock from `java.util.concurrent.locks` that provides more flexibility than the `synchronized` keyword.
+
+**"Reentrant"** means the same thread can acquire the lock multiple times without deadlocking itself.
+
+```java
+// ═══════════════════════════════════════════════════════════════════════
+// Basic ReentrantLock usage
+// ═══════════════════════════════════════════════════════════════════════
+class Counter {
+    private int count = 0;
+    private final ReentrantLock lock = new ReentrantLock();
+
+    public void increment() {
+        lock.lock();       // Acquire lock
+        try {
+            count++;
+        } finally {
+            lock.unlock();  // ⚠️ ALWAYS unlock in finally!
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// tryLock — Non-blocking, with timeout
+// ═══════════════════════════════════════════════════════════════════════
+ReentrantLock lock = new ReentrantLock();
+
+if (lock.tryLock()) {  // Returns immediately if lock unavailable
+    try {
+        // critical section
+    } finally {
+        lock.unlock();
+    }
+} else {
+    // Do something else — not blocked!
+}
+
+// With timeout
+if (lock.tryLock(5, TimeUnit.SECONDS)) {  // Wait at most 5 seconds
+    try {
+        // critical section
+    } finally {
+        lock.unlock();
+    }
+} else {
+    System.out.println("Could not acquire lock within 5 seconds");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Fair lock — threads acquire in FIFO order
+// ═══════════════════════════════════════════════════════════════════════
+ReentrantLock fairLock = new ReentrantLock(true);  // fair=true
+// Longest-waiting thread gets the lock next (prevents starvation)
+// Slightly slower than unfair lock
+
+// ═══════════════════════════════════════════════════════════════════════
+// Interruptible lock — can be interrupted while waiting
+// ═══════════════════════════════════════════════════════════════════════
+try {
+    lock.lockInterruptibly();  // Can be interrupted!
+    try {
+        // critical section
+    } finally {
+        lock.unlock();
+    }
+} catch (InterruptedException e) {
+    // Thread was interrupted while waiting for lock
+}
+```
+
+#### ReentrantLock vs synchronized
+
+| Feature | `synchronized` | `ReentrantLock` |
+|---------|---------------|-----------------|
+| **Lock/Unlock** | Automatic (block scope) | Manual (lock/unlock) |
+| **tryLock** | ❌ No | ✅ Yes (non-blocking) |
+| **Timeout** | ❌ No | ✅ `tryLock(time)` |
+| **Fairness** | ❌ No (unfair) | ✅ `new ReentrantLock(true)` |
+| **Interruptible** | ❌ No | ✅ `lockInterruptibly()` |
+| **Multiple Conditions** | ❌ One (wait/notify) | ✅ Multiple `Condition` objects |
+| **Performance** | Good | Slightly better under contention |
+| **Risk** | None (auto-release) | ⚠️ Must unlock in finally |
+
+#### When to Use Which?
+
+```
+Use synchronized when:
+  • Simple mutual exclusion is enough
+  • Don't need tryLock, timeout, or fairness
+  • Prefer simpler code with less risk
+
+Use ReentrantLock when:
+  • Need tryLock() to avoid blocking
+  • Need lock timeout
+  • Need fair ordering
+  • Need multiple Condition variables
+  • Need lockInterruptibly()
+```
+
+---
+
+### Q48.5: What is ReadWriteLock?
+
+**Definition:** `ReadWriteLock` allows **multiple threads to read simultaneously** but only **one thread to write** at a time. Perfect for read-heavy workloads.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    ReadWriteLock RULES                                  │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  ┌─────────────────────────────────────────────────────────────┐        │
+│  │  Read lock:   Multiple readers can hold it simultaneously   │        │
+│  │  Write lock:  Only ONE writer, and NO readers at same time  │        │
+│  └─────────────────────────────────────────────────────────────┘        │
+│                                                                         │
+│  Scenario              Read Lock    Write Lock    Allowed?              │
+│  ──────────            ─────────    ──────────    ────────              │
+│  Read + Read             ✅           —            ✅ YES               │
+│  Read + Write            ✅          ✅             ❌ NO                │
+│  Write + Write           —           ✅✅           ❌ NO                │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+```java
+class ThreadSafeCache {
+    private final Map<String, String> cache = new HashMap<>();
+    private final ReadWriteLock rwLock = new ReentrantReadWriteLock();
+    private final Lock readLock = rwLock.readLock();
+    private final Lock writeLock = rwLock.writeLock();
+
+    // Multiple threads can read simultaneously
+    public String get(String key) {
+        readLock.lock();
+        try {
+            return cache.get(key);
+        } finally {
+            readLock.unlock();
+        }
+    }
+
+    // Only one thread can write (blocks all readers & writers)
+    public void put(String key, String value) {
+        writeLock.lock();
+        try {
+            cache.put(key, value);
+        } finally {
+            writeLock.unlock();
+        }
+    }
+}
+```
+
+| Lock Type | `synchronized` | `ReadWriteLock` |
+|-----------|----------------|-----------------|
+| Read + Read | ❌ Blocked (one at a time) | ✅ Concurrent |
+| Read + Write | ❌ Blocked | ❌ Blocked |
+| Write + Write | ❌ Blocked | ❌ Blocked |
+| **Best for** | Write-heavy workloads | Read-heavy workloads |
+
+---
+
+### Q48.6: What is CountDownLatch?
+
+**Definition:** `CountDownLatch` allows one or more threads to **wait until a set of operations** in other threads completes. The count goes down — once it reaches **zero**, all waiting threads are released.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                       CountDownLatch (count=3)                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   Main Thread: latch.await()  ← BLOCKED, waiting for count=0           │
+│                                                                         │
+│   Worker 1: done → latch.countDown()  →  count = 2                      │
+│   Worker 2: done → latch.countDown()  →  count = 1                      │
+│   Worker 3: done → latch.countDown()  →  count = 0                      │
+│                                                                         │
+│   Main Thread: RELEASED! All workers done. ✅                           │
+│                                                                         │
+│   ⚠️ Single use — once count reaches 0, it CANNOT be reset!            │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+```java
+public class CountDownLatchDemo {
+    public static void main(String[] args) throws InterruptedException {
+        int workerCount = 3;
+        CountDownLatch latch = new CountDownLatch(workerCount);
+
+        for (int i = 0; i < workerCount; i++) {
+            final int id = i;
+            new Thread(() -> {
+                try {
+                    System.out.println("Worker " + id + " starting...");
+                    Thread.sleep((long) (Math.random() * 3000));  // Simulate work
+                    System.out.println("Worker " + id + " done!");
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    latch.countDown();  // Decrement count
+                }
+            }).start();
+        }
+
+        System.out.println("Main: waiting for all workers...");
+        latch.await();  // Blocks until count reaches 0
+        System.out.println("Main: all workers completed! Proceeding...");
+    }
+}
+// Output:
+// Main: waiting for all workers...
+// Worker 0 starting...
+// Worker 1 starting...
+// Worker 2 starting...
+// Worker 1 done!
+// Worker 0 done!
+// Worker 2 done!
+// Main: all workers completed! Proceeding...
+```
+
+#### Real-World Use Cases
+
+```java
+// Use Case 1: Wait for all microservices to be healthy before starting
+CountDownLatch servicesReady = new CountDownLatch(3);
+startService("AuthService", servicesReady);
+startService("UserService", servicesReady);
+startService("OrderService", servicesReady);
+servicesReady.await();  // Wait for all 3 services
+startLoadBalancer();
+
+// Use Case 2: Coordinate test — start all threads at the same time
+CountDownLatch startSignal = new CountDownLatch(1);
+for (int i = 0; i < 10; i++) {
+    new Thread(() -> {
+        startSignal.await();  // All threads wait here
+        performLoadTest();
+    }).start();
+}
+startSignal.countDown();  // Release all threads simultaneously!
+```
+
+---
+
+### Q48.7: What is CyclicBarrier?
+
+**Definition:** `CyclicBarrier` makes a set of threads **wait for each other** to reach a common barrier point. Unlike `CountDownLatch`, it's **reusable** (cyclic).
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    CyclicBarrier (parties=3)                            │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   Phase 1:                                                              │
+│   Thread 1: working... → barrier.await() ← waits                       │
+│   Thread 2: working... → barrier.await() ← waits                       │
+│   Thread 3: working... → barrier.await() ← ALL arrived! RELEASED! ✅   │
+│                                                                         │
+│   ── Barrier resets automatically ──                                    │
+│                                                                         │
+│   Phase 2:                                                              │
+│   Thread 1: working... → barrier.await() ← waits                       │
+│   Thread 2: working... → barrier.await() ← waits                       │
+│   Thread 3: working... → barrier.await() ← ALL arrived! RELEASED! ✅   │
+│                                                                         │
+│   Can be reused for multiple phases! 🔄                                 │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+```java
+public class CyclicBarrierDemo {
+    public static void main(String[] args) {
+        int parties = 3;
+        
+        // Optional barrier action runs when all parties arrive
+        CyclicBarrier barrier = new CyclicBarrier(parties, () -> {
+            System.out.println("=== All threads reached barrier! Merging results ===");
+        });
+
+        for (int i = 0; i < parties; i++) {
+            final int id = i;
+            new Thread(() -> {
+                try {
+                    // Phase 1
+                    System.out.println("Thread " + id + ": Phase 1 work done");
+                    barrier.await();  // Wait for others
+
+                    // Phase 2 (barrier resets!)
+                    System.out.println("Thread " + id + ": Phase 2 work done");
+                    barrier.await();  // Wait for others again
+
+                } catch (InterruptedException | BrokenBarrierException e) {
+                    e.printStackTrace();
+                }
+            }).start();
+        }
+    }
+}
+```
+
+#### CountDownLatch vs CyclicBarrier
+
+| Feature | `CountDownLatch` | `CyclicBarrier` |
+|---------|------------------|-----------------|
+| **Reusable?** | ❌ One-time use | ✅ Resets after each phase |
+| **Who waits?** | One thread waits for others | All threads wait for each other |
+| **Count** | Decremented by `countDown()` | Incremented by `await()` |
+| **Trigger** | External events (any thread) | Parties (specific thread count) |
+| **Barrier action** | ❌ No | ✅ Runs when all arrive |
+| **Use case** | "Wait for N events" | "All threads sync at a point" |
+
+---
+
+### Q48.8: What is Semaphore?
+
+**Definition:** A `Semaphore` controls access to a shared resource by maintaining a set of **permits**. Threads acquire permits to access the resource and release them when done. Limits **concurrent access** to a fixed number.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    Semaphore (permits=3)                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   ┌────────┐  ┌────────┐  ┌────────┐  ┌────────┐  ┌────────┐          │
+│   │Thread 1│  │Thread 2│  │Thread 3│  │Thread 4│  │Thread 5│          │
+│   └───┬────┘  └───┬────┘  └───┬────┘  └───┬────┘  └───┬────┘          │
+│       │           │           │           │           │                │
+│       ▼           ▼           ▼           │           │                │
+│   ┌─────────────────────────────────┐     │           │                │
+│   │     RESOURCE (max 3 access)     │  WAITING...  WAITING...          │
+│   │  [permit] [permit] [permit]     │                                  │
+│   │   T1 ✅     T2 ✅     T3 ✅     │  T4 will enter when              │
+│   └─────────────────────────────────┘  T1, T2, or T3 releases          │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+```java
+// Example: Connection pool with max 3 concurrent connections
+class ConnectionPool {
+    private final Semaphore semaphore;
+
+    public ConnectionPool(int maxConnections) {
+        this.semaphore = new Semaphore(maxConnections);  // e.g., 3 permits
+    }
+
+    public void useConnection() throws InterruptedException {
+        semaphore.acquire();  // Get permit (blocks if none available)
+        try {
+            System.out.println(Thread.currentThread().getName() + " using connection");
+            Thread.sleep(2000);  // Simulate work
+        } finally {
+            semaphore.release();  // Return permit
+            System.out.println(Thread.currentThread().getName() + " released connection");
+        }
+    }
+}
+
+// Usage: 10 threads, but only 3 can use the connection at once
+ConnectionPool pool = new ConnectionPool(3);
+for (int i = 0; i < 10; i++) {
+    new Thread(() -> {
+        try { pool.useConnection(); } 
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    }).start();
+}
+
+// Binary Semaphore (permits=1) — acts like a mutex/lock
+Semaphore mutex = new Semaphore(1);
+mutex.acquire();
+try { /* critical section */ } 
+finally { mutex.release(); }
+```
+
+#### Semaphore vs Other Synchronizers
+
+| Synchronizer | Purpose |
+|---|---|
+| `Semaphore` | Limit concurrent access to N |
+| `CountDownLatch` | Wait for N events to complete |
+| `CyclicBarrier` | N threads wait for each other |
+| `ReentrantLock` | Mutual exclusion (1 thread) |
+
+---
+
+### Q48.9: What is ConcurrentHashMap? How is it thread-safe?
+
+**Definition:** `ConcurrentHashMap` is a thread-safe version of `HashMap` that allows **concurrent reads and writes** without locking the entire map.
+
+#### Why Not Just Use synchronized HashMap?
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│         Collections.synchronizedMap() vs ConcurrentHashMap             │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  synchronizedMap (locks ENTIRE map):                                    │
+│  ┌───────────────────────────────────────────────────┐                  │
+│  │ ██████████████ LOCKED ████████████████████████████ │                  │
+│  │ [A=1] [B=2] [C=3] [D=4] [E=5] [F=6] [G=7] [H=8]│                  │
+│  └───────────────────────────────────────────────────┘                  │
+│  Thread 1 writes A → ALL other threads BLOCKED! ❌                      │
+│                                                                         │
+│  ConcurrentHashMap (locks only segments/buckets):                       │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐                   │
+│  │ ██LOCK██ │ │ [C=3]    │ │ [E=5]    │ │ [G=7]    │                   │
+│  │ [A=1]    │ │ [D=4]    │ │ [F=6]    │ │ [H=8]    │                   │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘                   │
+│  Thread 1 writes A → Other segments accessible! ✅                      │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Usage
+
+```java
+ConcurrentHashMap<String, Integer> map = new ConcurrentHashMap<>();
+
+// Basic operations — all thread-safe
+map.put("A", 1);
+map.get("A");
+map.remove("A");
+
+// Atomic compound operations
+map.putIfAbsent("B", 2);           // Put only if key doesn't exist
+map.computeIfAbsent("C", k -> 3);  // Compute value if absent
+map.computeIfPresent("B", (k, v) -> v + 1);  // Update if present
+map.merge("B", 1, Integer::sum);   // Merge with existing value
+
+// ❌ WRONG — NOT atomic even with ConcurrentHashMap!
+if (!map.containsKey("D")) {   // Thread 2 could insert between these two lines
+    map.put("D", 4);
+}
+
+// ✅ CORRECT — atomic check-and-insert
+map.putIfAbsent("D", 4);
+```
+
+#### Map Comparison
+
+| Feature | `HashMap` | `Hashtable` | `synchronizedMap` | `ConcurrentHashMap` |
+|---------|-----------|-------------|--------------------|--------------------|
+| Thread-safe | ❌ | ✅ | ✅ | ✅ |
+| Null keys | ✅ (1) | ❌ | ✅ (1) | ❌ |
+| Null values | ✅ | ❌ | ✅ | ❌ |
+| Lock type | None | Entire map | Entire map | Per-bucket/segment |
+| Performance | Fastest | Slow | Slow | Fast (concurrent) |
+| Use for | Single-threaded | Legacy (don't use) | Simple thread-safety | High concurrency |
+
+---
+
+### Q48.10: What is CompletableFuture?
+
+**Definition:** `CompletableFuture` (Java 8) enables **asynchronous, non-blocking** programming with a fluent API. It's like JavaScript Promises — you chain callbacks instead of blocking on `get()`.
+
+#### Problem with Future
+
+```java
+// Old Future — BLOCKS the calling thread
+Future<String> future = executor.submit(() -> callApi());
+String result = future.get();  // ❌ BLOCKS until done! Wasted CPU.
+process(result);               // Can't start until get() returns
+```
+
+#### CompletableFuture — Non-Blocking Chains
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│              CompletableFuture PIPELINE                                 │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   supplyAsync          thenApply         thenApply         thenAccept   │
+│  ┌──────────┐        ┌──────────┐      ┌──────────┐      ┌──────────┐  │
+│  │ Call API │──────► │  Parse   │────► │ Transform│────► │  Save    │  │
+│  │ (async)  │  data  │  JSON    │ obj  │  Data    │ dto  │  to DB   │  │
+│  └──────────┘        └──────────┘      └──────────┘      └──────────┘  │
+│                                                                         │
+│  NOTHING BLOCKS! Each stage runs when the previous one completes.       │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+```java
+// ═══════════════════════════════════════════════════════════════════════
+// Basic chaining — non-blocking pipeline
+// ═══════════════════════════════════════════════════════════════════════
+CompletableFuture
+    .supplyAsync(() -> fetchUserFromDB(userId))       // Async task (returns value)
+    .thenApply(user -> user.getEmail())               // Transform result
+    .thenApply(email -> sendWelcomeEmail(email))       // Chain another transform
+    .thenAccept(result -> log("Email sent: " + result)) // Consume final result
+    .exceptionally(ex -> {                             // Handle ANY error in chain
+        log("Failed: " + ex.getMessage());
+        return null;
+    });
+
+// ═══════════════════════════════════════════════════════════════════════
+// Combining multiple async operations
+// ═══════════════════════════════════════════════════════════════════════
+
+// Run two tasks in parallel, combine results
+CompletableFuture<String> userFuture = 
+    CompletableFuture.supplyAsync(() -> fetchUser(id));
+CompletableFuture<List<Order>> ordersFuture = 
+    CompletableFuture.supplyAsync(() -> fetchOrders(id));
+
+CompletableFuture<UserProfile> combined = userFuture
+    .thenCombine(ordersFuture, (user, orders) -> new UserProfile(user, orders));
+
+// Wait for ALL to complete
+CompletableFuture<Void> all = CompletableFuture.allOf(
+    fetchFromServiceA(),
+    fetchFromServiceB(),
+    fetchFromServiceC()
+);
+
+// Wait for ANY (first) to complete
+CompletableFuture<Object> any = CompletableFuture.anyOf(
+    fetchFromPrimary(),
+    fetchFromBackup()
+);
+```
+
+#### Key Methods
+
+| Method | Input → Output | Purpose |
+|--------|----------------|---------|
+| `supplyAsync(() -> value)` | — → T | Start async task that returns value |
+| `runAsync(() -> {})` | — → Void | Start async task with no return |
+| `thenApply(T → U)` | T → U | Transform result (like `map`) |
+| `thenAccept(T → void)` | T → void | Consume result |
+| `thenCompose(T → CF<U>)` | T → CF<U> | Chain another async op (like `flatMap`) |
+| `thenCombine(CF, (T,U) → V)` | T,U → V | Combine two futures |
+| `exceptionally(ex → T)` | Exception → T | Handle errors |
+| `allOf(CF...)` | — → Void | Wait for all |
+| `anyOf(CF...)` | — → Object | Wait for first |
+
+#### Future vs CompletableFuture
+
+| Feature | `Future` | `CompletableFuture` |
+|---------|----------|---------------------|
+| **Non-blocking** | ❌ `get()` blocks | ✅ Callbacks via `thenApply` etc. |
+| **Chaining** | ❌ No | ✅ Fluent API |
+| **Combine** | ❌ No | ✅ `thenCombine`, `allOf`, `anyOf` |
+| **Exception handling** | Try-catch on `get()` | `exceptionally()`, `handle()` |
+| **Manual completion** | ❌ No | ✅ `complete()`, `completeExceptionally()` |
+
+---
+
+### Q48.11: What is the happens-before relationship?
+
+**Definition:** The **happens-before** relationship is a guarantee in the Java Memory Model (JMM) that if action A **happens-before** action B, then A's results are **visible** to B and A is **ordered** before B.
+
+Without happens-before, the JVM and CPU can **reorder instructions** and **cache values**, causing threads to see stale data.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│              HAPPENS-BEFORE RULES                                      │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  1. Program Order Rule                                                  │
+│     Within a single thread, each action happens-before                  │
+│     the next action in program order.                                   │
+│                                                                         │
+│  2. Monitor Lock Rule (synchronized)                                    │
+│     An unlock on a monitor happens-before every subsequent              │
+│     lock on that same monitor.                                          │
+│     Thread 1: x=1; unlock(m)  →  Thread 2: lock(m); read(x)=1 ✅      │
+│                                                                         │
+│  3. Volatile Variable Rule                                              │
+│     A write to volatile happens-before every subsequent                 │
+│     read of that same volatile variable.                                │
+│     Thread 1: volatile x=1  →  Thread 2: read volatile x=1 ✅          │
+│                                                                         │
+│  4. Thread Start Rule                                                   │
+│     thread.start() happens-before any action in the started thread.    │
+│                                                                         │
+│  5. Thread Join Rule                                                    │
+│     All actions in a thread happen-before thread.join() returns.        │
+│                                                                         │
+│  6. Transitivity                                                        │
+│     If A happens-before B, and B happens-before C,                      │
+│     then A happens-before C.                                            │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+```java
+// Example: volatile establishes happens-before
+class Example {
+    int x = 0;
+    volatile boolean ready = false;  // volatile!
+
+    // Thread 1
+    void writer() {
+        x = 42;           // (1) Write x
+        ready = true;     // (2) Write volatile — happens-before read of ready
+    }
+
+    // Thread 2
+    void reader() {
+        if (ready) {       // (3) Read volatile
+            System.out.println(x);  // (4) Guaranteed to see 42!
+            // Because (2) happens-before (3), and by transitivity
+            // (1) happens-before (4)
+        }
+    }
+}
+```
+
+**Why it matters:** Without happens-before guarantees, Thread 2 might see `ready=true` but `x=0` due to CPU caching or instruction reordering.
+
+---
+
+### Q48.12: What is thread starvation and how to prevent it?
+
+**Definition:** **Starvation** occurs when a thread is perpetually denied access to resources (like CPU time or locks) because other higher-priority threads keep taking them.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                       THREAD STARVATION                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  High-priority threads keep getting the lock:                           │
+│                                                                         │
+│  Thread (H): ██████░░██████░░██████░░██████  ← Always gets CPU          │
+│  Thread (H): ░░██████░░██████░░██████░░████  ← Always gets CPU          │
+│  Thread (L): ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  ← STARVED! Never runs ❌  │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**Prevention:**
+```java
+// 1. Use fair locks
+ReentrantLock fairLock = new ReentrantLock(true);  // FIFO order
+
+// 2. Fair semaphore
+Semaphore fairSem = new Semaphore(3, true);  // fair=true
+
+// 3. Avoid thread priority manipulation
+// Don't do: thread.setPriority(Thread.MAX_PRIORITY);
+
+// 4. Use ExecutorService with fair scheduling
+ExecutorService pool = Executors.newFixedThreadPool(4);  // Round-robin by default
+```
+
+---
+
+### Q48.13: What is a daemon thread?
+
+**Definition:** A **daemon thread** is a low-priority background thread that runs as long as non-daemon (user) threads are alive. When all user threads finish, the JVM exits — **daemon threads are terminated automatically** without completing.
+
+```java
+Thread daemon = new Thread(() -> {
+    while (true) {
+        System.out.println("Daemon running...");
+        Thread.sleep(1000);
+    }
+});
+daemon.setDaemon(true);  // Must set BEFORE start()
+daemon.start();
+
+// When main thread (user thread) ends, daemon thread is killed automatically
+```
+
+| User Thread | Daemon Thread |
+|-------------|---------------|
+| JVM waits for it to finish | JVM does NOT wait |
+| Default for new threads | Must call `setDaemon(true)` |
+| App logic | GC, monitoring, signal dispatch |
+| `isDaemon()` → `false` | `isDaemon()` → `true` |
+
+---
+
+### Q48.14: Multithreading Concepts — Quick Reference
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│              JAVA CONCURRENCY CHEAT SHEET                              │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  THREAD SAFETY MECHANISMS:                                              │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │ synchronized       — Mutual exclusion + visibility                │  │
+│  │ volatile            — Visibility only (no atomicity for compounds)│  │
+│  │ Atomic*             — Lock-free atomic operations (CAS)           │  │
+│  │ ThreadLocal         — Per-thread isolated storage (no sharing)    │  │
+│  │ ReentrantLock       — Explicit lock with tryLock, fairness        │  │
+│  │ ReadWriteLock       — Multiple readers OR single writer           │  │
+│  │ StampedLock         — Optimistic read + write lock (Java 8)       │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                                                                         │
+│  SYNCHRONIZERS:                                                         │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │ CountDownLatch      — Wait for N events (one-time)                │  │
+│  │ CyclicBarrier       — N threads wait for each other (reusable)    │  │
+│  │ Semaphore           — Limit concurrent access to N permits        │  │
+│  │ Phaser              — Flexible barrier with phases (Java 7)       │  │
+│  │ Exchanger           — Two threads swap data                       │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                                                                         │
+│  CONCURRENT COLLECTIONS:                                                │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │ ConcurrentHashMap   — Thread-safe map (segment locking)           │  │
+│  │ CopyOnWriteArrayList— Thread-safe list (copies on write)          │  │
+│  │ BlockingQueue        — Producer-consumer (put/take block)         │  │
+│  │ ConcurrentLinkedQueue— Lock-free thread-safe queue                │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                                                                         │
+│  EXECUTORS & ASYNC:                                                     │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │ ExecutorService      — Thread pool management                     │  │
+│  │ CompletableFuture    — Async programming (like JS Promises)       │  │
+│  │ ForkJoinPool         — Divide & conquer parallelism               │  │
+│  │ ScheduledExecutor    — Delayed/periodic task execution            │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                                                                         │
+│  PROBLEMS TO KNOW:                                                      │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │ Race Condition      — Unprotected shared mutable state            │  │
+│  │ Deadlock            — Circular lock dependency                    │  │
+│  │ Livelock            — Threads respond to each other indefinitely  │  │
+│  │ Starvation          — Thread never gets resources                 │  │
+│  │ False Sharing       — Cache line contention on unrelated data     │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
 ## Java 8 Features
 
 ### Q49: What are the main features of Java 8?
