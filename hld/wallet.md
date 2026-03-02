@@ -1,5 +1,4 @@
-# MyPay — Peer-to-Peer Digital Wallet (Low-Level Design)
-
+# MyPay — Peer-to-Peer Digital Wallet
 ## 1. Requirements
 
 ### Functional
