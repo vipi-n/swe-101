@@ -1365,15 +1365,17 @@ Each physical server owns 3 "slices" of the ring.
 | **Mutex lock/unlock** | 25 ns | |
 | **Send 2KB over 1 Gbps network** | 20 μs | |
 
-### Power of Two Table
+### Power of Ten Table (Quick Estimation)
 
-| Power | Exact Value | Approx. | Name |
+| Power | Value | Name | Data Size Equiv. |
 |---|---|---|---|
-| $2^{10}$ | 1,024 | 1 Thousand | 1 KB |
-| $2^{20}$ | 1,048,576 | 1 Million | 1 MB |
-| $2^{30}$ | 1,073,741,824 | 1 Billion | 1 GB |
-| $2^{40}$ | 1,099,511,627,776 | 1 Trillion | 1 TB |
-| $2^{50}$ | | 1 Quadrillion | 1 PB |
+| $10^{3}$ | 1,000 | 1 Thousand | ~1 KB |
+| $10^{6}$ | 1,000,000 | 1 Million | ~1 MB |
+| $10^{9}$ | 1,000,000,000 | 1 Billion | ~1 GB |
+| $10^{12}$ | 1,000,000,000,000 | 1 Trillion | ~1 TB |
+| $10^{15}$ | 1,000,000,000,000,000 | 1 Quadrillion | ~1 PB |
+
+> **Tip:** In interviews, use powers of 10 for quick mental math — $10^3 \approx 2^{10}$, $10^6 \approx 2^{20}$, etc. Close enough for estimation!
 
 ### Common Back-of-Envelope Calculations
 
