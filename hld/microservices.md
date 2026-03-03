@@ -19,6 +19,12 @@
 
 ### Part III — Microservices Architecture
 5. [Microservices Architecture — Complete Guide](#5-microservices-architecture--complete-guide)
+   - [Communication Patterns](#57-communication-patterns)
+   - [Reliable Async Messaging (Inbox, DLQ, Retry)](#571-reliable-async-messaging-inbox-dlq-retry)
+   - [Interview Cheat Sheet](#512-interview-cheat-sheet--quick-reference)
+   - [Deployment and Release Strategies](#513-deployment--release-strategies)
+   - [Production Readiness Checklist](#514-production-readiness-checklist)
+   - [Data Ownership Contract](#515-data-ownership-contract)
 6. [Microservice Design Patterns](#6-microservice-design-patterns)
 
 ### Part IV — Interview Questions
@@ -62,8 +68,8 @@ In any real distributed system, **network partitions will happen** (cables get c
 
 | Choice | Behavior During Partition | Example Systems |
 |---|---|---|
-| **CP** (Consistency + Partition Tolerance) | Refuse some requests to stay consistent. Some nodes may return errors. | MongoDB (strong read), HBase, Zookeeper, etcd, Consul |
-| **AP** (Availability + Partition Tolerance) | Serve all requests, but some may return stale data. | Cassandra, DynamoDB, CouchDB, Riak |
+| **CP** (Consistency + Partition Tolerance) | Refuse some requests to stay consistent. Some nodes may return errors. | etcd, ZooKeeper, Consul, MongoDB (with majority/linearizable settings) |
+| **AP** (Availability + Partition Tolerance) | Serve all requests, but some may return stale data. | Cassandra, Riak, CouchDB, Dynamo-style systems (tunable) |
 | **CA** (Consistency + Availability) | Only possible when there are NO partitions (single node or reliable LAN). Not practical for distributed systems. | Traditional RDBMS (single-node PostgreSQL, MySQL) |
 
 ### Real-World Example
@@ -92,7 +98,7 @@ PACELC extends CAP: **if** there is a **P**artition, choose between **A** and **
 | System | During Partition (PAC) | Normal Operation (ELC) |
 |---|---|---|
 | DynamoDB | A + P | L (low latency, eventual consistency) |
-| MongoDB | C + P | C (strong consistency by default) |
+| MongoDB | C + P | C or L depending on read/write concern |
 | Cassandra | A + P | L (tunable consistency) |
 | Google Spanner | C + P | C (strong via TrueTime, but higher latency) |
 
@@ -1117,6 +1123,32 @@ Need immediate response?
        └── Long-running process? → Async with callback/polling
 ```
 
+#### 5.7.1 Reliable Async Messaging (Inbox, DLQ, Retry)
+
+If you use async communication in production, combine these patterns:
+
+| Concern | Pattern | Why It Matters |
+|---|---|---|
+| Producer crash after DB commit | **Outbox** | Prevents "DB updated but event never published" |
+| Broker/network transient failures | **Retry with exponential backoff + jitter** | Reduces thundering herd and transient drops |
+| Poison message (always fails) | **DLQ (Dead Letter Queue)** | Keeps main consumer flow healthy |
+| Duplicate delivery | **Idempotent Consumer / Inbox table** | Prevents double charge/double email |
+| Message ordering per entity | **Partition key (e.g., `orderId`)** | Preserves business sequence for same key |
+| Slow consumers | **Lag monitoring + autoscale consumers** | Avoids unbounded backlog |
+
+Minimal consumer flow:
+
+```
+1. Read message (eventId, key, payload)
+2. Check inbox/processed_events table for eventId
+   - If exists: ACK and skip
+3. Execute business transaction
+4. Insert eventId into inbox/processed_events in same local transaction
+5. ACK message
+6. On retriable failure: retry with backoff
+7. On max retries exceeded: send to DLQ and alert
+```
+
 ---
 
 ### 5.8 Best Practices
@@ -1439,6 +1471,70 @@ A **Modular Monolith** is the middle ground — a single deployable with well-de
 | What's a distributed monolith? | Anti-pattern: services that must be deployed together — worst of both worlds |
 | What DevOps is needed? | CI/CD per service, containerization (Docker/K8s), centralized logging, distributed tracing, monitoring |
 | What's the recommended migration path? | Monolith → Modular Monolith → Extract services incrementally |
+
+---
+
+### 5.13 Deployment & Release Strategies
+
+| Strategy | How It Works | Best For | Trade-offs |
+|---|---|---|---|
+| **Rolling** | Replace pods gradually | Default for stateless services | Simple, but mixed versions during rollout |
+| **Blue-Green** | Two identical environments, switch traffic atomically | Low-risk cutover and quick rollback | Doubles infra cost during release |
+| **Canary** | Send small percent to new version first | High-traffic systems, safer validation | Needs strong observability and traffic control |
+| **Feature Flags** | Deploy code disabled, enable per cohort | Decouple deploy from release | Flag debt if not cleaned up |
+
+Recommended rollback playbook:
+1. Freeze rollout on SLO breach (latency, errors, saturation)
+2. Route traffic back to previous stable version
+3. Keep failing build artifacts and traces for RCA
+4. File postmortem with concrete prevention actions
+
+---
+
+### 5.14 Production Readiness Checklist
+
+Use this before promoting a service to production:
+
+| Area | Must Have |
+|---|---|
+| **Resilience** | Timeouts, retries with jitter, circuit breaker, bulkhead |
+| **Data Safety** | Idempotency for writes, outbox for events, migration rollback plan |
+| **Observability** | Structured logs, trace IDs, metrics dashboards (RED + USE), alerts |
+| **Security** | TLS/mTLS, authN/authZ, secrets in vault, PII masking in logs |
+| **Operations** | Health/readiness probes, autoscaling policy, runbooks, on-call ownership |
+| **Testing** | Unit + integration + contract tests in CI; smoke tests post-deploy |
+| **SLOs** | Defined SLI/SLO with error budget and alert thresholds |
+
+Release gate checklist:
+- Error budget policy approved
+- Backward-compatible API/schema verified
+- Dashboards and alerts validated in staging
+- Rollback tested at least once
+
+---
+
+### 5.15 Data Ownership Contract
+
+In microservices, data ownership must be explicit:
+
+| Rule | Contract |
+|---|---|
+| **Single owner** | Exactly one service owns each domain entity and write path |
+| **No cross-service table access** | Other services never read/write owner DB directly |
+| **Share via APIs/events** | Consumers use owner API or subscribed events |
+| **Schema evolution policy** | Expand-contract for DB and API changes |
+| **Event versioning** | Additive changes preferred; keep old consumers working |
+| **Canonical source** | Define source of truth for each field to avoid drift |
+
+Decision matrix:
+
+```
+Need strong consistency for same entity?
+  -> Keep writes inside owner service boundary.
+
+Need cross-service read model?
+  -> Build projection/materialized view from events (CQRS), not cross-DB joins.
+```
 
 ---
 
@@ -2039,6 +2135,8 @@ ExecutorService userPool      = Executors.newFixedThreadPool(6);
 |---|---|
 | One business transaction across multiple services | **Saga** |
 | Downstream service is unreliable | **Circuit Breaker** |
+| Duplicate message delivery | **Inbox / Idempotent Consumer** |
+| Failed message after max retries | **DLQ** |
 | Single entry point for clients | **API Gateway** |
 | Read/write workloads differ drastically | **CQRS** |
 | Need full audit trail of state changes | **Event Sourcing** |
@@ -2604,7 +2702,7 @@ In practice, you use BOTH:
                                                      → User Pod 2
 ```
 
-**In Kubernetes:** Ingress Controller acts as API Gateway, kube-proxy acts as load balancer.
+**In Kubernetes:** Ingress usually provides L7 routing/TLS entry, while full API gateway capabilities may still require a dedicated gateway (Kong, APISIX, Tyk, etc.). kube-proxy/service handles east-west load balancing.
 
 ---
 
