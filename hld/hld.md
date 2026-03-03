@@ -2599,6 +2599,16 @@ Skeleton:
 4. Collision handling and idempotent creation.
 5. Scaling: cache hot links, partition by hash, multi-region reads.
 
+API Sketch:
+- `POST /v1/links` -> create short URL (supports idempotency key)
+- `GET /{shortCode}` -> redirect to original URL
+- `GET /v1/links/{shortCode}/stats` -> clicks, unique users, geo
+
+Schema Sketch:
+- `links(short_code PK, original_url, user_id, created_at, expires_at, status)`
+- `link_clicks(id PK, short_code, ts, country, user_agent_hash)`
+- `idempotency_keys(key PK, response_blob, created_at)`
+
 ### Q2. How do you design a chat system?
 Skeleton:
 1. Clarify 1:1 vs group, ordering guarantees, online/offline delivery.
@@ -2606,6 +2616,18 @@ Skeleton:
 3. Design connection gateway, presence service, message store, fanout.
 4. Handle retries, dedupe, sequence numbers.
 5. Mention push notifications + unread sync.
+
+API Sketch:
+- `POST /v1/conversations` -> create DM/group
+- `POST /v1/conversations/{id}/messages` -> send message
+- `GET /v1/conversations/{id}/messages?cursor=...` -> history
+- `WS /v1/realtime` -> receive events, delivery/read receipts
+
+Schema Sketch:
+- `conversations(id PK, type, created_by, created_at)`
+- `conversation_members(conversation_id, user_id, role, joined_at)`
+- `messages(id PK, conversation_id, sender_id, seq_no, body, created_at, status)`
+- `message_receipts(message_id, user_id, delivered_at, read_at)`
 
 ### Q3. How do you design a news feed?
 Skeleton:
@@ -2615,6 +2637,17 @@ Skeleton:
 4. Handle celebrity hot keys and cache invalidation.
 5. Add ML ranking and backfill strategy as phase 2.
 
+API Sketch:
+- `GET /v1/feed?userId=...&cursor=...`
+- `POST /v1/posts`
+- `POST /v1/posts/{id}/interactions` (like/comment/share)
+
+Schema Sketch:
+- `posts(id PK, author_id, content_ref, created_at, visibility)`
+- `follows(follower_id, followee_id, created_at)`
+- `feed_edges(user_id, post_id, rank_score, created_at)` (materialized/fanout table)
+- `interactions(id PK, user_id, post_id, type, created_at)`
+
 ### Q4. How do you design a notification service?
 Skeleton:
 1. Clarify channels (email/SMS/push), latency SLAs, retry policy.
@@ -2622,6 +2655,17 @@ Skeleton:
 3. Per-channel queues, DLQ, idempotency key.
 4. Delivery receipts + rate limits + quiet hours.
 5. Operational dashboards by provider and campaign.
+
+API Sketch:
+- `POST /v1/notifications` (template + target + channel set)
+- `GET /v1/notifications/{id}` (status timeline)
+- `POST /v1/subscriptions/preferences` (opt-in/opt-out)
+
+Schema Sketch:
+- `notification_requests(id PK, user_id, template_id, payload, created_at, dedupe_key)`
+- `notification_attempts(id PK, request_id, channel, provider, status, retry_count, ts)`
+- `user_preferences(user_id PK, email_opt_in, sms_opt_in, push_opt_in, quiet_hours_json)`
+- `dlq_notifications(id PK, request_id, reason, payload, failed_at)`
 
 ### Q5. How do you design a ride-matching system?
 Skeleton:
@@ -2631,6 +2675,18 @@ Skeleton:
 4. Matching heuristics (distance, ETA, acceptance probability).
 5. Failure handling: retry dispatch, fallback radius expansion.
 
+API Sketch:
+- `POST /v1/rides` (pickup/drop)
+- `POST /v1/rides/{id}/accept` (driver accepts)
+- `POST /v1/drivers/{id}/location` (stream/update)
+- `GET /v1/rides/{id}` (state + ETA)
+
+Schema Sketch:
+- `drivers(id PK, status, vehicle_type, rating, current_geohash, updated_at)`
+- `rides(id PK, rider_id, driver_id, state, pickup_geo, drop_geo, requested_at, matched_at)`
+- `dispatch_events(id PK, ride_id, driver_id, event_type, ts)`
+- `pricing_quotes(id PK, ride_id, base_fare, surge_multiplier, expires_at)`
+
 ### Q6. How do you design a file storage service (Google Drive/S3-lite)?
 Skeleton:
 1. Clarify file size limits, sharing model, version history.
@@ -2638,6 +2694,18 @@ Skeleton:
 3. Upload flow with chunking, resumable upload, checksums.
 4. Signed URLs + CDN + ACL enforcement.
 5. Background jobs: dedupe, virus scan, lifecycle tiering.
+
+API Sketch:
+- `POST /v1/files/initiate-upload` -> upload session + chunk URLs
+- `POST /v1/files/{id}/complete` -> finalize file and checksum
+- `GET /v1/files/{id}/download-url` -> signed URL
+- `POST /v1/files/{id}/share` -> ACL grants
+
+Schema Sketch:
+- `files(id PK, owner_id, object_key, size_bytes, checksum, version, created_at)`
+- `file_versions(file_id, version, object_key, checksum, created_at)`
+- `file_permissions(file_id, principal_id, principal_type, access_level, granted_at)`
+- `upload_sessions(id PK, file_id, chunk_count, status, expires_at)`
 
 ### Q7. How do you design a payment system?
 Skeleton:
@@ -2647,6 +2715,17 @@ Skeleton:
 4. Reconciliation pipelines with PSP/bank statements.
 5. Compliance/security controls (PCI scope minimization).
 
+API Sketch:
+- `POST /v1/payments` (auth/capture with idempotency key)
+- `POST /v1/payments/{id}/refunds`
+- `GET /v1/payments/{id}`
+
+Schema Sketch:
+- `payment_intents(id PK, order_id, amount, currency, state, idempotency_key, created_at)`
+- `ledger_entries(id PK, account_id, payment_id, direction, amount, ts)` (double-entry)
+- `refunds(id PK, payment_id, amount, state, created_at)`
+- `reconciliation_items(id PK, provider_txn_id, internal_payment_id, status, detected_at)`
+
 ### Q8. How do you design an API rate limiter?
 Skeleton:
 1. Clarify dimensions: per-user, IP, token, endpoint, tenant.
@@ -2654,6 +2733,17 @@ Skeleton:
 3. Placement: gateway, service, or both.
 4. Distributed counter store (Redis) + fail-open/fail-closed decision.
 5. Return standard headers and 429 behavior.
+
+API Sketch:
+- `POST /v1/admin/rate-limits` (policy config)
+- Gateway middleware enforces quota on every request
+- `GET /v1/admin/rate-limits/{principal}` (remaining budget/debug)
+
+Schema Sketch:
+- `rate_limit_policies(id PK, scope_type, scope_id, algorithm, limit_value, window_sec)`
+- `rate_limit_overrides(id PK, principal_type, principal_id, limit_value, expires_at)`
+- Runtime counters in Redis:
+  - `rl:{scope}:{principal}:{window}` -> counter/tokens + TTL
 
 ### Q9. How do you design a search autocomplete system?
 Skeleton:
@@ -2663,6 +2753,17 @@ Skeleton:
 4. Ranking (frequency + recency + personalization).
 5. Cache top prefixes and shard by language/locale.
 
+API Sketch:
+- `GET /v1/autocomplete?q=iph&locale=en-US&limit=10`
+- `POST /v1/search/events` (click/convert feedback)
+- `POST /v1/admin/synonyms/reload`
+
+Schema Sketch:
+- `suggest_terms(term_id PK, term, locale, normalized_term, popularity_score, updated_at)`
+- `term_edges(prefix, term_id, weight)` (trie/inverted structure)
+- `search_events(id PK, user_id, query, clicked_term_id, ts)`
+- `synonym_sets(id PK, locale, source_term, target_terms_json, version)`
+
 ### Q10. How do you design a metrics/monitoring platform?
 Skeleton:
 1. Clarify ingest rate, retention tiers, query latency.
@@ -2670,6 +2771,17 @@ Skeleton:
 3. Data model: labels/tags and cardinality controls.
 4. Storage tiers: hot/warm/cold.
 5. Alerting pipeline + dedupe + on-call routing.
+
+API Sketch:
+- `POST /v1/ingest/metrics` (remote write)
+- `GET /v1/query?expr=...&start=...&end=...`
+- `POST /v1/alerts/rules`
+
+Schema Sketch:
+- TSDB logical model: `(metric_name, labels_hash, ts) -> value`
+- `label_sets(series_id PK, labels_json, fingerprint, cardinality_tier)`
+- `alert_rules(id PK, expr, severity, for_duration, routing_key, enabled)`
+- `alert_events(id PK, rule_id, state, started_at, ended_at, dedupe_key)`
 
 ### Q11. How do you design a distributed cache?
 Skeleton:
@@ -2679,6 +2791,18 @@ Skeleton:
 4. Hot key mitigation and stampede protection.
 5. Failure behavior and rebalancing during node changes.
 
+API Sketch:
+- `GET /cache/{key}`
+- `SET /cache/{key}` (TTL, version)
+- `DELETE /cache/{key}`
+- Admin: `POST /cache/rebalance`
+
+Schema Sketch:
+- In-memory key model: `key -> {value_blob, version, ttl, metadata}`
+- Metadata store:
+  - `cache_nodes(node_id PK, status, capacity, ring_position)`
+  - `cache_partitions(partition_id PK, primary_node, replica_nodes_json, epoch)`
+
 ### Q12. How do you design a job scheduler?
 Skeleton:
 1. Clarify cron vs one-time vs DAG workflows.
@@ -2686,6 +2810,18 @@ Skeleton:
 3. Lease-based locking for singleton tasks.
 4. Retry policy, backoff, and dead-letter handling.
 5. Observability: run history, SLA misses, rerun controls.
+
+API Sketch:
+- `POST /v1/jobs` (one-time/cron definition)
+- `POST /v1/jobs/{id}/pause|resume`
+- `GET /v1/jobs/{id}/runs?cursor=...`
+- Worker callback: `POST /v1/runs/{runId}/heartbeat`
+
+Schema Sketch:
+- `jobs(id PK, owner, schedule_expr, payload, max_retries, timeout_sec, state)`
+- `job_runs(id PK, job_id, scheduled_at, started_at, finished_at, status, attempt)`
+- `run_leases(run_id PK, worker_id, lease_until)`
+- `job_dlq(id PK, run_id, reason, payload, failed_at)`
 
 ### Q13. How do you design a recommendation system (high-level)?
 Skeleton:
@@ -2695,6 +2831,17 @@ Skeleton:
 4. Real-time personalization cache.
 5. Cold-start strategy and A/B testing plan.
 
+API Sketch:
+- `GET /v1/recommendations?userId=...&context=home`
+- `POST /v1/events` (view/click/add_to_cart/purchase)
+- `POST /v1/experiments/assignments`
+
+Schema Sketch:
+- `user_features(user_id PK, feature_vector_ref, updated_at)`
+- `item_features(item_id PK, feature_vector_ref, updated_at)`
+- `candidate_sets(user_id, candidate_item_id, source, score, ts)`
+- `impression_logs(id PK, user_id, item_id, rank, experiment_id, ts)`
+
 ### Q14. How do you design a multi-tenant SaaS backend?
 Skeleton:
 1. Clarify isolation and compliance requirements by tenant tier.
@@ -2702,6 +2849,17 @@ Skeleton:
 3. Tenant-aware authz, keys, quotas, billing meters.
 4. Noisy-neighbor protection at app and DB layers.
 5. Tenant migration and backup/restore plan.
+
+API Sketch:
+- `POST /v1/tenants` (provision)
+- `GET /v1/tenants/{id}/usage` (quota, billing meters)
+- `POST /v1/tenants/{id}/limits` (admin policy)
+
+Schema Sketch:
+- `tenants(id PK, name, plan, region, isolation_mode, created_at, status)`
+- `tenant_members(tenant_id, user_id, role, invited_at, joined_at)`
+- `tenant_quotas(tenant_id PK, api_rpm, storage_gb, seats, updated_at)`
+- `tenant_usage_daily(tenant_id, date, api_calls, storage_bytes, active_users)`
 
 ### Q15. How do you design real-time collaborative editing?
 Skeleton:
@@ -2711,6 +2869,18 @@ Skeleton:
 4. Snapshot + operation log for recovery.
 5. Permission checks and document-level sharding.
 
+API Sketch:
+- `POST /v1/docs` / `GET /v1/docs/{id}`
+- `POST /v1/docs/{id}/ops` (OT/CRDT operation)
+- `GET /v1/docs/{id}/ops?afterSeq=...`
+- `WS /v1/docs/{id}/presence`
+
+Schema Sketch:
+- `documents(id PK, owner_id, title, latest_version, acl_ref, created_at)`
+- `doc_ops(id PK, doc_id, seq_no, actor_id, op_type, op_payload, ts)`
+- `doc_snapshots(id PK, doc_id, version, content_ref, created_at)`
+- `doc_presence(doc_id, user_id, cursor_json, heartbeat_at)`
+
 ### Q16. How do you design a high-scale logging pipeline?
 Skeleton:
 1. Clarify ingest TPS, retention, query patterns.
@@ -2718,6 +2888,17 @@ Skeleton:
 3. Parsing/indexing strategy and schema evolution.
 4. Hot/warm/cold retention policy.
 5. Cost controls (sampling, compression, tiering).
+
+API Sketch:
+- Agent protocol: `POST /v1/logs/batch`
+- `GET /v1/logs/search?q=...&from=...&to=...`
+- `POST /v1/logs/pipelines` (parse/enrich/routing rules)
+
+Schema Sketch:
+- `log_events(id PK, ts, service, level, trace_id, message, attrs_json)`
+- `log_indexes(index_date, shard_id, segment_ref, retention_tier)`
+- `pipeline_rules(id PK, match_expr, transform_json, destination, enabled)`
+- `log_quotas(scope, scope_id, daily_ingest_bytes, drop_policy)`
 
 ### Q17. How do you design inventory management for e-commerce?
 Skeleton:
@@ -2727,6 +2908,17 @@ Skeleton:
 4. Idempotency and reconciliation jobs.
 5. Flash-sale strategy (queue + tokenization + pre-allocation).
 
+API Sketch:
+- `POST /v1/inventory/reservations` (sku, qty, orderId, ttl)
+- `POST /v1/inventory/reservations/{id}/confirm|release`
+- `GET /v1/inventory/{sku}`
+
+Schema Sketch:
+- `stock_levels(sku PK, available_qty, reserved_qty, updated_at, version)`
+- `reservations(id PK, sku, order_id, qty, state, expires_at, created_at)`
+- `inventory_ledger(id PK, sku, delta, reason, ref_id, ts)`
+- `reconciliation_tasks(id PK, sku, expected_qty, actual_qty, status, detected_at)`
+
 ### Q18. How do you design a global service (multi-region)?
 Skeleton:
 1. Clarify latency and consistency by operation.
@@ -2734,6 +2926,17 @@ Skeleton:
 3. Global traffic routing + health checks.
 4. Data placement and conflict policy.
 5. DR drills tied to RPO/RTO targets.
+
+API Sketch:
+- `GET /v1/health/global` (region health summary)
+- `POST /v1/routing/policies` (geo/latency/weight rules)
+- Core business APIs remain region-routed through global edge
+
+Schema Sketch:
+- `regions(region_id PK, status, capacity, failover_priority)`
+- `traffic_policies(id PK, match_rule, target_regions_json, weight_json, enabled)`
+- `replication_lag(region_pair PK, lag_ms, measured_at)`
+- `failover_events(id PK, from_region, to_region, reason, started_at, ended_at)`
 
 ### Q19. How do you design for zero-downtime deployments?
 Skeleton:
@@ -2743,6 +2946,17 @@ Skeleton:
 4. Bake-time metrics and automated rollback triggers.
 5. Post-release validation and cleanup.
 
+API Sketch:
+- `POST /v1/deployments` (service, version, strategy)
+- `POST /v1/deployments/{id}/promote|rollback`
+- `GET /v1/deployments/{id}/health-gates`
+
+Schema Sketch:
+- `deployments(id PK, service, version, strategy, state, started_at, ended_at)`
+- `deployment_steps(id PK, deployment_id, step_type, status, started_at, ended_at)`
+- `health_gates(id PK, deployment_id, metric_name, threshold, status, evaluated_at)`
+- `release_artifacts(id PK, service, version, checksum, created_at)`
+
 ### Q20. How do you improve an existing slow/fragile system?
 Skeleton:
 1. Start with metrics and bottleneck decomposition.
@@ -2750,6 +2964,17 @@ Skeleton:
 3. Propose phased fixes with measurable targets.
 4. Add reliability guardrails (timeouts, retries, circuit breakers).
 5. Define success criteria and follow-up plan.
+
+API Sketch:
+- `GET /v1/perf/reports?service=...&window=...`
+- `POST /v1/perf/experiments` (canary optimization)
+- `GET /v1/reliability/slo-status`
+
+Schema Sketch:
+- `baseline_metrics(service, metric, window_start, value, recorded_at)`
+- `optimization_experiments(id PK, service, hypothesis, change_set, status, outcome_json)`
+- `incident_history(id PK, service, severity, root_cause, started_at, resolved_at)`
+- `action_items(id PK, incident_id, owner, due_date, status)`
 
 ---
 
