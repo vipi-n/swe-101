@@ -1,10 +1,13 @@
 # System Design & Software Engineering — Interview Deep Dive
 
-> A comprehensive guide covering **every foundational building block** of high-level system design — from DNS and CDN to databases, caching, load balancing, sharding, replication, and beyond. Everything you need to design a system from scratch in an interview.
+> A comprehensive guide covering **every foundational building block** of high-level system design — from DNS and CDN to databases, caching, load balancing, sharding, replication, and beyond. Everything you need to design a system from scratch in an interview. For microservices, design patterns, and SOLID principles, see **[MICROSERVICES.md](MICROSERVICES.md)**.
 
 ---
 
 ## Table of Contents
+
+### Part 0 — Interview Approach
+0. [System Design Interview Framework (How to Answer)](#0-system-design-interview-framework-how-to-answer)
 
 ### Part I — Foundational Building Blocks
 1. [How the Web Works — Request Lifecycle](#1-how-the-web-works--request-lifecycle)
@@ -34,6 +37,71 @@
 23. [Distributed System Concepts](#23-distributed-system-concepts)
 24. [Security Patterns](#24-security-patterns)
 25. [Observability — The Three Pillars](#25-observability--the-three-pillars)
+26. [CAP, PACELC & Consistency Models](#26-cap-pacelc--consistency-models)
+27. [Resilience Patterns — Timeouts, Retries, Circuit Breakers](#27-resilience-patterns--timeouts-retries-circuit-breakers)
+28. [SLO, SLA, SLI & Error Budgets](#28-slo-sla-sli--error-budgets)
+29. [Multi-Region Architecture Patterns](#29-multi-region-architecture-patterns)
+
+### Part III — HLD Interview Playbook
+30. [Capacity Planning Templates](#30-capacity-planning-templates)
+31. [Data Modeling for HLD](#31-data-modeling-for-hld)
+32. [Async Workflow Design](#32-async-workflow-design)
+33. [Search System Design](#33-search-system-design)
+34. [Real-Time System Design](#34-real-time-system-design)
+35. [Multi-Tenant Architecture](#35-multi-tenant-architecture)
+36. [Security for HLD Interviews](#36-security-for-hld-interviews)
+37. [Cost-Aware Design](#37-cost-aware-design)
+38. [Common HLD Case Study Blueprints](#38-common-hld-case-study-blueprints)
+39. [10-Minute Whiteboard Answer Template](#39-10-minute-whiteboard-answer-template)
+40. [Top 20 HLD Interview Questions + Ideal Answer Skeletons](#40-top-20-hld-interview-questions--ideal-answer-skeletons)
+
+---
+
+# Part 0 — Interview Approach
+
+---
+
+## 0. System Design Interview Framework (How to Answer)
+
+Use this sequence in interviews to stay structured and signal seniority:
+
+```
+1) Clarify requirements
+2) Define scale + SLO targets
+3) Propose high-level architecture
+4) Design APIs + data model
+5) Deep-dive bottlenecks (cache, DB, queue, consistency)
+6) Reliability + security + observability
+7) Trade-offs + evolution plan
+```
+
+### 0.1 Clarify Before Designing
+
+| Category | Questions to Ask |
+|---|---|
+| **Functional** | Core user flows? Read vs write heavy? Search? Notifications? |
+| **Scale** | DAU/MAU? Peak QPS? Data size + yearly growth? |
+| **Latency** | p50/p95/p99 expectations? Interactive vs async workflow? |
+| **Consistency** | Strong or eventual for each operation? |
+| **Availability** | Uptime target? Multi-region requirement? |
+| **Compliance** | PII, GDPR, SOC2, audit logs, retention policy? |
+
+### 0.2 Define Non-Functional Targets Early
+
+```
+Example target sheet:
+- Peak QPS: 50K
+- Read/Write ratio: 20:1
+- p99 latency: < 300 ms
+- Availability: 99.95%
+- Data durability: 11 nines for blob storage
+```
+
+### 0.3 Communicate Trade-offs Explicitly
+
+- State what you optimize for first (latency, availability, consistency, cost).
+- Mention what you defer to phase 2 (multi-region active-active, search indexing, etc.).
+- Give one fallback path if assumptions fail.
 
 ---
 
@@ -1818,7 +1886,7 @@ Weighted count = 84 * (1 - 0.25) + 36 = 63 + 36 = 99 → allowed
 
 ### Point-to-Point (Queue)
 
-One producer, one consumer. Each message is processed **exactly once** by one consumer.
+One producer, one logical consumer flow. In practice, delivery is usually **at-least-once**, so consumers must be idempotent.
 
 ```
 Producer ──► [Queue] ──► Consumer
@@ -1865,7 +1933,7 @@ Main Queue ──► Consumer ──(fail)──► Retry Queue ──(fail×3)�
 |---|---|---|
 | **At-most-once** | Message delivered 0 or 1 times. May be lost. | Fire and forget |
 | **At-least-once** | Message delivered 1+ times. May be duplicated. | Ack after processing + retries |
-| **Exactly-once** | Message delivered exactly 1 time. No loss, no duplicates. | Idempotent consumers + transactions |
+| **Exactly-once (practical scope)** | Exactly-once processing is usually scoped to broker+consumer transaction boundaries, not the entire business side effect chain. | Transactions + idempotency + dedupe keys |
 
 ---
 
@@ -2099,6 +2167,605 @@ Total: 78ms
 | **Traffic** | Demand on the system (requests/sec, transactions/sec) |
 | **Errors** | Rate of failed requests (HTTP 5xx, timeouts) |
 | **Saturation** | How "full" the system is (CPU %, memory %, queue depth) |
+
+---
+
+## 26. CAP, PACELC & Consistency Models
+
+### CAP Theorem
+
+In a network partition, a distributed system must choose between:
+- **Consistency (C):** latest data (or fail)
+- **Availability (A):** always respond
+- **Partition tolerance (P):** continue despite network splits
+
+Real systems must tolerate partitions, so practical trade-off is usually **C vs A during partition**.
+
+### PACELC
+
+PACELC extends CAP:
+- **If Partition (P):** choose **A** or **C**
+- **Else (E):** choose **L**atency or **C**onsistency
+
+This is useful in interviews to explain normal-operation trade-offs, not just failures.
+
+### Consistency Models You Should Mention
+
+| Model | Meaning | Typical Use |
+|---|---|---|
+| **Strong/Linearizable** | Reads see latest committed write | Balances, critical counters |
+| **Eventual** | Replicas converge over time | Feeds, analytics, non-critical counters |
+| **Read-your-writes** | User sees own recent writes | Profile update UX |
+| **Monotonic reads** | Never go backward in time | Session continuity |
+| **Causal** | Preserves cause-effect ordering | Collaborative apps/chat |
+
+Interview tip: choose consistency **per operation**, not for the whole system.
+
+---
+
+## 27. Resilience Patterns — Timeouts, Retries, Circuit Breakers
+
+### Failure Containment Stack
+
+```
+Request
+  -> Timeout
+  -> Retry (exponential backoff + jitter)
+  -> Circuit Breaker
+  -> Fallback / Degraded response
+  -> Bulkhead isolation
+```
+
+### Core Patterns
+
+| Pattern | Why | Common Pitfall |
+|---|---|---|
+| **Timeout** | Avoid thread/connection exhaustion | Timeout too high, causing queue buildup |
+| **Retry + jitter** | Handle transient errors | Retrying non-retriable errors (4xx/validation) |
+| **Circuit breaker** | Fail fast when downstream is unhealthy | No half-open probe strategy |
+| **Bulkhead** | Isolate failure domains by pool | Shared pool across all dependencies |
+| **Backpressure** | Protect downstream from overload | Infinite queue growth |
+| **Load shedding** | Prefer partial service over full outage | No priority policy for critical requests |
+
+### Retry Rules of Thumb
+
+- Retry only idempotent or deduplicated operations.
+- Use capped exponential backoff with jitter.
+- Keep retry budget bounded; beyond that, fail fast.
+
+---
+
+## 28. SLO, SLA, SLI & Error Budgets
+
+### Definitions
+
+| Term | Meaning | Example |
+|---|---|---|
+| **SLI** | Measured indicator | p99 latency, availability, error rate |
+| **SLO** | Internal target on an SLI | 99.9% monthly availability |
+| **SLA** | External contractual commitment | Credits if availability < 99.9% |
+| **Error Budget** | Allowed unreliability = `100% - SLO` | 0.1% monthly downtime budget |
+
+### Why Interviewers Care
+
+SLOs turn vague statements ("highly reliable") into concrete engineering decisions:
+- release pace vs stability
+- when to halt deployments
+- what to alert on
+
+### Example Budget Math
+
+```
+SLO: 99.9% monthly availability
+Allowed downtime/month: 0.1% * 30 days = 43.2 minutes
+If budget is exhausted -> freeze risky releases, focus on reliability work
+```
+
+---
+
+## 29. Multi-Region Architecture Patterns
+
+### Topologies
+
+| Pattern | Writes | Reads | Pros | Cons |
+|---|---|---|---|---|
+| **Single-Region Primary + DR** | Primary only | Local region | Simpler consistency | Region outage impact |
+| **Active-Passive Multi-Region** | One active writer | Local/replica | Faster failover than DR-only | Failover coordination complexity |
+| **Active-Active Multi-Region** | Multi-region writes | Local | Lowest global latency, highest availability | Conflict resolution + consistency complexity |
+
+### Global Traffic Routing
+
+- Geo/latency-based DNS or global load balancer routes users to nearest healthy region.
+- Health checks must include dependency checks, not just process up/down.
+- Keep failover drills automated and tested regularly.
+
+### Data Strategy Across Regions
+
+| Need | Recommended Approach |
+|---|---|
+| **Strict consistency** | Single writer per entity + synchronous/quorum where required |
+| **Low latency global reads** | Local read replicas + bounded staleness |
+| **Multi-writer collaboration** | Conflict resolution (LWW, vector clocks, CRDT where suitable) |
+| **Compliance/data residency** | Regional data partitioning by tenant/country |
+
+### Interview Guidance
+
+- Start with active-passive unless requirements force active-active.
+- Explicitly state conflict policy before saying "multi-writer".
+- Tie architecture choice to RPO/RTO, latency, and compliance constraints.
+
+---
+
+# Part III — HLD Interview Playbook
+
+---
+
+## 30. Capacity Planning Templates
+
+### 30.1 Core Formulas
+
+```
+Average QPS = (DAU * requests_per_user_per_day) / 86400
+Peak QPS    = Average QPS * peak_factor (typically 2x to 10x)
+
+Storage/day = events_per_day * bytes_per_event
+Storage/year = Storage/day * 365 * replication_factor
+
+Bandwidth (bytes/s) = Peak QPS * avg_response_size_bytes
+```
+
+### 30.2 Capacity Checklist in Interviews
+
+| Dimension | What to Estimate | Typical Output |
+|---|---|---|
+| **Traffic** | Avg + peak QPS, burst factor | Read and write QPS |
+| **Data** | Record size, retention, growth | 1-year and 3-year storage |
+| **Compute** | Requests per server | Number of app instances |
+| **Cache** | Hot set %, item size, hit ratio | Required RAM and shard count |
+| **DB** | Write IOPS, read IOPS, index size | Primary + replica sizing |
+| **Network** | Ingress + egress | Link budget and CDN need |
+
+### 30.3 Worked Example (Quick)
+
+```
+DAU = 20M
+Requests/user/day = 30
+Average QPS = 20,000,000 * 30 / 86,400 ~= 6,944
+Peak QPS (x4) ~= 27,776
+
+If avg response is 25 KB:
+Egress ~= 27,776 * 25 KB ~= 694,400 KB/s ~= 678 MB/s ~= 5.4 Gbps
+```
+
+Interview tip: always say assumptions out loud and proceed with rounded numbers.
+
+---
+
+## 31. Data Modeling for HLD
+
+### 31.1 Access-Pattern-First Design
+
+Start with top queries:
+1. What are the top 3 read paths?
+2. What are the top 3 write paths?
+3. Which queries must be sub-100 ms?
+
+Then choose model:
+
+| Need | Better Fit |
+|---|---|
+| Complex joins + strict integrity | Relational |
+| Flexible nested schema | Document |
+| Very high write throughput | Wide-column |
+| Graph traversals | Graph DB |
+
+### 31.2 Entity + Index Strategy
+
+| Design Area | Guidance |
+|---|---|
+| **Primary key** | Make it stable and evenly distributed |
+| **Secondary indexes** | Add only for real query paths, not speculative ones |
+| **Composite index order** | Equality fields first, then range/sort |
+| **Time-series** | Partition by time + tenant/key |
+| **Large blobs** | Keep in object storage; store URLs in DB |
+
+### 31.3 Hot Key / Hot Partition Avoidance
+
+```
+If one key gets too much traffic:
+- Add key bucketing (user:123:0..9)
+- Add write fanout + read aggregation
+- Use local cache + request coalescing
+- Split by region/tenant where valid
+```
+
+---
+
+## 32. Async Workflow Design
+
+### 32.1 Event-Driven Reliability Stack
+
+| Concern | Pattern |
+|---|---|
+| DB write + publish atomicity | Outbox |
+| Duplicate processing | Inbox/idempotency key |
+| Poison events | DLQ |
+| Temporary failures | Retry with exponential backoff + jitter |
+| Ordering by entity | Partition key (e.g., orderId) |
+| Replay/recovery | Durable log + reprocessing job |
+
+### 32.2 Message Contract Rules
+
+- Include `eventId`, `eventType`, `version`, `timestamp`, `correlationId`.
+- Use schema registry or strict contract docs.
+- Prefer additive schema evolution.
+
+### 32.3 Processing Model
+
+```
+Consume -> validate schema -> check dedupe store -> process transaction
+-> mark processed -> ack
+On retriable error -> retry queue
+On max retry -> DLQ + alert + runbook
+```
+
+---
+
+## 33. Search System Design
+
+### 33.1 Typical Architecture
+
+```
+Source DB -> CDC/ETL -> Indexer -> Search Cluster (OpenSearch/Elasticsearch)
+                                 -> Query API -> rank/filter/sort -> client
+```
+
+### 33.2 Key Design Questions
+
+| Question | Why It Matters |
+|---|---|
+| **Freshness target?** | Near-real-time vs batch indexing |
+| **Ranking model?** | BM25, business boosts, personalization |
+| **Filters/facets needed?** | Impacts index mapping and aggregation cost |
+| **Typos/synonyms?** | Analyzer design (tokenizer, stemmer, synonyms) |
+| **Reindex strategy?** | Zero-downtime index migration |
+
+### 33.3 Reindex Without Downtime
+
+```
+1. Build new index version (products_v2)
+2. Backfill data
+3. Dual write from indexer to v1 and v2
+4. Shift read alias from v1 -> v2
+5. Monitor, then retire v1
+```
+
+---
+
+## 34. Real-Time System Design
+
+### 34.1 Communication Choice
+
+| Pattern | Use When |
+|---|---|
+| **WebSocket** | Bi-directional low-latency updates |
+| **SSE** | Server-to-client streaming only |
+| **Long polling** | Legacy/network constraints |
+
+### 34.2 Real-Time Building Blocks
+
+| Component | Responsibility |
+|---|---|
+| **Connection gateway** | Maintain socket sessions |
+| **Presence service** | Online/offline state + heartbeat |
+| **Pub/Sub broker** | Fanout events to many consumers |
+| **State store** | Last-seen, cursor, room membership |
+| **Delivery tracker** | Ack/retry for guaranteed channels |
+
+### 34.3 Scaling Notes
+
+- Use sticky routing or connection-aware hashing.
+- Separate connection handling from business services.
+- Keep message payloads compact; compress where useful.
+
+---
+
+## 35. Multi-Tenant Architecture
+
+### 35.1 Isolation Models
+
+| Model | Pros | Cons | Best For |
+|---|---|---|---|
+| **Shared DB, shared schema** | Cheapest, simplest ops | Weakest isolation | Small tenants/SaaS start |
+| **Shared DB, separate schema** | Better isolation | More migration complexity | Mid-scale SaaS |
+| **Separate DB per tenant** | Strong isolation/compliance | Higher ops cost | Enterprise/high-value tenants |
+
+### 35.2 Tenant Safety Controls
+
+- Per-tenant rate limits and quotas
+- Per-tenant keys/secrets
+- Per-tenant observability tags
+- Noisy-neighbor protection (pool limits, scheduler weights)
+
+### 35.3 Tenant-Aware Data Design
+
+Always include `tenant_id` in keys, indexes, and partition strategy.
+
+---
+
+## 36. Security for HLD Interviews
+
+### 36.1 Security Layers to Mention
+
+| Layer | Controls |
+|---|---|
+| **Edge** | WAF, TLS, bot/rate limits |
+| **Identity** | OAuth/OIDC, MFA, short-lived tokens |
+| **Service-to-service** | mTLS, service identity, zero trust |
+| **Data** | Encryption at rest/in transit, key rotation |
+| **App** | Input validation, output encoding, secure defaults |
+| **Ops** | Secrets manager, audit logs, least privilege IAM |
+
+### 36.2 Threat Modeling Quick Pass
+
+Use STRIDE-style prompts:
+- Spoofing: who can impersonate whom?
+- Tampering: what can alter data?
+- Repudiation: is audit trail sufficient?
+- Information disclosure: where can PII leak?
+- Denial of service: what can overwhelm system?
+- Elevation of privilege: broken authz paths?
+
+---
+
+## 37. Cost-Aware Design
+
+### 37.1 Major Cost Drivers
+
+| Cost Bucket | Typical Drivers |
+|---|---|
+| **Compute** | Always-on services, overprovisioning |
+| **Storage** | Retention, replication, backups, snapshots |
+| **Network** | Cross-AZ/region traffic, internet egress |
+| **Managed services** | Request and provisioned throughput pricing |
+| **Observability** | High-cardinality metrics and verbose logs |
+
+### 37.2 Cost Optimization Levers
+
+- Tiered storage (hot/warm/cold)
+- Right-size instances and autoscaling policies
+- CDN/cache to reduce origin and egress
+- Batch non-urgent jobs
+- Sampling for traces and debug logs
+
+Interview tip: present at least one low-cost and one high-reliability option.
+
+---
+
+## 38. Common HLD Case Study Blueprints
+
+### 38.1 What Interviewers Expect
+
+For each system, cover:
+1. Core APIs
+2. Data model
+3. High-level architecture
+4. Scale bottlenecks
+5. Consistency + failure handling
+
+### 38.2 Fast Blueprint Matrix
+
+| System | Key Components | Common Pitfall |
+|---|---|---|
+| **Chat app** | WebSocket gateway, message store, fanout, presence | Ignoring offline delivery and ordering |
+| **News feed** | Fanout-on-write/read, ranking, cache, graph store | Not handling celebrity fanout hot spots |
+| **Notification system** | Queue, template service, channel adapters, retries | No idempotency and user preference checks |
+| **File storage** | Object storage, metadata DB, signed URLs, CDN | Storing large blobs directly in relational DB |
+| **Ride matching** | Geo index, dispatch engine, ETA service, event bus | No strategy for surge/real-time spikes |
+| **Payment pipeline** | Ledger, idempotent API, outbox, reconciliation | Assuming exactly-once without reconciliation |
+
+---
+
+## 39. 10-Minute Whiteboard Answer Template
+
+Use this timing when interviewer says "Design X":
+
+| Time | What to Do |
+|---|---|
+| **0:00-1:30** | Clarify requirements and constraints |
+| **1:30-3:00** | Capacity estimates and NFR targets |
+| **3:00-5:30** | High-level architecture diagram |
+| **5:30-7:00** | API + data model sketch |
+| **7:00-8:30** | Scale and failure bottlenecks |
+| **8:30-10:00** | Trade-offs, alternatives, evolution path |
+
+Answer checklist:
+- Mention one reliability mechanism
+- Mention one consistency trade-off
+- Mention one security control
+- Mention one cost trade-off
+
+---
+
+## 40. Top 20 HLD Interview Questions + Ideal Answer Skeletons
+
+Use these as structured response templates, not memorized scripts.
+
+### Q1. How do you design a URL shortener?
+Skeleton:
+1. Clarify custom alias, expiry, analytics, spam controls.
+2. Estimate write QPS, read QPS (usually read-heavy).
+3. Core design: API + key-generation + KV lookup + cache + DB.
+4. Collision handling and idempotent creation.
+5. Scaling: cache hot links, partition by hash, multi-region reads.
+
+### Q2. How do you design a chat system?
+Skeleton:
+1. Clarify 1:1 vs group, ordering guarantees, online/offline delivery.
+2. Choose protocol (WebSocket + fallback).
+3. Design connection gateway, presence service, message store, fanout.
+4. Handle retries, dedupe, sequence numbers.
+5. Mention push notifications + unread sync.
+
+### Q3. How do you design a news feed?
+Skeleton:
+1. Clarify freshness vs personalization vs cost.
+2. Compare fanout-on-write vs fanout-on-read.
+3. Define feed storage model + ranking pipeline.
+4. Handle celebrity hot keys and cache invalidation.
+5. Add ML ranking and backfill strategy as phase 2.
+
+### Q4. How do you design a notification service?
+Skeleton:
+1. Clarify channels (email/SMS/push), latency SLAs, retry policy.
+2. Event intake -> template -> preference check -> channel adapters.
+3. Per-channel queues, DLQ, idempotency key.
+4. Delivery receipts + rate limits + quiet hours.
+5. Operational dashboards by provider and campaign.
+
+### Q5. How do you design a ride-matching system?
+Skeleton:
+1. Clarify ETA targets, city scale, surge model.
+2. Geo index for drivers + dispatch engine.
+3. Real-time driver location ingest pipeline.
+4. Matching heuristics (distance, ETA, acceptance probability).
+5. Failure handling: retry dispatch, fallback radius expansion.
+
+### Q6. How do you design a file storage service (Google Drive/S3-lite)?
+Skeleton:
+1. Clarify file size limits, sharing model, version history.
+2. Metadata DB + object storage separation.
+3. Upload flow with chunking, resumable upload, checksums.
+4. Signed URLs + CDN + ACL enforcement.
+5. Background jobs: dedupe, virus scan, lifecycle tiering.
+
+### Q7. How do you design a payment system?
+Skeleton:
+1. Clarify authorization/capture/refund/chargeback flows.
+2. Ledger-first model (immutable entries, double-entry).
+3. Idempotent payment APIs + outbox for events.
+4. Reconciliation pipelines with PSP/bank statements.
+5. Compliance/security controls (PCI scope minimization).
+
+### Q8. How do you design an API rate limiter?
+Skeleton:
+1. Clarify dimensions: per-user, IP, token, endpoint, tenant.
+2. Choose algorithm (token bucket / sliding window).
+3. Placement: gateway, service, or both.
+4. Distributed counter store (Redis) + fail-open/fail-closed decision.
+5. Return standard headers and 429 behavior.
+
+### Q9. How do you design a search autocomplete system?
+Skeleton:
+1. Clarify latency target (<100 ms), typo tolerance, popularity boost.
+2. Trie/inverted index + prefix service.
+3. Offline indexing + online updates.
+4. Ranking (frequency + recency + personalization).
+5. Cache top prefixes and shard by language/locale.
+
+### Q10. How do you design a metrics/monitoring platform?
+Skeleton:
+1. Clarify ingest rate, retention tiers, query latency.
+2. Write path: agents -> queue -> TSDB.
+3. Data model: labels/tags and cardinality controls.
+4. Storage tiers: hot/warm/cold.
+5. Alerting pipeline + dedupe + on-call routing.
+
+### Q11. How do you design a distributed cache?
+Skeleton:
+1. Clarify object size, TTL, consistency requirements.
+2. Node placement with consistent hashing + vnodes.
+3. Replication policy + eviction strategy.
+4. Hot key mitigation and stampede protection.
+5. Failure behavior and rebalancing during node changes.
+
+### Q12. How do you design a job scheduler?
+Skeleton:
+1. Clarify cron vs one-time vs DAG workflows.
+2. Control plane (scheduler) + worker pool separation.
+3. Lease-based locking for singleton tasks.
+4. Retry policy, backoff, and dead-letter handling.
+5. Observability: run history, SLA misses, rerun controls.
+
+### Q13. How do you design a recommendation system (high-level)?
+Skeleton:
+1. Clarify online latency vs offline training frequency.
+2. Candidate generation + ranking split.
+3. Feature store and feedback event pipeline.
+4. Real-time personalization cache.
+5. Cold-start strategy and A/B testing plan.
+
+### Q14. How do you design a multi-tenant SaaS backend?
+Skeleton:
+1. Clarify isolation and compliance requirements by tenant tier.
+2. Choose tenant model (shared schema / schema per tenant / DB per tenant).
+3. Tenant-aware authz, keys, quotas, billing meters.
+4. Noisy-neighbor protection at app and DB layers.
+5. Tenant migration and backup/restore plan.
+
+### Q15. How do you design real-time collaborative editing?
+Skeleton:
+1. Clarify conflict model and offline editing support.
+2. Choose OT vs CRDT strategy.
+3. Presence, cursor sync, and operation broadcast.
+4. Snapshot + operation log for recovery.
+5. Permission checks and document-level sharding.
+
+### Q16. How do you design a high-scale logging pipeline?
+Skeleton:
+1. Clarify ingest TPS, retention, query patterns.
+2. Agent -> broker -> processor -> storage architecture.
+3. Parsing/indexing strategy and schema evolution.
+4. Hot/warm/cold retention policy.
+5. Cost controls (sampling, compression, tiering).
+
+### Q17. How do you design inventory management for e-commerce?
+Skeleton:
+1. Clarify oversell tolerance and reservation TTL.
+2. Reservation service + stock ledger.
+3. Checkout saga: reserve -> pay -> confirm/release.
+4. Idempotency and reconciliation jobs.
+5. Flash-sale strategy (queue + tokenization + pre-allocation).
+
+### Q18. How do you design a global service (multi-region)?
+Skeleton:
+1. Clarify latency and consistency by operation.
+2. Pick topology: active-passive or active-active.
+3. Global traffic routing + health checks.
+4. Data placement and conflict policy.
+5. DR drills tied to RPO/RTO targets.
+
+### Q19. How do you design for zero-downtime deployments?
+Skeleton:
+1. Clarify release frequency and rollback requirements.
+2. Pick strategy: rolling, canary, blue-green.
+3. Ensure backward-compatible API/schema migration.
+4. Bake-time metrics and automated rollback triggers.
+5. Post-release validation and cleanup.
+
+### Q20. How do you improve an existing slow/fragile system?
+Skeleton:
+1. Start with metrics and bottleneck decomposition.
+2. Identify top offenders (DB, cache misses, chatty calls, lock contention).
+3. Propose phased fixes with measurable targets.
+4. Add reliability guardrails (timeouts, retries, circuit breakers).
+5. Define success criteria and follow-up plan.
+
+---
+
+### Answer Pattern You Can Reuse for Any HLD Question
+
+```
+1) Clarify
+2) Estimate
+3) Design
+4) Scale
+5) Reliability/Security
+6) Trade-offs
+7) Evolution path
+```
+
+If you run this pattern cleanly, most HLD interviews become predictable.
 
 ---
 
