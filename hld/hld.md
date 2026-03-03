@@ -1,6 +1,6 @@
 # System Design & Software Engineering — Interview Deep Dive
 
-> A comprehensive guide covering **every foundational building block** of high-level system design — from DNS and CDN to databases, caching, load balancing, sharding, replication, and beyond. Everything you need to design a system from scratch in an interview. For microservices, design patterns, and SOLID principles, see **[MICROSERVICES.md](MICROSERVICES.md)**.
+> A comprehensive guide covering **every foundational building block** of high-level system design — from DNS and CDN to databases, caching, load balancing, sharding, replication, and beyond. Everything you need to design a system from scratch in an interview.
 
 ---
 
