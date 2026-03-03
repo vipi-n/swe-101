@@ -265,6 +265,20 @@ User types: www.example.com
 
 **Interview note:** DNS is often a **single point of failure** — use multiple DNS providers (e.g., Route 53 + Cloudflare) for redundancy.
 
+### DNS in Production: Practical Patterns
+
+| Pattern | Why It Is Used | Trade-off |
+|---|---|---|
+| **Split-horizon DNS** | Different answers for internal vs external clients | More DNS config complexity |
+| **Low TTL during migration** | Faster cutover/rollback | Higher resolver query volume |
+| **Dual DNS providers** | Avoid provider outage blast radius | Operational overhead |
+| **Health-check-based failover** | Route away from unhealthy region/service | Health checks must be meaningful (dependency-aware) |
+
+Common DNS pitfalls:
+- Assuming DNS cutover is instant (resolver cache + TTL delays).
+- Relying only on ping checks; app may be up while dependencies are down.
+- Returning too many records without client-side retry/timeout strategy.
+
 ---
 
 ## 3. CDN — Content Delivery Network
@@ -326,6 +340,28 @@ Strategies:
                (old URL still cached, new URL is a cache miss → fetches new)
 4. TAGGED PURGE → Purge all content with tag "product-images"
 ```
+
+### CDN Design Decisions That Matter
+
+| Decision | Recommended Default | Why |
+|---|---|---|
+| Static assets TTL | Very high (`1 week` to `1 year`) with versioned URLs | Maximizes hit ratio and reduces origin load |
+| HTML/API TTL | Low (`seconds` to `minutes`) | Freshness-sensitive content |
+| Cache key | Include path + selected query params + locale/device where needed | Prevent incorrect cache sharing |
+| Authenticated content | Bypass edge cache by default | Avoid user data leaks |
+
+### Origin Protection Patterns
+
+- Use origin shield / mid-tier cache to reduce cache-miss stampede to origin.
+- Enforce signed URLs/cookies for premium/private content.
+- Apply per-path rate limits and WAF rules at edge.
+- Pre-warm critical objects before major launches.
+
+### CDN Interview Pitfalls
+
+- Caching personalized responses without `Vary` or auth segmentation.
+- Not discussing invalidation strategy for urgent content updates.
+- Ignoring egress/origin cost trade-offs when choosing cache TTL.
 
 ### CDN Use Cases in System Design
 
@@ -492,6 +528,12 @@ A **Load Balancer** distributes incoming traffic across multiple servers to ensu
 | **Random** | Pick a random server | Simple, effective for stateless workloads |
 | **Resource-Based** | Route based on server's available CPU/memory | Heterogeneous server pools |
 
+Algorithm selection tips:
+- Start with **Round Robin** for homogeneous stateless fleets.
+- Prefer **Least Connections** for long-lived connections (WebSocket, streaming).
+- Use **Weighted** variants when instance sizes differ.
+- Use **Consistent Hashing** only when affinity/state locality is required.
+
 ### Health Checks
 
 Load balancers only route to **healthy** servers. Health checks detect unhealthy ones:
@@ -551,6 +593,22 @@ Active-Passive LB pair:
 
 **Tools:** NGINX, HAProxy, AWS ALB/NLB, Envoy, Traefik, F5, Citrix NetScaler.
 
+### Load Balancer Operational Checklist
+
+| Area | What to Configure |
+|---|---|
+| **Timeouts** | connect/read/idle timeouts aligned with app behavior |
+| **Retries** | safe retry only for idempotent methods or retry-aware services |
+| **Connection reuse** | keep-alive, connection pool tuning |
+| **Drain/termination** | graceful deregistration before instance shutdown |
+| **Health checks** | separate liveness vs readiness; include dependency checks |
+| **Observability** | per-target latency, error rate, ejected targets, retry count |
+
+Common LB interview pitfalls:
+- Counting only average latency; ignoring p95/p99.
+- Not discussing draining during deploys (causes dropped requests).
+- Treating TCP health as sufficient when app dependencies are down.
+
 ---
 
 ## 6. API Gateway
@@ -593,6 +651,19 @@ An **API Gateway** is a single entry point for all client requests. It acts as a
 | **Logging & Monitoring** | Centralized access logs, metrics, tracing header injection |
 | **IP Whitelisting/Blacklisting** | Block or allow traffic by IP ranges |
 
+### API Gateway vs Load Balancer (Practical Boundary)
+
+| Concern | API Gateway | Load Balancer |
+|---|---|---|
+| AuthN/AuthZ | Yes | Usually no |
+| API policies (quota/plans) | Yes | Limited |
+| Request transformation | Yes | Limited |
+| Service-level traffic split | Yes | Sometimes |
+| Instance distribution | Limited/indirect | Primary purpose |
+
+Interview phrasing:
+- "Gateway handles API semantics and policies; LB handles efficient instance distribution."
+
 ### Backend for Frontend (BFF) Pattern
 
 Different clients (mobile, web, IoT) have different data needs. Instead of one API Gateway for all, use **one gateway per client type**:
@@ -613,6 +684,13 @@ Different clients (mobile, web, IoT) have different data needs. Instead of one A
 ```
 
 **Tools:** Kong, NGINX Plus, AWS API Gateway, Spring Cloud Gateway, Envoy, Traefik, Apigee.
+
+### Gateway Design Pitfalls
+
+- Making gateway a monolith with business logic (should stay thin/policy-focused).
+- No fallback behavior when a downstream service is degraded.
+- Missing idempotency enforcement for unsafe retried writes.
+- No schema/contract validation at edge (bad inputs propagate inward).
 
 ---
 
@@ -659,6 +737,15 @@ Different clients (mobile, web, IoT) have different data needs. Instead of one A
 
 **Rule of thumb:** Make application servers **stateless** and push state to external stores (Redis, DB). This enables easy horizontal scaling.
 
+Practical examples:
+- Stateless request: `GET /products/123` can hit any app instance.
+- Stateful request: WebSocket chat connection may need session affinity or shared connection map.
+
+Design pattern:
+1. Keep compute stateless.
+2. Externalize state (session store, cache, DB, object storage).
+3. Add sticky routing only where protocol requires it (e.g., WebSocket).
+
 ### Horizontal vs Vertical Scaling
 
 ```
@@ -686,6 +773,11 @@ Cons: Hardware ceiling, SPOF           Cons: Complexity, distributed state
 
 **Real-world:** Most systems use **both** — vertical for databases (hard to shard), horizontal for application servers (easy to replicate).
 
+Interview guidance:
+- Start with vertical scaling for early simplicity.
+- Move to horizontal scaling when throughput, availability, or team velocity demands it.
+- Mention state partitioning and operational complexity as the true scale-out cost.
+
 ---
 
 ## 8. Network Protocols — TCP, UDP, HTTP, WebSockets, gRPC
@@ -700,6 +792,41 @@ Cons: Hardware ceiling, SPOF           Cons: Complexity, distributed state
 | **Flow control** | Yes (window-based) | No |
 | **Use cases** | HTTP, FTP, email, database connections | Video streaming, DNS, gaming, VoIP |
 | **Header size** | 20-60 bytes | 8 bytes |
+
+#### TCP Deep Dive
+
+TCP provides a reliable byte stream. Reliability is implemented with:
+- sequence numbers (track ordering),
+- acknowledgements (ACK),
+- retransmission on timeout/loss,
+- flow control (receiver window),
+- congestion control (sender slows down under network congestion).
+
+```
+Connection setup (3-way handshake):
+Client -> SYN ---------> Server
+Client <- SYN-ACK ----- Server
+Client -> ACK ---------> Server
+
+Connection close (FIN/ACK sequence) is separate and can be half-closed.
+```
+
+Why this matters in system design:
+- Great for correctness-sensitive APIs and database traffic.
+- Retransmissions and head-of-line behavior can increase tail latency.
+- Long-lived TCP connections reduce handshake cost (connection pooling/keep-alive).
+
+#### UDP Deep Dive
+
+UDP sends independent datagrams without built-in reliability. Applications decide what to do about loss/order.
+
+Why teams choose UDP:
+- lower latency and lower protocol overhead,
+- useful when stale data is worse than dropped data (live voice/video frames),
+- can build custom reliability only for required packets.
+
+Interview caveat:
+- UDP is not automatically "better"; if your app needs strict delivery/ordering, you must add that logic yourself.
 
 ### HTTP Versions
 
@@ -721,6 +848,34 @@ HTTP/3   → QUIC: UDP-based, eliminates TCP head-of-line blocking
 | **Head-of-line blocking** | Yes (TCP + HTTP) | Partially (TCP level) | No |
 | **Header compression** | No | HPACK | QPACK |
 | **Connection setup** | TCP + TLS (3 RTT) | TCP + TLS (2 RTT) | 1 RTT (or 0-RTT) |
+
+#### HTTP Request/Response Anatomy
+
+```
+Request:
+GET /v1/orders/123 HTTP/1.1
+Host: api.example.com
+Authorization: Bearer <token>
+Accept: application/json
+
+Response:
+HTTP/1.1 200 OK
+Content-Type: application/json
+Cache-Control: max-age=60
+{ "orderId": "123", "state": "PAID" }
+```
+
+Important interview concepts:
+- **Idempotency:** GET/PUT/DELETE are naturally idempotent; POST often needs idempotency key.
+- **Caching:** `Cache-Control`, `ETag`, `If-None-Match`, `304 Not Modified`.
+- **Compression:** gzip/br reduces bandwidth.
+- **Status codes:** `2xx` success, `4xx` client issue, `5xx` server issue.
+
+#### HTTP/2 and HTTP/3 Practical Notes
+
+- HTTP/2 multiplexing reduces app-layer blocking but still inherits TCP packet loss behavior.
+- HTTP/3 (QUIC) improves lossy/mobile networks with faster recovery and connection migration.
+- For most backend APIs, protocol upgrade helps, but data model and backend latency still dominate p99.
 
 ### Real-Time Communication Patterns
 
@@ -771,6 +926,38 @@ HTTP/3   → QUIC: UDP-based, eliminates TCP head-of-line blocking
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
+#### WebSocket Handshake and Lifecycle
+
+1. Client sends HTTP request with `Upgrade: websocket`.
+2. Server replies `101 Switching Protocols`.
+3. Both sides keep a persistent full-duplex channel.
+4. Heartbeats/pings detect dead peers.
+5. Reconnect logic is mandatory for clients.
+
+Scaling implications:
+- Connections are stateful; use sticky routing or a shared session directory.
+- Separate connection gateways from business workers.
+- Use pub/sub (Redis/Kafka/NATS) for cross-node fanout.
+
+#### gRPC in More Detail
+
+gRPC uses Protocol Buffers with strong contracts and code generation.
+
+RPC styles:
+- Unary: one request, one response.
+- Server streaming: one request, many responses.
+- Client streaming: many requests, one response.
+- Bidirectional streaming: both directions stream concurrently.
+
+Why it is popular internally:
+- efficient binary payloads,
+- strict schema evolution model,
+- strong typing across languages.
+
+Typical constraints:
+- browser integration usually requires gRPC-Web/proxy,
+- observability and retries need deliberate configuration.
+
 ### When to Use Which Protocol
 
 ```
@@ -784,6 +971,23 @@ Internal service ↔ service?        gRPC (fast, typed)
 Streaming (video/audio)?           WebRTC, HLS/DASH over HTTP
 IoT / constrained devices?         MQTT, CoAP (over UDP)
 ```
+
+### Protocol Selection Matrix (Interview-Friendly)
+
+| Scenario | Default Choice | Why |
+|---|---|---|
+| Public CRUD API | HTTP/JSON (REST) | Simple, debuggable, broadly compatible |
+| Internal low-latency service calls | gRPC | Typed contract, lower payload overhead |
+| Server-to-client live updates only | SSE | Simpler than WebSockets, auto reconnect |
+| Bidirectional low-latency interaction | WebSockets | Full-duplex channel |
+| Live media/voice | UDP-based protocols (WebRTC/RTP) | Prioritize latency over perfect delivery |
+
+### Common Interview Mistakes
+
+- Saying UDP is "faster so always better" without discussing reliability needs.
+- Choosing WebSockets for every realtime problem (SSE may be enough).
+- Ignoring idempotency/retries when comparing protocols.
+- Optimizing protocol before fixing database/query bottlenecks.
 
 ---
 
@@ -958,6 +1162,35 @@ Used by: Hibernate L2 cache, Spring Cache abstraction
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### Cache Key Design
+
+| Principle | Example |
+|---|---|
+| Include version | `product:v3:{id}` |
+| Include tenant/locale when relevant | `feed:{tenant}:{user}:{locale}` |
+| Keep deterministic serialization | sorted JSON keys for composite key parts |
+| Avoid oversized keys | hash long composites (`sha256`) |
+
+### TTL Strategy by Data Type
+
+| Data | TTL | Notes |
+|---|---|---|
+| Product catalog | minutes to hours | invalidate on update event |
+| User profile | short (30s-5m) | personalization freshness matters |
+| Feature flags/config | seconds to minutes | watch + push invalidation preferred |
+| Session/token metadata | aligned to token/session expiry | security-sensitive |
+
+### Cache Observability
+
+- Hit ratio by endpoint/keyspace
+- Miss penalty (latency impact)
+- Eviction rate and key churn
+- Hot key detection
+- Backend protection metrics (DB QPS reduction)
+
+Interview pitfall:
+- quoting hit ratio alone without showing miss penalty and consistency impact.
+
 ### Redis vs Memcached
 
 | Feature | Redis | Memcached |
@@ -1108,6 +1341,28 @@ Request 2 → Open conn → Query →    Request 3 → Get conn from pool → Qu
 
 **Tools:** PgBouncer (PostgreSQL), ProxySQL (MySQL), HikariCP (Java), SQLAlchemy pool (Python).
 
+### SQL vs NoSQL Decision Framework
+
+| Requirement | Bias Toward |
+|---|---|
+| Multi-row transactions, strong integrity | SQL |
+| Rapid schema evolution, denormalized reads | Document NoSQL |
+| Massive write throughput + eventual consistency | Wide-column NoSQL |
+| Relationship traversal depth > 2 hops | Graph DB |
+
+### Indexing in Practice
+
+Checklist for query optimization:
+1. Start from query pattern and filter/sort columns.
+2. Add composite index with leftmost selectivity in mind.
+3. Verify using query plan (`EXPLAIN`) and actual timings.
+4. Monitor write amplification after adding indexes.
+
+Common indexing pitfalls:
+- Over-indexing write-heavy tables.
+- Using function-wrapped predicates that prevent index use.
+- Expecting `%keyword%` on large text columns without full-text index.
+
 ---
 
 ## 11. Database Replication
@@ -1203,6 +1458,27 @@ Asynchronous:
 | **Reading your own write** | User writes then reads → reads from stale replica → doesn't see own write | Read-after-write: route post-write reads to primary |
 | **Monotonic reads** | User sees newer data, then older data (different replicas) | Sticky sessions: always route user to same replica |
 | **Causally related reads** | Read A causes write B; another user reads B before A appears | Causal consistency: track dependencies with version vectors |
+
+### Failover Workflow (Single-Leader)
+
+```
+1. Detect primary failure (health + replication state checks)
+2. Choose best replica (lowest lag, latest WAL/LSN)
+3. Promote replica to new primary
+4. Re-point clients (service discovery / VIP / proxy)
+5. Rebuild old primary as replica
+```
+
+Key interview point: failover correctness depends on replication lag and split-brain prevention, not only on fast detection.
+
+### Replication Strategy Selection
+
+| Requirement | Prefer |
+|---|---|
+| No data loss on commit | Synchronous / semi-sync with strict quorum |
+| Highest write throughput | Asynchronous with careful read routing |
+| Low-latency global reads | Regional replicas + bounded staleness |
+| Multi-region writes | Multi-leader/leaderless + conflict policy |
 
 ---
 
@@ -1312,6 +1588,30 @@ Lookup Table:
 | **Schema changes** | DDL must be applied to all shards | Rolling migration tools (gh-ost, pt-osc) |
 | **Secondary indexes** | Local to shard or global (expensive) | Local index + scatter-gather, or global index service |
 
+### Resharding Strategy (Without Big-Bang Migration)
+
+```
+1. Introduce logical partitions (e.g., 1024 virtual buckets)
+2. Map buckets -> physical shards via routing table
+3. Move bucket ranges incrementally to new shards
+4. Dual-read/verify for moved ranges
+5. Cut traffic fully and clean old mappings
+```
+
+Why this helps:
+- You move a small subset each step.
+- You can pause/rollback per bucket range.
+- Data movement is operationally safer than whole-shard rebalance.
+
+### Query Patterns in Sharded Systems
+
+| Query Type | Cost | Typical Handling |
+|---|---|---|
+| Point lookup by shard key | Low | Route directly to one shard |
+| Range query on shard key | Medium | One/few shards if key aligned |
+| Cross-shard aggregation | High | Async materialized views / OLAP pipeline |
+| Cross-shard transaction | High | Saga, compensations, minimal critical scope |
+
 ---
 
 ## 13. Consistent Hashing
@@ -1410,6 +1710,20 @@ Each physical server owns 3 "slices" of the ring.
 | **Typical vnode count** | N/A | 100-256 per physical node |
 
 **Used by:** Cassandra, DynamoDB, Memcached, Riak, Amazon S3, Akamai CDN.
+
+### Replication with Consistent Hashing
+
+Common approach:
+- Store primary on first clockwise node.
+- Store replicas on next `R-1` distinct nodes.
+
+Benefits:
+- Node failure impacts only neighboring key ranges.
+- Rebalance stays proportional rather than global.
+
+Watchouts:
+- Need anti-entropy repair jobs for missed writes.
+- Read-repair/quorum settings affect latency and consistency.
 
 ---
 
@@ -1742,6 +2056,27 @@ In most system designs, **object/blob storage** is used for:
 | **Static website hosting** | HTML/CSS/JS on S3 → CloudFront CDN → users |
 | **Data lake** | Raw data (JSON, Parquet, CSV) on S3 → analytics with Spark/Presto |
 
+### Storage Selection Decision Guide
+
+| Workload | Best Storage | Why |
+|---|---|---|
+| OLTP database data files | Block | Low latency and predictable IOPS |
+| Shared team/home directory | File | Native directory semantics and POSIX-like access |
+| Images/videos/backups/log archives | Object | Massive scale, durability, low cost tiers |
+
+### Object Storage Best Practices
+
+- Use immutable object keys for static assets (`app.<hash>.js`).
+- Store metadata (owner, ACL, tags) alongside object key in DB if queries are complex.
+- Use lifecycle policies: hot -> warm -> cold archival.
+- Use multipart upload for large files and checksum validation on complete.
+
+### Storage Interview Pitfalls
+
+- Putting large blobs directly in relational DB hot tables.
+- Ignoring retrieval cost/latency of cold tiers.
+- Not separating metadata path from blob path (hurts query flexibility).
+
 ---
 
 ## 19. Failover & Redundancy Patterns
@@ -1817,6 +2152,36 @@ If one fails → other absorbs its traffic.
 **RPO** (Recovery Point Objective): Maximum acceptable data loss (time).
 **RTO** (Recovery Time Objective): Maximum acceptable downtime.
 
+### DR Runbook (Interview-Ready)
+
+```
+1) Incident declared and blast radius assessed
+2) Freeze risky writes/deployments
+3) Validate primary region health and data integrity
+4) Trigger failover to DR target
+5) Repoint traffic (DNS/GSLB/API gateway)
+6) Verify critical flows (auth, checkout, payment, data writes)
+7) Communicate status and ETA
+8) Plan failback after root cause and replication catch-up
+```
+
+### Failover Validation Checklist
+
+| Check | Why |
+|---|---|
+| Auth/session integrity | Prevent lockout/security regressions |
+| Write path correctness | Avoid silent data loss |
+| Queue backlog and consumers | Prevent delayed side effects |
+| Monitoring/alerts in DR | Ensure visibility during incident |
+| Data reconciliation post-event | Confirm no divergence |
+
+### DR Testing Cadence
+
+- Tabletop exercises (monthly/quarterly)
+- Partial failover drills (quarterly)
+- Full game-day failover (semi-annual)
+- Post-drill action items with owners and due dates
+
 ---
 
 # Part II — Advanced Topics
@@ -1879,6 +2244,33 @@ Position in current window: 25%
 
 Weighted count = 84 * (1 - 0.25) + 36 = 63 + 36 = 99 → allowed
 ```
+
+### Algorithm Comparison
+
+| Algorithm | Accuracy | Memory | CPU | Burst Handling | Typical Use |
+|---|---|---|---|---|---|
+| **Fixed Window** | Low (boundary spikes) | Very low | Very low | Weak | Simple internal APIs |
+| **Sliding Log** | Highest | High (timestamps list) | Medium | Good | Security-critical endpoints |
+| **Sliding Counter** | High | Low | Low | Good | Large-scale gateway limits |
+| **Token Bucket** | Medium-High | Very low | Very low | Excellent | Public APIs with burst tolerance |
+
+### Distributed Rate Limiting Notes
+
+- Use atomic ops in Redis/Lua for correctness under concurrency.
+- Define scope explicitly: IP, user, token, tenant, endpoint.
+- Choose failure mode:
+  - **Fail-open:** better availability, weaker abuse control.
+  - **Fail-closed:** stronger protection, possible false blocking.
+- Return useful headers:
+  - `X-RateLimit-Limit`
+  - `X-RateLimit-Remaining`
+  - `X-RateLimit-Reset`
+
+### Common Pitfalls
+
+- Per-instance counters without global coordination (easy bypass).
+- No clock strategy for window-based limits.
+- Applying same limit to read-heavy and write-heavy endpoints.
 
 ---
 
@@ -1996,9 +2388,19 @@ A leader-based consensus algorithm. Easy to understand. Used by etcd, Consul.
 3. Safety: Once a log entry is committed (majority ack), it's permanent.
 ```
 
+Operational notes:
+- Leader handles client writes; followers replicate log entries.
+- If leader fails, election timeout triggers re-election.
+- Split-brain is prevented by term/vote rules and majority quorum.
+- In interviews, highlight quorum requirement and write availability trade-off.
+
 #### Paxos
 
 Theoretical foundation for consensus. Complex. Used by Google Chubby.
+
+Interview framing:
+- Mention Paxos as foundation and Raft as easier to implement/explain.
+- Most production answers can focus on Raft unless explicitly asked for Paxos details.
 
 ### Gossip Protocol
 
@@ -2054,6 +2456,11 @@ Use cases:
 | **Raft/Paxos** | Consensus-based election | etcd, Consul |
 | **Lease-based** | Acquire a time-limited lock | Zookeeper, Redis (Redlock) |
 
+Leader election pitfalls:
+- Clock skew can break lease assumptions.
+- Long GC pauses can cause accidental lease expiry.
+- Fencing tokens are needed to protect downstream systems from stale leaders.
+
 ---
 
 ## 24. Security Patterns
@@ -2078,6 +2485,11 @@ Google → App: Returns access_token + refresh_token
 App → Google API: Use access_token to fetch user info
 ```
 
+Why Authorization Code + PKCE is preferred:
+- Authorization code is short-lived and exchanged server-side.
+- PKCE protects public clients (mobile/SPA) from code interception attacks.
+- Refresh tokens allow longer sessions without repeated login prompts.
+
 ### JWT (JSON Web Token) Structure
 
 ```
@@ -2092,6 +2504,12 @@ Header.Payload.Signature
 
 **Stateless:** No server-side session storage. The token itself carries the data.
 **Trade-off:** Can't revoke individual tokens easily (use short TTL + refresh tokens).
+
+JWT best practices:
+- Keep expiry short (`exp`).
+- Validate `iss`, `aud`, signature algorithm, and key ID (`kid`).
+- Avoid putting sensitive PII in payload (token is signed, not encrypted by default).
+- Prefer asymmetric signing (RS256/ES256) for distributed verification.
 
 ### Zero Trust Architecture
 
@@ -2124,6 +2542,12 @@ Header.Payload.Signature
 
 **Tools:** ELK Stack (Elasticsearch, Logstash, Kibana), Splunk, Datadog, Loki.
 
+Good logging patterns:
+- Structured JSON logs only.
+- Always include `trace_id`, `span_id`, `request_id`, `tenant_id` (if multi-tenant).
+- Use sampling and retention policies to control cost.
+- Never log secrets, access tokens, full card data, or passwords.
+
 ### Metrics
 
 **How is it performing** — numeric time-series data aggregated over time.
@@ -2140,6 +2564,11 @@ Key metrics:
 ```
 
 **Tools:** Prometheus + Grafana, Datadog, CloudWatch.
+
+Metric design tips:
+- Prefer counters/histograms over ad-hoc gauges for request metrics.
+- Control cardinality (avoid unbounded labels like raw user ID).
+- Alert on symptom + cause pairs (e.g., error rate and dependency saturation).
 
 ### Traces
 
@@ -2158,6 +2587,11 @@ Total: 78ms
 ```
 
 **Tools:** Jaeger, Zipkin, OpenTelemetry, AWS X-Ray.
+
+Tracing tips:
+- Propagate context across HTTP, queue, and async workers.
+- Add business attributes (orderId, tenantId) as span attributes.
+- Sample smartly: keep all error traces, sample normal traffic.
 
 ### The Four Golden Signals (Google SRE)
 
@@ -2599,15 +3033,46 @@ Skeleton:
 4. Collision handling and idempotent creation.
 5. Scaling: cache hot links, partition by hash, multi-region reads.
 
-API Sketch:
-- `POST /v1/links` -> create short URL (supports idempotency key)
-- `GET /{shortCode}` -> redirect to original URL
-- `GET /v1/links/{shortCode}/stats` -> clicks, unique users, geo
+API Contracts:
 
-Schema Sketch:
-- `links(short_code PK, original_url, user_id, created_at, expires_at, status)`
-- `link_clicks(id PK, short_code, ts, country, user_agent_hash)`
-- `idempotency_keys(key PK, response_blob, created_at)`
+| Method | Endpoint | Request Body | Success Response |
+|---|---|---|---|
+| `POST` | `/v1/links` | `{ "originalUrl": "https://x.com/a", "customAlias": "promo1", "expiresAt": "2026-12-31T00:00:00Z" }` | `201 Created` `{ "shortCode": "aB12Cd", "shortUrl": "https://sho.rt/aB12Cd" }` |
+| `GET` | `/{shortCode}` | N/A | `302 Found` with `Location: <original-url>` |
+| `GET` | `/v1/links/{shortCode}/stats` | N/A | `200 OK` `{ "clicks": 1023, "uniqueUsers": 811, "topCountries": [{ "code": "US", "count": 400 }] }` |
+
+Schema Tables:
+
+#### `links`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `short_code` | `varchar(16)` | `PK` | - |
+| `original_url` | `text` | `-` | - |
+| `user_id` | `bigint` | `FK*` | Inferred foreign key by naming convention. |
+| `created_at` | `timestamp` | `-` | - |
+| `expires_at` | `timestamp` | `-` | - |
+| `status` | `varchar(20)` | `-` | - |
+
+#### `link_clicks`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `bigint` | `PK` | - |
+| `short_code` | `varchar(16)` | `-` | - |
+| `ts` | `timestamp` | `-` | - |
+| `country` | `varchar(2)` | `-` | - |
+| `user_agent_hash` | `varchar(64)` | `-` | - |
+
+#### `idempotency_keys`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `idempotency_key` | `varchar(128)` | `PK` | - |
+| `response_blob` | `jsonb` | `-` | - |
+| `created_at` | `timestamp` | `-` | - |
+
+What happens if (interviewer cross-questions):
+- What happens if one short code becomes a hot key and saturates cache/DB? Use CDN edge caching, per-key request coalescing, and async analytics writes.
+- What happens if key-generation service fails? Fall back to pre-allocated key blocks and keep idempotency keys to avoid duplicate links.
+- What happens if a link is deleted/expired but still cached? Use short TTL + explicit cache invalidation on state change.
 
 ### Q2. How do you design a chat system?
 Skeleton:
@@ -2617,17 +3082,59 @@ Skeleton:
 4. Handle retries, dedupe, sequence numbers.
 5. Mention push notifications + unread sync.
 
-API Sketch:
-- `POST /v1/conversations` -> create DM/group
-- `POST /v1/conversations/{id}/messages` -> send message
-- `GET /v1/conversations/{id}/messages?cursor=...` -> history
-- `WS /v1/realtime` -> receive events, delivery/read receipts
+API Contracts:
 
-Schema Sketch:
-- `conversations(id PK, type, created_by, created_at)`
-- `conversation_members(conversation_id, user_id, role, joined_at)`
-- `messages(id PK, conversation_id, sender_id, seq_no, body, created_at, status)`
-- `message_receipts(message_id, user_id, delivered_at, read_at)`
+| Method | Endpoint | Request Body | Success Response |
+|---|---|---|---|
+| `POST` | `/v1/conversations` | `{ "type": "group", "memberIds": [101,102], "title": "Project A" }` | `201 Created` `{ "conversationId": "c_789" }` |
+| `POST` | `/v1/conversations/{id}/messages` | `{ "clientMessageId": "m-client-1", "body": "hello" }` | `201 Created` `{ "messageId": "m_123", "seqNo": 456 }` |
+| `GET` | `/v1/conversations/{id}/messages?cursor=456` | N/A | `200 OK` `{ "items": [{ "messageId": "m_122", "body": "hi" }], "nextCursor": "455" }` |
+| `WS` | `/v1/realtime` | handshake token | `101 Switching Protocols`, then events like `{ "type":"message.delivered", ... }` |
+
+Schema Tables:
+
+#### `conversations`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `type` | `varchar(20)` | `-` | - |
+| `title` | `varchar(255)` | `-` | - |
+| `created_by` | `bigint` | `-` | - |
+| `created_at` | `timestamp` | `-` | - |
+
+#### `conversation_members`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `conversation_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `user_id` | `bigint` | `FK*` | Inferred foreign key by naming convention. |
+| `role` | `varchar(20)` | `-` | - |
+| `joined_at` | `timestamp` | `-` | - |
+| `-` | `-` | `PK` | `PRIMARY KEY (conversation_id, user_id)` |
+
+#### `messages`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `conversation_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `sender_id` | `bigint` | `FK*` | Inferred foreign key by naming convention. |
+| `seq_no` | `bigint` | `-` | - |
+| `body` | `text` | `-` | - |
+| `created_at` | `timestamp` | `-` | - |
+| `status` | `varchar(20)` | `-` | - |
+
+#### `message_receipts`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `message_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `user_id` | `bigint` | `FK*` | Inferred foreign key by naming convention. |
+| `delivered_at` | `timestamp` | `-` | - |
+| `read_at` | `timestamp` | `-` | - |
+| `-` | `-` | `PK` | `PRIMARY KEY (message_id, user_id)` |
+
+What happens if (interviewer cross-questions):
+- What happens if a user goes offline during send? Persist server-side, acknowledge with message ID, and deliver on reconnect with cursor-based catch-up.
+- What happens if messages arrive out of order across devices? Enforce per-conversation sequence numbers and client reorder before render.
+- What happens if WebSocket gateway restarts? Resume via token + lastAckedSeq; replay missed events.
 
 ### Q3. How do you design a news feed?
 Skeleton:
@@ -2637,16 +3144,55 @@ Skeleton:
 4. Handle celebrity hot keys and cache invalidation.
 5. Add ML ranking and backfill strategy as phase 2.
 
-API Sketch:
-- `GET /v1/feed?userId=...&cursor=...`
-- `POST /v1/posts`
-- `POST /v1/posts/{id}/interactions` (like/comment/share)
+API Contracts:
 
-Schema Sketch:
-- `posts(id PK, author_id, content_ref, created_at, visibility)`
-- `follows(follower_id, followee_id, created_at)`
-- `feed_edges(user_id, post_id, rank_score, created_at)` (materialized/fanout table)
-- `interactions(id PK, user_id, post_id, type, created_at)`
+| Method | Endpoint | Request Body | Success Response |
+|---|---|---|---|
+| `GET` | `/v1/feed?userId=101&cursor=abc` | N/A | `200 OK` `{ "items": [{ "postId": "p1", "score": 0.92 }], "nextCursor": "def" }` |
+| `POST` | `/v1/posts` | `{ "authorId": 101, "content": "Hello world", "visibility": "followers" }` | `201 Created` `{ "postId": "p_1001" }` |
+| `POST` | `/v1/posts/{id}/interactions` | `{ "userId": 201, "type": "like" }` | `201 Created` `{ "interactionId": "i_900" }` |
+
+Schema Tables:
+
+#### `posts`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `author_id` | `bigint` | `FK*` | Inferred foreign key by naming convention. |
+| `content_ref` | `text` | `-` | - |
+| `visibility` | `varchar(20)` | `-` | - |
+| `created_at` | `timestamp` | `-` | - |
+
+#### `follows`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `follower_id` | `bigint` | `FK*` | Inferred foreign key by naming convention. |
+| `followee_id` | `bigint` | `FK*` | Inferred foreign key by naming convention. |
+| `created_at` | `timestamp` | `-` | - |
+| `-` | `-` | `PK` | `PRIMARY KEY (follower_id, followee_id)` |
+
+#### `feed_edges`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `user_id` | `bigint` | `FK*` | Inferred foreign key by naming convention. |
+| `post_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `rank_score` | `double precision` | `-` | - |
+| `created_at` | `timestamp` | `-` | - |
+| `-` | `-` | `PK` | `PRIMARY KEY (user_id, post_id)` |
+
+#### `interactions`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `user_id` | `bigint` | `FK*` | Inferred foreign key by naming convention. |
+| `post_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `type` | `varchar(20)` | `-` | - |
+| `created_at` | `timestamp` | `-` | - |
+
+What happens if (interviewer cross-questions):
+- What happens if a celebrity posts and fanout explodes? Switch those accounts to fanout-on-read and cache ranked partial feeds.
+- What happens if ranking service times out? Return fallback chronological feed with degraded personalization.
+- What happens if follow/unfollow races with feed generation? Treat follow graph changes as events and apply eventual correction jobs.
 
 ### Q4. How do you design a notification service?
 Skeleton:
@@ -2656,16 +3202,60 @@ Skeleton:
 4. Delivery receipts + rate limits + quiet hours.
 5. Operational dashboards by provider and campaign.
 
-API Sketch:
-- `POST /v1/notifications` (template + target + channel set)
-- `GET /v1/notifications/{id}` (status timeline)
-- `POST /v1/subscriptions/preferences` (opt-in/opt-out)
+API Contracts:
 
-Schema Sketch:
-- `notification_requests(id PK, user_id, template_id, payload, created_at, dedupe_key)`
-- `notification_attempts(id PK, request_id, channel, provider, status, retry_count, ts)`
-- `user_preferences(user_id PK, email_opt_in, sms_opt_in, push_opt_in, quiet_hours_json)`
-- `dlq_notifications(id PK, request_id, reason, payload, failed_at)`
+| Method | Endpoint | Request Body | Success Response |
+|---|---|---|---|
+| `POST` | `/v1/notifications` | `{ "userId": 101, "templateId": "order_shipped", "channels": ["email","push"], "payload": { "orderId": "o_1" } }` | `202 Accepted` `{ "requestId": "nreq_1", "status": "queued" }` |
+| `GET` | `/v1/notifications/{id}` | N/A | `200 OK` `{ "requestId": "nreq_1", "attempts": [{ "channel":"email","status":"SENT" }] }` |
+| `PUT` | `/v1/subscriptions/preferences` | `{ "userId": 101, "emailOptIn": true, "pushOptIn": false, "quietHours": { "start":"22:00","end":"07:00" } }` | `200 OK` `{ "updated": true }` |
+
+Schema Tables:
+
+#### `notification_requests`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `user_id` | `bigint` | `FK*` | Inferred foreign key by naming convention. |
+| `template_id` | `varchar(64)` | `FK*` | Inferred foreign key by naming convention. |
+| `payload` | `jsonb` | `-` | - |
+| `dedupe_key` | `varchar(128)` | `-` | - |
+| `created_at` | `timestamp` | `-` | - |
+
+#### `notification_attempts`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `request_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `channel` | `varchar(20)` | `-` | - |
+| `provider` | `varchar(30)` | `-` | - |
+| `status` | `varchar(20)` | `-` | - |
+| `retry_count` | `int` | `-` | - |
+| `ts` | `timestamp` | `-` | - |
+
+#### `user_preferences`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `user_id` | `bigint` | `PK` | - |
+| `email_opt_in` | `boolean` | `-` | - |
+| `sms_opt_in` | `boolean` | `-` | - |
+| `push_opt_in` | `boolean` | `-` | - |
+| `quiet_hours` | `jsonb` | `-` | - |
+| `updated_at` | `timestamp` | `-` | - |
+
+#### `dlq_notifications`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `request_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `reason` | `varchar(255)` | `-` | - |
+| `payload` | `jsonb` | `-` | - |
+| `failed_at` | `timestamp` | `-` | - |
+
+What happens if (interviewer cross-questions):
+- What happens if email/SMS provider is down? Route to secondary provider and keep retry with DLQ after max attempts.
+- What happens if user toggles preferences mid-campaign? Check preferences at send time (not only enqueue time).
+- What happens if duplicate events are published? Deduplicate with idempotency key per user/template/window.
 
 ### Q5. How do you design a ride-matching system?
 Skeleton:
@@ -2675,17 +3265,63 @@ Skeleton:
 4. Matching heuristics (distance, ETA, acceptance probability).
 5. Failure handling: retry dispatch, fallback radius expansion.
 
-API Sketch:
-- `POST /v1/rides` (pickup/drop)
-- `POST /v1/rides/{id}/accept` (driver accepts)
-- `POST /v1/drivers/{id}/location` (stream/update)
-- `GET /v1/rides/{id}` (state + ETA)
+API Contracts:
 
-Schema Sketch:
-- `drivers(id PK, status, vehicle_type, rating, current_geohash, updated_at)`
-- `rides(id PK, rider_id, driver_id, state, pickup_geo, drop_geo, requested_at, matched_at)`
-- `dispatch_events(id PK, ride_id, driver_id, event_type, ts)`
-- `pricing_quotes(id PK, ride_id, base_fare, surge_multiplier, expires_at)`
+| Method | Endpoint | Request Body | Success Response |
+|---|---|---|---|
+| `POST` | `/v1/rides` | `{ "riderId": 501, "pickup": { "lat":12.93,"lng":77.61 }, "drop": { "lat":12.98,"lng":77.64 } }` | `201 Created` `{ "rideId":"r_1","state":"SEARCHING","etaSec":240 }` |
+| `POST` | `/v1/rides/{id}/accept` | `{ "driverId": 301 }` | `200 OK` `{ "rideId":"r_1","state":"DRIVER_ASSIGNED" }` |
+| `PUT` | `/v1/drivers/{id}/location` | `{ "lat":12.93,"lng":77.61,"heading":70 }` | `202 Accepted` `{ "updated": true }` |
+| `GET` | `/v1/rides/{id}` | N/A | `200 OK` `{ "rideId":"r_1","state":"ARRIVING","etaSec":120 }` |
+
+Schema Tables:
+
+#### `drivers`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `bigint` | `PK` | - |
+| `status` | `varchar(20)` | `-` | - |
+| `vehicle_type` | `varchar(30)` | `-` | - |
+| `rating` | `decimal(3,2)` | `-` | - |
+| `current_geohash` | `varchar(16)` | `-` | - |
+| `updated_at` | `timestamp` | `-` | - |
+
+#### `rides`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `rider_id` | `bigint` | `FK*` | Inferred foreign key by naming convention. |
+| `driver_id` | `bigint` | `FK*` | Inferred foreign key by naming convention. |
+| `state` | `varchar(20)` | `-` | - |
+| `pickup_lat` | `decimal(9,6)` | `-` | - |
+| `pickup_lng` | `decimal(9,6)` | `-` | - |
+| `drop_lat` | `decimal(9,6)` | `-` | - |
+| `drop_lng` | `decimal(9,6)` | `-` | - |
+| `requested_at` | `timestamp` | `-` | - |
+| `matched_at` | `timestamp` | `-` | - |
+
+#### `dispatch_events`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `ride_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `driver_id` | `bigint` | `FK*` | Inferred foreign key by naming convention. |
+| `event_type` | `varchar(30)` | `-` | - |
+| `ts` | `timestamp` | `-` | - |
+
+#### `pricing_quotes`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `ride_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `base_fare` | `decimal(10,2)` | `-` | - |
+| `surge_multiplier` | `decimal(4,2)` | `-` | - |
+| `expires_at` | `timestamp` | `-` | - |
+
+What happens if (interviewer cross-questions):
+- What happens if no driver accepts in SLA? Expand search radius, relax constraints, or switch to queued matching mode.
+- What happens if location updates are delayed? Mark stale drivers ineligible after heartbeat timeout.
+- What happens if surge calculator fails? Fall back to capped default multiplier to avoid zero or extreme prices.
 
 ### Q6. How do you design a file storage service (Google Drive/S3-lite)?
 Skeleton:
@@ -2695,17 +3331,61 @@ Skeleton:
 4. Signed URLs + CDN + ACL enforcement.
 5. Background jobs: dedupe, virus scan, lifecycle tiering.
 
-API Sketch:
-- `POST /v1/files/initiate-upload` -> upload session + chunk URLs
-- `POST /v1/files/{id}/complete` -> finalize file and checksum
-- `GET /v1/files/{id}/download-url` -> signed URL
-- `POST /v1/files/{id}/share` -> ACL grants
+API Contracts:
 
-Schema Sketch:
-- `files(id PK, owner_id, object_key, size_bytes, checksum, version, created_at)`
-- `file_versions(file_id, version, object_key, checksum, created_at)`
-- `file_permissions(file_id, principal_id, principal_type, access_level, granted_at)`
-- `upload_sessions(id PK, file_id, chunk_count, status, expires_at)`
+| Method | Endpoint | Request Body | Success Response |
+|---|---|---|---|
+| `POST` | `/v1/files/initiate-upload` | `{ "ownerId": 101, "name":"a.pdf", "sizeBytes": 1048576, "checksum":"sha256:..." }` | `201 Created` `{ "fileId":"f_1","uploadSessionId":"us_1","chunkUrls":[...] }` |
+| `POST` | `/v1/files/{id}/complete` | `{ "uploadSessionId":"us_1", "uploadedChecksum":"sha256:..." }` | `200 OK` `{ "fileId":"f_1","version":1,"status":"READY" }` |
+| `GET` | `/v1/files/{id}/download-url` | N/A | `200 OK` `{ "url":"https://...signed...", "expiresAt":"2026-03-03T12:00:00Z" }` |
+| `POST` | `/v1/files/{id}/share` | `{ "principalId": 202, "principalType":"user", "access":"read" }` | `201 Created` `{ "granted": true }` |
+
+Schema Tables:
+
+#### `files`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `owner_id` | `bigint` | `FK*` | Inferred foreign key by naming convention. |
+| `object_key` | `text` | `-` | - |
+| `size_bytes` | `bigint` | `-` | - |
+| `checksum` | `varchar(128)` | `-` | - |
+| `latest_version` | `int` | `-` | - |
+| `created_at` | `timestamp` | `-` | - |
+
+#### `file_versions`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `file_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `version` | `int` | `-` | - |
+| `object_key` | `text` | `-` | - |
+| `checksum` | `varchar(128)` | `-` | - |
+| `created_at` | `timestamp` | `-` | - |
+| `-` | `-` | `PK` | `PRIMARY KEY (file_id, version)` |
+
+#### `file_permissions`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `file_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `principal_id` | `bigint` | `FK*` | Inferred foreign key by naming convention. |
+| `principal_type` | `varchar(20)` | `-` | - |
+| `access_level` | `varchar(20)` | `-` | - |
+| `granted_at` | `timestamp` | `-` | - |
+| `-` | `-` | `PK` | `PRIMARY KEY (file_id, principal_id, principal_type)` |
+
+#### `upload_sessions`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `file_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `chunk_count` | `int` | `-` | - |
+| `status` | `varchar(20)` | `-` | - |
+| `expires_at` | `timestamp` | `-` | - |
+
+What happens if (interviewer cross-questions):
+- What happens if upload is interrupted at 90%? Resume from last committed chunk using upload session state.
+- What happens if checksum mismatches on complete? Reject finalize, keep object quarantined, require re-upload.
+- What happens if permission is revoked while signed URL is active? Keep short URL TTL and optionally token introspection on download proxy.
 
 ### Q7. How do you design a payment system?
 Skeleton:
@@ -2715,16 +3395,59 @@ Skeleton:
 4. Reconciliation pipelines with PSP/bank statements.
 5. Compliance/security controls (PCI scope minimization).
 
-API Sketch:
-- `POST /v1/payments` (auth/capture with idempotency key)
-- `POST /v1/payments/{id}/refunds`
-- `GET /v1/payments/{id}`
+API Contracts:
 
-Schema Sketch:
-- `payment_intents(id PK, order_id, amount, currency, state, idempotency_key, created_at)`
-- `ledger_entries(id PK, account_id, payment_id, direction, amount, ts)` (double-entry)
-- `refunds(id PK, payment_id, amount, state, created_at)`
-- `reconciliation_items(id PK, provider_txn_id, internal_payment_id, status, detected_at)`
+| Method | Endpoint | Request Body | Success Response |
+|---|---|---|---|
+| `POST` | `/v1/payments` | `{ "orderId":"o_1", "amount":"99.50", "currency":"USD", "capture": true }` | `201 Created` `{ "paymentId":"pay_1","state":"CAPTURED" }` |
+| `POST` | `/v1/payments/{id}/refunds` | `{ "amount":"20.00", "reason":"partial_return" }` | `201 Created` `{ "refundId":"rf_1","state":"PENDING" }` |
+| `GET` | `/v1/payments/{id}` | N/A | `200 OK` `{ "paymentId":"pay_1","state":"CAPTURED","amount":"99.50" }` |
+
+Schema Tables:
+
+#### `payment_intents`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `order_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `amount` | `decimal(12,2)` | `-` | - |
+| `currency` | `char(3)` | `-` | - |
+| `state` | `varchar(20)` | `-` | - |
+| `idempotency_key` | `varchar(128)` | `-` | - |
+| `created_at` | `timestamp` | `-` | - |
+
+#### `ledger_entries`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `account_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `payment_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `direction` | `varchar(10)` | `-` | - |
+| `amount` | `decimal(12,2)` | `-` | - |
+| `ts` | `timestamp` | `-` | - |
+
+#### `refunds`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `payment_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `amount` | `decimal(12,2)` | `-` | - |
+| `state` | `varchar(20)` | `-` | - |
+| `created_at` | `timestamp` | `-` | - |
+
+#### `reconciliation_items`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `provider_txn_id` | `varchar(64)` | `FK*` | Inferred foreign key by naming convention. |
+| `internal_payment_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `status` | `varchar(20)` | `-` | - |
+| `detected_at` | `timestamp` | `-` | - |
+
+What happens if (interviewer cross-questions):
+- What happens if client retries POST /payments due to timeout? Idempotency key returns original result, preventing double charge.
+- What happens if PSP says success but internal write fails? Use outbox/reconciliation to converge ledger and provider state.
+- What happens if refund exceeds captured amount? Reject with business validation and audit event.
 
 ### Q8. How do you design an API rate limiter?
 Skeleton:
@@ -2734,16 +3457,46 @@ Skeleton:
 4. Distributed counter store (Redis) + fail-open/fail-closed decision.
 5. Return standard headers and 429 behavior.
 
-API Sketch:
-- `POST /v1/admin/rate-limits` (policy config)
-- Gateway middleware enforces quota on every request
-- `GET /v1/admin/rate-limits/{principal}` (remaining budget/debug)
+API Contracts:
 
-Schema Sketch:
-- `rate_limit_policies(id PK, scope_type, scope_id, algorithm, limit_value, window_sec)`
-- `rate_limit_overrides(id PK, principal_type, principal_id, limit_value, expires_at)`
-- Runtime counters in Redis:
-  - `rl:{scope}:{principal}:{window}` -> counter/tokens + TTL
+| Method | Endpoint | Request Body | Success Response |
+|---|---|---|---|
+| `POST` | `/v1/admin/rate-limits` | `{ "scopeType":"tenant", "scopeId":"t_1", "algorithm":"token_bucket", "limit":1000, "windowSec":60 }` | `201 Created` `{ "policyId":"rlp_1" }` |
+| `GET` | `/v1/admin/rate-limits/{principal}` | N/A | `200 OK` `{ "remaining": 112, "resetAt": "2026-03-03T10:11:00Z" }` |
+| `PUT` | `/v1/admin/rate-limits/{policyId}` | `{ "limit": 1200 }` | `200 OK` `{ "updated": true }` |
+
+Schema Tables:
+
+#### `rate_limit_policies`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `scope_type` | `varchar(20)` | `-` | - |
+| `scope_id` | `varchar(64)` | `FK*` | Inferred foreign key by naming convention. |
+| `algorithm` | `varchar(30)` | `-` | - |
+| `limit_value` | `int` | `-` | - |
+| `window_sec` | `int` | `-` | - |
+
+#### `rate_limit_overrides`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `principal_type` | `varchar(20)` | `-` | - |
+| `principal_id` | `varchar(64)` | `FK*` | Inferred foreign key by naming convention. |
+| `limit_value` | `int` | `-` | - |
+| `expires_at` | `timestamp` | `-` | - |
+
+#### `redis_counter_key`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `key` | `varchar(255)` | `-` | - |
+| `value` | `bigint` | `-` | - |
+| `ttl_sec` | `int` | `-` | - |
+
+What happens if (interviewer cross-questions):
+- What happens if Redis counter store is unavailable? Apply configured fail-open/fail-closed policy per endpoint risk level.
+- What happens if clocks drift in sliding window algorithm? Use server-side timestamps and monotonic windows.
+- What happens if one tenant bursts legitimately? Use per-tenant burst bucket + sustained quota to protect neighbors.
 
 ### Q9. How do you design a search autocomplete system?
 Skeleton:
@@ -2753,16 +3506,56 @@ Skeleton:
 4. Ranking (frequency + recency + personalization).
 5. Cache top prefixes and shard by language/locale.
 
-API Sketch:
-- `GET /v1/autocomplete?q=iph&locale=en-US&limit=10`
-- `POST /v1/search/events` (click/convert feedback)
-- `POST /v1/admin/synonyms/reload`
+API Contracts:
 
-Schema Sketch:
-- `suggest_terms(term_id PK, term, locale, normalized_term, popularity_score, updated_at)`
-- `term_edges(prefix, term_id, weight)` (trie/inverted structure)
-- `search_events(id PK, user_id, query, clicked_term_id, ts)`
-- `synonym_sets(id PK, locale, source_term, target_terms_json, version)`
+| Method | Endpoint | Request Body | Success Response |
+|---|---|---|---|
+| `GET` | `/v1/autocomplete?q=iph&locale=en-US&limit=10` | N/A | `200 OK` `{ "suggestions": ["iphone 16", "iphone charger"] }` |
+| `POST` | `/v1/search/events` | `{ "userId":101, "query":"iph", "clickedTermId":"t_12" }` | `202 Accepted` `{ "ingested": true }` |
+| `POST` | `/v1/admin/synonyms/reload` | `{ "locale":"en-US", "version":17 }` | `200 OK` `{ "reloaded": true }` |
+
+Schema Tables:
+
+#### `suggest_terms`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `term_id` | `varchar(32)` | `PK` | - |
+| `term` | `varchar(255)` | `-` | - |
+| `locale` | `varchar(10)` | `-` | - |
+| `normalized_term` | `varchar(255)` | `-` | - |
+| `popularity_score` | `double precision` | `-` | - |
+| `updated_at` | `timestamp` | `-` | - |
+
+#### `term_edges`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `prefix` | `varchar(255)` | `-` | - |
+| `term_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `weight` | `double precision` | `-` | - |
+| `-` | `-` | `PK` | `PRIMARY KEY (prefix, term_id)` |
+
+#### `search_events`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `user_id` | `bigint` | `FK*` | Inferred foreign key by naming convention. |
+| `query` | `varchar(255)` | `-` | - |
+| `clicked_term_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `ts` | `timestamp` | `-` | - |
+
+#### `synonym_sets`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `locale` | `varchar(10)` | `-` | - |
+| `source_term` | `varchar(255)` | `-` | - |
+| `target_terms` | `jsonb` | `-` | - |
+| `version` | `int` | `-` | - |
+
+What happens if (interviewer cross-questions):
+- What happens if query volume spikes for one prefix? Cache top suggestions for that prefix and shard read replicas by locale.
+- What happens if typo-correction broadens results too much? Cap edit distance and rerank by intent confidence.
+- What happens if index refresh lags behind events? Serve from last stable index and expose freshness timestamp.
 
 ### Q10. How do you design a metrics/monitoring platform?
 Skeleton:
@@ -2772,16 +3565,57 @@ Skeleton:
 4. Storage tiers: hot/warm/cold.
 5. Alerting pipeline + dedupe + on-call routing.
 
-API Sketch:
-- `POST /v1/ingest/metrics` (remote write)
-- `GET /v1/query?expr=...&start=...&end=...`
-- `POST /v1/alerts/rules`
+API Contracts:
 
-Schema Sketch:
-- TSDB logical model: `(metric_name, labels_hash, ts) -> value`
-- `label_sets(series_id PK, labels_json, fingerprint, cardinality_tier)`
-- `alert_rules(id PK, expr, severity, for_duration, routing_key, enabled)`
-- `alert_events(id PK, rule_id, state, started_at, ended_at, dedupe_key)`
+| Method | Endpoint | Request Body | Success Response |
+|---|---|---|---|
+| `POST` | `/v1/ingest/metrics` | `{ "series":[{ "name":"http_requests_total","labels":{"svc":"api"},"samples":[{"ts":1700000000,"value":10}] }] }` | `202 Accepted` `{ "acceptedSeries": 1 }` |
+| `GET` | `/v1/query?expr=rate(http_requests_total[5m])&start=...&end=...` | N/A | `200 OK` `{ "resultType":"matrix","result":[...] }` |
+| `POST` | `/v1/alerts/rules` | `{ "expr":"error_rate > 0.01", "severity":"P1", "for":"5m" }` | `201 Created` `{ "ruleId":"ar_1" }` |
+
+Schema Tables:
+
+#### `metric_samples`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `metric_name` | `varchar(128)` | `-` | - |
+| `labels_hash` | `varchar(64)` | `-` | - |
+| `ts` | `bigint` | `-` | - |
+| `value` | `double precision` | `-` | - |
+| `-` | `-` | `PK` | `PRIMARY KEY (metric_name, labels_hash, ts)` |
+
+#### `label_sets`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `series_id` | `varchar(64)` | `PK` | - |
+| `labels_json` | `jsonb` | `-` | - |
+| `fingerprint` | `varchar(64)` | `-` | - |
+| `cardinality_tier` | `varchar(20)` | `-` | - |
+
+#### `alert_rules`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `expr` | `text` | `-` | - |
+| `severity` | `varchar(10)` | `-` | - |
+| `for_duration` | `varchar(20)` | `-` | - |
+| `routing_key` | `varchar(64)` | `-` | - |
+| `enabled` | `boolean` | `-` | - |
+
+#### `alert_events`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `rule_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `state` | `varchar(20)` | `-` | - |
+| `started_at` | `timestamp` | `-` | - |
+| `ended_at` | `timestamp` | `-` | - |
+| `dedupe_key` | `varchar(128)` | `-` | - |
+
+What happens if (interviewer cross-questions):
+- What happens if label cardinality explodes (e.g., userId tag)? Enforce ingestion-time relabel/drop rules and cardinality quotas.
+- What happens if alert manager restarts during incident? Persist alert state and dedupe keys in durable storage.
+- What happens if query scans become too expensive? Downsample old data and require scoped queries for long windows.
 
 ### Q11. How do you design a distributed cache?
 Skeleton:
@@ -2791,17 +3625,46 @@ Skeleton:
 4. Hot key mitigation and stampede protection.
 5. Failure behavior and rebalancing during node changes.
 
-API Sketch:
-- `GET /cache/{key}`
-- `SET /cache/{key}` (TTL, version)
-- `DELETE /cache/{key}`
-- Admin: `POST /cache/rebalance`
+API Contracts:
 
-Schema Sketch:
-- In-memory key model: `key -> {value_blob, version, ttl, metadata}`
-- Metadata store:
-  - `cache_nodes(node_id PK, status, capacity, ring_position)`
-  - `cache_partitions(partition_id PK, primary_node, replica_nodes_json, epoch)`
+| Method | Endpoint | Request Body | Success Response |
+|---|---|---|---|
+| `GET` | `/cache/{key}` | N/A | `200 OK` `{ "value": {...}, "version": 7 }` |
+| `PUT` | `/cache/{key}` | `{ "value": {...}, "ttlSec": 300, "version": 7 }` | `200 OK` `{ "stored": true }` |
+| `DELETE` | `/cache/{key}` | N/A | `204 No Content` |
+| `POST` | `/cache/rebalance` | `{ "targetEpoch": 12 }` | `202 Accepted` `{ "jobId":"reb_1" }` |
+
+Schema Tables:
+
+#### `cache_nodes`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `node_id` | `varchar(32)` | `PK` | - |
+| `status` | `varchar(20)` | `-` | - |
+| `capacity_mb` | `int` | `-` | - |
+| `ring_position` | `bigint` | `-` | - |
+| `updated_at` | `timestamp` | `-` | - |
+
+#### `cache_partitions`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `partition_id` | `int` | `PK` | - |
+| `primary_node` | `varchar(32)` | `-` | - |
+| `replica_nodes` | `jsonb` | `-` | - |
+| `epoch` | `int` | `-` | - |
+
+#### `cache_metadata`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `cache_key` | `varchar(255)` | `PK` | - |
+| `version` | `bigint` | `-` | - |
+| `expires_at` | `timestamp` | `-` | - |
+| `size_bytes` | `int` | `-` | - |
+
+What happens if (interviewer cross-questions):
+- What happens if a cache node dies? Ring remaps keys to replicas; clients retry with bounded backoff.
+- What happens if many keys expire simultaneously (stampede)? Add jittered TTL + request coalescing + stale-while-revalidate.
+- What happens if rebalancing overloads cluster? Throttle migration bandwidth and rebalance in phases.
 
 ### Q12. How do you design a job scheduler?
 Skeleton:
@@ -2811,17 +3674,60 @@ Skeleton:
 4. Retry policy, backoff, and dead-letter handling.
 5. Observability: run history, SLA misses, rerun controls.
 
-API Sketch:
-- `POST /v1/jobs` (one-time/cron definition)
-- `POST /v1/jobs/{id}/pause|resume`
-- `GET /v1/jobs/{id}/runs?cursor=...`
-- Worker callback: `POST /v1/runs/{runId}/heartbeat`
+API Contracts:
 
-Schema Sketch:
-- `jobs(id PK, owner, schedule_expr, payload, max_retries, timeout_sec, state)`
-- `job_runs(id PK, job_id, scheduled_at, started_at, finished_at, status, attempt)`
-- `run_leases(run_id PK, worker_id, lease_until)`
-- `job_dlq(id PK, run_id, reason, payload, failed_at)`
+| Method | Endpoint | Request Body | Success Response |
+|---|---|---|---|
+| `POST` | `/v1/jobs` | `{ "name":"daily-report", "scheduleExpr":"0 0 * * *", "payload": {...}, "maxRetries":3 }` | `201 Created` `{ "jobId":"j_1" }` |
+| `PUT` | `/v1/jobs/{id}` | `{ "state":"paused" }` | `200 OK` `{ "updated": true }` |
+| `GET` | `/v1/jobs/{id}/runs?cursor=...` | N/A | `200 OK` `{ "items":[{ "runId":"jr_1","status":"SUCCESS" }], "nextCursor":"..." }` |
+| `POST` | `/v1/runs/{runId}/heartbeat` | `{ "workerId":"w_11" }` | `200 OK` `{ "leaseUntil":"2026-03-03T10:20:00Z" }` |
+
+Schema Tables:
+
+#### `jobs`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `name` | `varchar(128)` | `-` | - |
+| `owner` | `varchar(64)` | `-` | - |
+| `schedule_expr` | `varchar(64)` | `-` | - |
+| `payload` | `jsonb` | `-` | - |
+| `max_retries` | `int` | `-` | - |
+| `timeout_sec` | `int` | `-` | - |
+| `state` | `varchar(20)` | `-` | - |
+
+#### `job_runs`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `job_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `scheduled_at` | `timestamp` | `-` | - |
+| `started_at` | `timestamp` | `-` | - |
+| `finished_at` | `timestamp` | `-` | - |
+| `status` | `varchar(20)` | `-` | - |
+| `attempt` | `int` | `-` | - |
+
+#### `run_leases`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `run_id` | `varchar(32)` | `PK` | - |
+| `worker_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `lease_until` | `timestamp` | `-` | - |
+
+#### `job_dlq`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `run_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `reason` | `varchar(255)` | `-` | - |
+| `payload` | `jsonb` | `-` | - |
+| `failed_at` | `timestamp` | `-` | - |
+
+What happens if (interviewer cross-questions):
+- What happens if scheduler leader crashes? New leader acquires lease and resumes from durable job state.
+- What happens if a worker hangs after picking a run? Lease expiry enables safe reassignment.
+- What happens if cron expression triggers too many jobs? Apply concurrency limits and backlog shedding policy.
 
 ### Q13. How do you design a recommendation system (high-level)?
 Skeleton:
@@ -2831,16 +3737,54 @@ Skeleton:
 4. Real-time personalization cache.
 5. Cold-start strategy and A/B testing plan.
 
-API Sketch:
-- `GET /v1/recommendations?userId=...&context=home`
-- `POST /v1/events` (view/click/add_to_cart/purchase)
-- `POST /v1/experiments/assignments`
+API Contracts:
 
-Schema Sketch:
-- `user_features(user_id PK, feature_vector_ref, updated_at)`
-- `item_features(item_id PK, feature_vector_ref, updated_at)`
-- `candidate_sets(user_id, candidate_item_id, source, score, ts)`
-- `impression_logs(id PK, user_id, item_id, rank, experiment_id, ts)`
+| Method | Endpoint | Request Body | Success Response |
+|---|---|---|---|
+| `GET` | `/v1/recommendations?userId=101&context=home` | N/A | `200 OK` `{ "items":[{ "itemId":"it_1","score":0.91 }] }` |
+| `POST` | `/v1/events` | `{ "userId":101, "itemId":"it_1", "eventType":"click", "context":"home" }` | `202 Accepted` `{ "ingested": true }` |
+| `POST` | `/v1/experiments/assignments` | `{ "userId":101, "experimentId":"exp_feed_rank" }` | `200 OK` `{ "variant":"B" }` |
+
+Schema Tables:
+
+#### `user_features`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `user_id` | `bigint` | `PK` | - |
+| `feature_vector_ref` | `varchar(255)` | `-` | - |
+| `updated_at` | `timestamp` | `-` | - |
+
+#### `item_features`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `item_id` | `varchar(32)` | `PK` | - |
+| `feature_vector_ref` | `varchar(255)` | `-` | - |
+| `updated_at` | `timestamp` | `-` | - |
+
+#### `candidate_sets`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `user_id` | `bigint` | `FK*` | Inferred foreign key by naming convention. |
+| `candidate_item_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `source` | `varchar(50)` | `-` | - |
+| `score` | `double precision` | `-` | - |
+| `ts` | `timestamp` | `-` | - |
+| `-` | `-` | `PK` | `PRIMARY KEY (user_id, candidate_item_id)` |
+
+#### `impression_logs`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `user_id` | `bigint` | `FK*` | Inferred foreign key by naming convention. |
+| `item_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `rank` | `int` | `-` | - |
+| `experiment_id` | `varchar(64)` | `FK*` | Inferred foreign key by naming convention. |
+| `ts` | `timestamp` | `-` | - |
+
+What happens if (interviewer cross-questions):
+- What happens if a new user has no history (cold start)? Use popularity/context priors and fast feedback capture.
+- What happens if feature store is stale? Fall back to cached baseline model features and mark degraded mode.
+- What happens if experiment assignment is inconsistent across services? Use centralized assignment service with sticky bucketing.
 
 ### Q14. How do you design a multi-tenant SaaS backend?
 Skeleton:
@@ -2850,16 +3794,60 @@ Skeleton:
 4. Noisy-neighbor protection at app and DB layers.
 5. Tenant migration and backup/restore plan.
 
-API Sketch:
-- `POST /v1/tenants` (provision)
-- `GET /v1/tenants/{id}/usage` (quota, billing meters)
-- `POST /v1/tenants/{id}/limits` (admin policy)
+API Contracts:
 
-Schema Sketch:
-- `tenants(id PK, name, plan, region, isolation_mode, created_at, status)`
-- `tenant_members(tenant_id, user_id, role, invited_at, joined_at)`
-- `tenant_quotas(tenant_id PK, api_rpm, storage_gb, seats, updated_at)`
-- `tenant_usage_daily(tenant_id, date, api_calls, storage_bytes, active_users)`
+| Method | Endpoint | Request Body | Success Response |
+|---|---|---|---|
+| `POST` | `/v1/tenants` | `{ "name":"Acme", "plan":"enterprise", "region":"us-east-1", "isolationMode":"schema" }` | `201 Created` `{ "tenantId":"t_1" }` |
+| `GET` | `/v1/tenants/{id}/usage` | N/A | `200 OK` `{ "apiCalls":123000, "storageBytes":98123123, "activeUsers":311 }` |
+| `PUT` | `/v1/tenants/{id}/limits` | `{ "apiRpm":20000, "storageGb":500 }` | `200 OK` `{ "updated": true }` |
+
+Schema Tables:
+
+#### `tenants`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `name` | `varchar(255)` | `-` | - |
+| `plan` | `varchar(30)` | `-` | - |
+| `region` | `varchar(30)` | `-` | - |
+| `isolation_mode` | `varchar(20)` | `-` | - |
+| `created_at` | `timestamp` | `-` | - |
+| `status` | `varchar(20)` | `-` | - |
+
+#### `tenant_members`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `tenant_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `user_id` | `bigint` | `FK*` | Inferred foreign key by naming convention. |
+| `role` | `varchar(20)` | `-` | - |
+| `invited_at` | `timestamp` | `-` | - |
+| `joined_at` | `timestamp` | `-` | - |
+| `-` | `-` | `PK` | `PRIMARY KEY (tenant_id, user_id)` |
+
+#### `tenant_quotas`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `tenant_id` | `varchar(32)` | `PK` | - |
+| `api_rpm` | `int` | `-` | - |
+| `storage_gb` | `int` | `-` | - |
+| `seats` | `int` | `-` | - |
+| `updated_at` | `timestamp` | `-` | - |
+
+#### `tenant_usage_daily`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `tenant_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `usage_date` | `date` | `-` | - |
+| `api_calls` | `bigint` | `-` | - |
+| `storage_bytes` | `bigint` | `-` | - |
+| `active_users` | `int` | `-` | - |
+| `-` | `-` | `PK` | `PRIMARY KEY (tenant_id, usage_date)` |
+
+What happens if (interviewer cross-questions):
+- What happens if one tenant becomes noisy? Enforce tenant quotas, workload isolation pools, and per-tenant rate limiting.
+- What happens if tenant needs stronger isolation later? Support migration path from shared model to dedicated schema/DB.
+- What happens if tenant deletion is requested (compliance)? Run verified async purge workflow with audit trail.
 
 ### Q15. How do you design real-time collaborative editing?
 Skeleton:
@@ -2869,17 +3857,60 @@ Skeleton:
 4. Snapshot + operation log for recovery.
 5. Permission checks and document-level sharding.
 
-API Sketch:
-- `POST /v1/docs` / `GET /v1/docs/{id}`
-- `POST /v1/docs/{id}/ops` (OT/CRDT operation)
-- `GET /v1/docs/{id}/ops?afterSeq=...`
-- `WS /v1/docs/{id}/presence`
+API Contracts:
 
-Schema Sketch:
-- `documents(id PK, owner_id, title, latest_version, acl_ref, created_at)`
-- `doc_ops(id PK, doc_id, seq_no, actor_id, op_type, op_payload, ts)`
-- `doc_snapshots(id PK, doc_id, version, content_ref, created_at)`
-- `doc_presence(doc_id, user_id, cursor_json, heartbeat_at)`
+| Method | Endpoint | Request Body | Success Response |
+|---|---|---|---|
+| `POST` | `/v1/docs` | `{ "ownerId":101, "title":"Design Notes" }` | `201 Created` `{ "docId":"d_1" }` |
+| `POST` | `/v1/docs/{id}/ops` | `{ "actorId":101, "baseVersion":10, "op":{"type":"insert","pos":5,"text":"abc"} }` | `202 Accepted` `{ "appliedVersion":11 }` |
+| `GET` | `/v1/docs/{id}/ops?afterSeq=10` | N/A | `200 OK` `{ "ops":[...], "latestSeq":15 }` |
+| `WS` | `/v1/docs/{id}/presence` | handshake token | `101 Switching Protocols`, then `{ "userId":101,"cursor":{"line":2,"col":5} }` |
+
+Schema Tables:
+
+#### `documents`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `owner_id` | `bigint` | `FK*` | Inferred foreign key by naming convention. |
+| `title` | `varchar(255)` | `-` | - |
+| `latest_version` | `bigint` | `-` | - |
+| `acl_ref` | `varchar(64)` | `-` | - |
+| `created_at` | `timestamp` | `-` | - |
+
+#### `doc_ops`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `doc_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `seq_no` | `bigint` | `-` | - |
+| `actor_id` | `bigint` | `FK*` | Inferred foreign key by naming convention. |
+| `op_type` | `varchar(20)` | `-` | - |
+| `op_payload` | `jsonb` | `-` | - |
+| `ts` | `timestamp` | `-` | - |
+
+#### `doc_snapshots`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `doc_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `version` | `bigint` | `-` | - |
+| `content_ref` | `text` | `-` | - |
+| `created_at` | `timestamp` | `-` | - |
+
+#### `doc_presence`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `doc_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `user_id` | `bigint` | `FK*` | Inferred foreign key by naming convention. |
+| `cursor_json` | `jsonb` | `-` | - |
+| `heartbeat_at` | `timestamp` | `-` | - |
+| `-` | `-` | `PK` | `PRIMARY KEY (doc_id, user_id)` |
+
+What happens if (interviewer cross-questions):
+- What happens if two users edit same range simultaneously? Resolve via OT transform or CRDT merge, then broadcast canonical op order.
+- What happens if client is offline for hours? Rebase local ops on latest snapshot/op-log during reconnect.
+- What happens if op log grows too large? Periodically compact into snapshots and truncate old ops beyond retention.
 
 ### Q16. How do you design a high-scale logging pipeline?
 Skeleton:
@@ -2889,16 +3920,58 @@ Skeleton:
 4. Hot/warm/cold retention policy.
 5. Cost controls (sampling, compression, tiering).
 
-API Sketch:
-- Agent protocol: `POST /v1/logs/batch`
-- `GET /v1/logs/search?q=...&from=...&to=...`
-- `POST /v1/logs/pipelines` (parse/enrich/routing rules)
+API Contracts:
 
-Schema Sketch:
-- `log_events(id PK, ts, service, level, trace_id, message, attrs_json)`
-- `log_indexes(index_date, shard_id, segment_ref, retention_tier)`
-- `pipeline_rules(id PK, match_expr, transform_json, destination, enabled)`
-- `log_quotas(scope, scope_id, daily_ingest_bytes, drop_policy)`
+| Method | Endpoint | Request Body | Success Response |
+|---|---|---|---|
+| `POST` | `/v1/logs/batch` | `{ "events":[{ "service":"api","level":"ERROR","message":"x","ts":"..." }] }` | `202 Accepted` `{ "accepted": 1000 }` |
+| `GET` | `/v1/logs/search?q=service:api AND level:ERROR&from=...&to=...` | N/A | `200 OK` `{ "hits":[...], "nextCursor":"..." }` |
+| `POST` | `/v1/logs/pipelines` | `{ "match":"service=api", "transform":{"dropFields":["debug"]}, "destination":"hot-tier" }` | `201 Created` `{ "pipelineId":"lp_1" }` |
+
+Schema Tables:
+
+#### `log_events`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `ts` | `timestamp` | `-` | - |
+| `service` | `varchar(100)` | `-` | - |
+| `level` | `varchar(10)` | `-` | - |
+| `trace_id` | `varchar(64)` | `FK*` | Inferred foreign key by naming convention. |
+| `message` | `text` | `-` | - |
+| `attrs_json` | `jsonb` | `-` | - |
+
+#### `log_indexes`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `index_date` | `date` | `-` | - |
+| `shard_id` | `int` | `FK*` | Inferred foreign key by naming convention. |
+| `segment_ref` | `text` | `-` | - |
+| `retention_tier` | `varchar(20)` | `-` | - |
+| `-` | `-` | `PK` | `PRIMARY KEY (index_date, shard_id)` |
+
+#### `pipeline_rules`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `match_expr` | `text` | `-` | - |
+| `transform_json` | `jsonb` | `-` | - |
+| `destination` | `varchar(50)` | `-` | - |
+| `enabled` | `boolean` | `-` | - |
+
+#### `log_quotas`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `scope` | `varchar(20)` | `-` | - |
+| `scope_id` | `varchar(64)` | `FK*` | Inferred foreign key by naming convention. |
+| `daily_ingest_bytes` | `bigint` | `-` | - |
+| `drop_policy` | `varchar(30)` | `-` | - |
+| `-` | `-` | `PK` | `PRIMARY KEY (scope, scope_id)` |
+
+What happens if (interviewer cross-questions):
+- What happens if ingest rate exceeds broker capacity? Backpressure producers, sample low-priority logs, and autoscale consumers.
+- What happens if mapping/schema changes break parsing? Route parse failures to quarantine index with replay support.
+- What happens if storage cost spikes? Tighten retention tiering and dynamic sampling for verbose sources.
 
 ### Q17. How do you design inventory management for e-commerce?
 Skeleton:
@@ -2908,16 +3981,61 @@ Skeleton:
 4. Idempotency and reconciliation jobs.
 5. Flash-sale strategy (queue + tokenization + pre-allocation).
 
-API Sketch:
-- `POST /v1/inventory/reservations` (sku, qty, orderId, ttl)
-- `POST /v1/inventory/reservations/{id}/confirm|release`
-- `GET /v1/inventory/{sku}`
+API Contracts:
 
-Schema Sketch:
-- `stock_levels(sku PK, available_qty, reserved_qty, updated_at, version)`
-- `reservations(id PK, sku, order_id, qty, state, expires_at, created_at)`
-- `inventory_ledger(id PK, sku, delta, reason, ref_id, ts)`
-- `reconciliation_tasks(id PK, sku, expected_qty, actual_qty, status, detected_at)`
+| Method | Endpoint | Request Body | Success Response |
+|---|---|---|---|
+| `POST` | `/v1/inventory/reservations` | `{ "sku":"sku-1", "orderId":"o_1", "qty":2, "ttlSec":300 }` | `201 Created` `{ "reservationId":"res_1","state":"RESERVED" }` |
+| `POST` | `/v1/inventory/reservations/{id}/confirm` | `{ "orderId":"o_1" }` | `200 OK` `{ "state":"CONFIRMED" }` |
+| `POST` | `/v1/inventory/reservations/{id}/release` | `{ "reason":"payment_failed" }` | `200 OK` `{ "state":"RELEASED" }` |
+| `GET` | `/v1/inventory/{sku}` | N/A | `200 OK` `{ "availableQty": 120, "reservedQty": 10 }` |
+
+Schema Tables:
+
+#### `stock_levels`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `sku` | `varchar(64)` | `PK` | - |
+| `available_qty` | `int` | `-` | - |
+| `reserved_qty` | `int` | `-` | - |
+| `version` | `bigint` | `-` | - |
+| `updated_at` | `timestamp` | `-` | - |
+
+#### `reservations`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `sku` | `varchar(64)` | `-` | - |
+| `order_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `qty` | `int` | `-` | - |
+| `state` | `varchar(20)` | `-` | - |
+| `expires_at` | `timestamp` | `-` | - |
+| `created_at` | `timestamp` | `-` | - |
+
+#### `inventory_ledger`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `sku` | `varchar(64)` | `-` | - |
+| `delta` | `int` | `-` | - |
+| `reason` | `varchar(50)` | `-` | - |
+| `ref_id` | `varchar(64)` | `FK*` | Inferred foreign key by naming convention. |
+| `ts` | `timestamp` | `-` | - |
+
+#### `reconciliation_tasks`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `sku` | `varchar(64)` | `-` | - |
+| `expected_qty` | `int` | `-` | - |
+| `actual_qty` | `int` | `-` | - |
+| `status` | `varchar(20)` | `-` | - |
+| `detected_at` | `timestamp` | `-` | - |
+
+What happens if (interviewer cross-questions):
+- What happens if payment succeeds but reservation expires? Use saga compensation rules and short grace period before release.
+- What happens if two checkouts reserve last unit concurrently? Enforce atomic stock version check (optimistic lock/CAS).
+- What happens if release event is missed? Reconciliation job scans expired reservations and repairs counts.
 
 ### Q18. How do you design a global service (multi-region)?
 Skeleton:
@@ -2927,16 +4045,54 @@ Skeleton:
 4. Data placement and conflict policy.
 5. DR drills tied to RPO/RTO targets.
 
-API Sketch:
-- `GET /v1/health/global` (region health summary)
-- `POST /v1/routing/policies` (geo/latency/weight rules)
-- Core business APIs remain region-routed through global edge
+API Contracts:
 
-Schema Sketch:
-- `regions(region_id PK, status, capacity, failover_priority)`
-- `traffic_policies(id PK, match_rule, target_regions_json, weight_json, enabled)`
-- `replication_lag(region_pair PK, lag_ms, measured_at)`
-- `failover_events(id PK, from_region, to_region, reason, started_at, ended_at)`
+| Method | Endpoint | Request Body | Success Response |
+|---|---|---|---|
+| `GET` | `/v1/health/global` | N/A | `200 OK` `{ "regions":[{ "id":"us-east-1","status":"HEALTHY" }] }` |
+| `POST` | `/v1/routing/policies` | `{ "match":"country=IN", "targets":[{"region":"ap-south-1","weight":100}] }` | `201 Created` `{ "policyId":"rp_1" }` |
+| `PUT` | `/v1/routing/policies/{id}` | `{ "targets":[{"region":"ap-south-1","weight":80},{"region":"us-east-1","weight":20}] }` | `200 OK` `{ "updated": true }` |
+
+Schema Tables:
+
+#### `regions`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `region_id` | `varchar(30)` | `PK` | - |
+| `status` | `varchar(20)` | `-` | - |
+| `capacity_score` | `int` | `-` | - |
+| `failover_priority` | `int` | `-` | - |
+
+#### `traffic_policies`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `match_rule` | `text` | `-` | - |
+| `target_regions` | `jsonb` | `-` | - |
+| `weights` | `jsonb` | `-` | - |
+| `enabled` | `boolean` | `-` | - |
+
+#### `replication_lag`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `region_pair` | `varchar(64)` | `PK` | - |
+| `lag_ms` | `int` | `-` | - |
+| `measured_at` | `timestamp` | `-` | - |
+
+#### `failover_events`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `from_region` | `varchar(30)` | `-` | - |
+| `to_region` | `varchar(30)` | `-` | - |
+| `reason` | `varchar(255)` | `-` | - |
+| `started_at` | `timestamp` | `-` | - |
+| `ended_at` | `timestamp` | `-` | - |
+
+What happens if (interviewer cross-questions):
+- What happens if an entire region fails? Global routing fails over to healthy regions based on policy and capacity.
+- What happens if active-active writes conflict? Apply deterministic conflict resolution (timestamp/vector/app-specific merge).
+- What happens if replication lag increases suddenly? Degrade read locality for strict-consistency paths or pin to primary region.
 
 ### Q19. How do you design for zero-downtime deployments?
 Skeleton:
@@ -2946,16 +4102,61 @@ Skeleton:
 4. Bake-time metrics and automated rollback triggers.
 5. Post-release validation and cleanup.
 
-API Sketch:
-- `POST /v1/deployments` (service, version, strategy)
-- `POST /v1/deployments/{id}/promote|rollback`
-- `GET /v1/deployments/{id}/health-gates`
+API Contracts:
 
-Schema Sketch:
-- `deployments(id PK, service, version, strategy, state, started_at, ended_at)`
-- `deployment_steps(id PK, deployment_id, step_type, status, started_at, ended_at)`
-- `health_gates(id PK, deployment_id, metric_name, threshold, status, evaluated_at)`
-- `release_artifacts(id PK, service, version, checksum, created_at)`
+| Method | Endpoint | Request Body | Success Response |
+|---|---|---|---|
+| `POST` | `/v1/deployments` | `{ "service":"orders", "version":"1.2.0", "strategy":"canary", "initialPercent":10 }` | `201 Created` `{ "deploymentId":"dep_1","state":"IN_PROGRESS" }` |
+| `POST` | `/v1/deployments/{id}/promote` | `{ "targetPercent":100 }` | `200 OK` `{ "state":"PROMOTED" }` |
+| `POST` | `/v1/deployments/{id}/rollback` | `{ "reason":"p99 latency breach" }` | `200 OK` `{ "state":"ROLLED_BACK" }` |
+| `GET` | `/v1/deployments/{id}/health-gates` | N/A | `200 OK` `{ "gates":[{ "metric":"error_rate","status":"PASS" }] }` |
+
+Schema Tables:
+
+#### `deployments`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `service` | `varchar(100)` | `-` | - |
+| `version` | `varchar(50)` | `-` | - |
+| `strategy` | `varchar(20)` | `-` | - |
+| `state` | `varchar(20)` | `-` | - |
+| `started_at` | `timestamp` | `-` | - |
+| `ended_at` | `timestamp` | `-` | - |
+
+#### `deployment_steps`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `deployment_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `step_type` | `varchar(30)` | `-` | - |
+| `status` | `varchar(20)` | `-` | - |
+| `started_at` | `timestamp` | `-` | - |
+| `ended_at` | `timestamp` | `-` | - |
+
+#### `health_gates`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `deployment_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `metric_name` | `varchar(100)` | `-` | - |
+| `threshold` | `varchar(50)` | `-` | - |
+| `status` | `varchar(20)` | `-` | - |
+| `evaluated_at` | `timestamp` | `-` | - |
+
+#### `release_artifacts`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `service` | `varchar(100)` | `-` | - |
+| `version` | `varchar(50)` | `-` | - |
+| `checksum` | `varchar(128)` | `-` | - |
+| `created_at` | `timestamp` | `-` | - |
+
+What happens if (interviewer cross-questions):
+- What happens if canary error rate rises after 10% traffic? Auto-halt promotion and rollback based on health gates.
+- What happens if DB migration is backward-incompatible? Use expand/contract migration with dual-read/dual-write window.
+- What happens if rollback code also fails? Keep known-good artifact and manual traffic switch playbook (blue-green fallback).
 
 ### Q20. How do you improve an existing slow/fragile system?
 Skeleton:
@@ -2965,19 +4166,62 @@ Skeleton:
 4. Add reliability guardrails (timeouts, retries, circuit breakers).
 5. Define success criteria and follow-up plan.
 
-API Sketch:
-- `GET /v1/perf/reports?service=...&window=...`
-- `POST /v1/perf/experiments` (canary optimization)
-- `GET /v1/reliability/slo-status`
+API Contracts:
 
-Schema Sketch:
-- `baseline_metrics(service, metric, window_start, value, recorded_at)`
-- `optimization_experiments(id PK, service, hypothesis, change_set, status, outcome_json)`
-- `incident_history(id PK, service, severity, root_cause, started_at, resolved_at)`
-- `action_items(id PK, incident_id, owner, due_date, status)`
+| Method | Endpoint | Request Body | Success Response |
+|---|---|---|---|
+| `GET` | `/v1/perf/reports?service=orders&window=24h` | N/A | `200 OK` `{ "p95Ms":220, "errorRate":0.003, "topBottlenecks":["db","cache_miss"] }` |
+| `POST` | `/v1/perf/experiments` | `{ "service":"orders", "hypothesis":"add read-through cache", "changeSet":"exp-41" }` | `201 Created` `{ "experimentId":"exp_41","status":"RUNNING" }` |
+| `GET` | `/v1/reliability/slo-status` | N/A | `200 OK` `{ "service":"orders","slo":"99.9","errorBudgetRemainingPct":62.5 }` |
+
+Schema Tables:
+
+#### `baseline_metrics`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `service` | `varchar(100)` | `-` | - |
+| `metric` | `varchar(100)` | `-` | - |
+| `window_start` | `timestamp` | `-` | - |
+| `value` | `double precision` | `-` | - |
+| `recorded_at` | `timestamp` | `-` | - |
+| `-` | `-` | `PK` | `PRIMARY KEY (service, metric, window_start)` |
+
+#### `optimization_experiments`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `service` | `varchar(100)` | `-` | - |
+| `hypothesis` | `text` | `-` | - |
+| `change_set` | `varchar(64)` | `-` | - |
+| `status` | `varchar(20)` | `-` | - |
+| `outcome_json` | `jsonb` | `-` | - |
+
+#### `incident_history`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `service` | `varchar(100)` | `-` | - |
+| `severity` | `varchar(10)` | `-` | - |
+| `root_cause` | `text` | `-` | - |
+| `started_at` | `timestamp` | `-` | - |
+| `resolved_at` | `timestamp` | `-` | - |
+
+#### `action_items`
+| Column | Type | Key | Notes |
+|---|---|---|---|
+| `id` | `varchar(32)` | `PK` | - |
+| `incident_id` | `varchar(32)` | `FK*` | Inferred foreign key by naming convention. |
+| `owner` | `varchar(100)` | `-` | - |
+| `due_date` | `date` | `-` | - |
+| `status` | `varchar(20)` | `-` | - |
+
+What happens if (interviewer cross-questions):
+- What happens if you optimize p95 but p99 worsens? Track full latency distribution and guardrails per percentile.
+- What happens if fixes improve latency but hurt reliability? Evaluate changes against SLO/error-budget, not latency alone.
+- What happens if teams disagree on bottleneck root cause? Run controlled experiments with explicit success metrics and rollback plan.
+
 
 ---
-
 ### Answer Pattern You Can Reuse for Any HLD Question
 
 ```
