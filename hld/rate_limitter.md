@@ -355,6 +355,32 @@ Endpoint-specific:     "Search API: 10 req/min; Profile updates: 100 req/min"
 
 ### 3.3 Rate Limiting Algorithms
 
+> **Important — What lives WHERE?**
+>
+> This is a common point of confusion. Here's exactly what each component is responsible for:
+>
+> | Component | What It Stores / Does |
+> |---|---|
+> | **API Gateway (in-memory)** | Rate limiting **rules/config** (e.g., "100 req/min for users"). Cached from ZooKeeper/DB. Also: JWT decoding, client ID extraction, routing to correct Redis shard. |
+> | **Redis** | Rate limiting **state/data** only — the raw numbers: `{tokens: 84.5, last_refill: 1640995200}`. Nothing else. Redis doesn't know what these numbers mean. |
+> | **Redis Lua Script** | The algorithm **logic** (read state → calculate refill → decide allow/reject → update state). This runs INSIDE Redis to guarantee atomicity. |
+>
+> **The flow:**
+> ```
+> API Gateway                              Redis
+> ┌──────────────────────┐                 ┌────────────────────────────┐
+> │ 1. Extract client ID │                 │                            │
+> │ 2. Look up rules     │                 │  Lua Script executes:      │
+> │    (from memory)      │   EVALSHA ───▶  │  3. Read: tokens=84.5      │
+> │                       │                 │  4. Calc: +2.7 = 87.2      │
+> │                       │                 │  5. Consume: 87.2-1 = 86.2 │
+> │                       │   ◀─── {1,86}  │  6. Write: tokens=86.2     │
+> │ 7. Return response    │                 │  7. Return: allowed, 86    │
+> └──────────────────────┘                 └────────────────────────────┘
+> ```
+>
+> The **pseudocode below shows the algorithm logic conceptually** using local Python dictionaries (`self.buckets = {}`). In production, replace `self.buckets` with Redis calls — or better yet, the entire `is_allowed()` method becomes a Lua script running inside Redis.
+
 #### 3.3.1 Fixed Window Counter
 
 The simplest approach. Divides time into **fixed windows** (like 1-minute buckets) and counts requests in each window.
@@ -388,6 +414,10 @@ Bob:     |      20      |     75       |      10      |
 **Pseudocode Implementation:**
 
 ```python
+# NOTE: This shows the algorithm LOGIC conceptually.
+# In production, `self.counters` is NOT a local dict — it's Redis.
+# The logic below would be a Lua script running inside Redis.
+
 class FixedWindowCounter:
     def __init__(self, max_requests, window_size_seconds):
         self.max_requests = max_requests          # e.g., 100
@@ -460,6 +490,9 @@ Alice's log (limit: 8/minute):
 **Pseudocode Implementation:**
 
 ```python
+# NOTE: In production, self.logs is a Redis Sorted Set (ZSET), not a local list.
+# The logic below runs as a Lua script inside Redis for atomicity.
+
 class SlidingWindowLog:
     def __init__(self, max_requests, window_size_seconds):
         self.max_requests = max_requests
@@ -554,6 +587,9 @@ Weighted count = (84 × 74.7%) + 37 = 62.7 + 37 = 99.7 → rounds to 100 → REJ
 **Pseudocode Implementation:**
 
 ```python
+# NOTE: In production, self.windows is stored as Redis keys with TTL.
+# The logic below runs as a Lua script inside Redis for atomicity.
+
 class SlidingWindowCounter:
     def __init__(self, max_requests, window_size_seconds):
         self.max_requests = max_requests
@@ -624,6 +660,10 @@ Each client has a **bucket** that holds tokens up to a **burst capacity**. Token
 **Pseudocode Implementation:**
 
 ```python
+# NOTE: In production, self.buckets is a Redis Hash (HMSET/HMGET).
+# This entire is_allowed() method runs as a Lua script inside Redis.
+# See Section 3.6 for the actual Lua script.
+
 class TokenBucket:
     def __init__(self, max_tokens, refill_rate_per_second):
         self.max_tokens = max_tokens                    # Burst capacity (e.g., 100)
@@ -707,6 +747,8 @@ Requests enter the bucket (a FIFO queue). The bucket processes requests at a fix
 **Pseudocode Implementation:**
 
 ```python
+# NOTE: Same pattern — self.buckets is Redis, logic runs as Lua script.
+
 class LeakyBucket:
     def __init__(self, capacity, leak_rate_per_second):
         self.capacity = capacity            # Max queue size
@@ -751,6 +793,73 @@ class LeakyBucket:
 | Leaky Bucket | ⭐⭐⭐ Very Low | ⭐⭐ Good | ❌ Smooths bursts (constant output) | ⭐⭐⭐ Simple | Traffic shaping, constant-rate processing |
 
 ### 3.5 Storing State — Why Redis?
+
+> **To be very clear:** The API Gateway holds the **rules and decision-making orchestration** in memory. Redis holds ONLY the **numerical state** (counters, tokens, timestamps). The algorithm **logic** is shipped to Redis as a Lua script so it can execute atomically.
+
+**What exactly is stored in Redis per algorithm?**
+
+| Algorithm | Redis Key | Redis Value | Redis Data Type |
+|---|---|---|---|
+| Fixed Window Counter | `rate:{clientId}:{windowStart}` | `counter` (integer) | String (with INCR) |
+| Sliding Window Log | `rate:{clientId}` | Set of timestamps | Sorted Set (ZSET) |
+| Sliding Window Counter | `rate:{clientId}:{windowStart}` | `counter` (integer) | String (with INCR) |
+| **Token Bucket** | `bucket:{clientId}:{ruleId}` | `{tokens: 84.5, last_refill: 1640995200}` | Hash (HMSET) |
+| Leaky Bucket | `leak:{clientId}:{ruleId}` | `{water_level: 3, last_leak: 1640995200}` | Hash (HMSET) |
+
+**Example: What's actually in Redis for Token Bucket?**
+
+```redis
+# Redis stores ONLY these tiny data points per client per rule:
+
+127.0.0.1:6379> HGETALL bucket:user:alice123:rule_default
+1) "tokens"
+2) "84.5"              ← Just a number
+3) "last_refill"
+4) "1640995200"        ← Just a timestamp
+
+127.0.0.1:6379> TTL bucket:user:alice123:rule_default
+(integer) 3542          ← Auto-expires in ~59 minutes
+
+# That's it! No rules, no logic, no config — just 2 numbers with a TTL.
+```
+
+**What the API Gateway holds in memory (NOT in Redis):**
+
+```python
+# These are cached in the gateway's local memory (from ZooKeeper/config DB)
+rules = {
+    "rule_default": {
+        "max_tokens": 1000,
+        "refill_rate": 0.278,   # tokens per second (≈1000/hour)
+        "applies_to": "user:*",
+        "endpoints": ["*"]
+    },
+    "rule_search": {
+        "max_tokens": 10,
+        "refill_rate": 0.167,   # ≈10/minute
+        "applies_to": "user:*",
+        "endpoints": ["/api/search"]
+    }
+}
+
+# The gateway's rate limit check:
+def check_rate_limit(client_id, endpoint):
+    # 1. Find matching rules (from local memory — NO Redis call)
+    matching_rules = find_rules_for(client_id, endpoint)
+    
+    # 2. For each rule, call Redis Lua script (THIS is the Redis call)
+    for rule in matching_rules:
+        result = redis.evalsha(
+            LUA_SCRIPT_SHA,           # Pre-loaded Lua script hash
+            keys=[f"bucket:{client_id}:{rule.id}"],
+            args=[rule.max_tokens, rule.refill_rate, current_time()]
+        )
+        if not result.allowed:
+            return REJECT_429
+    
+    # 3. All rules passed
+    return ALLOW
+```
 
 Each token bucket tracks `(current_tokens, last_refill_time)`. This state must be **shared across all API gateway instances** — otherwise each gateway only sees a fraction of a client's traffic.
 
@@ -846,6 +955,112 @@ end
 ```
 
 Lua scripts in Redis are **atomic** — the entire script executes without interruption. This eliminates the race condition completely.
+
+**How the Lua Script Is Deployed & Called:**
+
+You write **one single Lua script** that works for **all users**. The user-specific part is just the **key** you pass to it — think of it like a reusable function.
+
+```
+Same script for everyone:    check_rate_limit(key, max_tokens, refill_rate, now)
+
+Called with different keys:
+  → check_rate_limit("bucket:alice", 1000, 0.278, now)       ← Alice
+  → check_rate_limit("bucket:bob",   1000, 0.278, now)       ← Bob
+  → check_rate_limit("bucket:ip:1.2.3.4", 100, 1.67, now)   ← An IP address
+```
+
+**Step 1: At gateway startup — load the script once:**
+
+**Where the files live in your codebase:**
+```
+your-api-gateway/
+  ├── src/
+  │   ├── gateway_app.py          ← Your gateway application code
+  │   ├── rate_limiter.py         ← Rate limiter module (loads & calls the Lua script)
+  │   └── config/
+  │       └── rules.yaml          ← Rate limiting rules (synced from ZooKeeper)
+  ├── scripts/
+  │   └── rate_limiter.lua        ← The Lua script YOU write (shipped to Redis at startup)
+  └── tests/
+      └── test_rate_limiter.py    ← Tests for rate limiting logic
+```
+
+```python
+# rate_limiter.py — loads the Lua script from file and registers it with Redis
+
+# Read the Lua script from your codebase
+with open("scripts/rate_limiter.lua", "r") as f:
+    LUA_SCRIPT = f.read()
+
+# Redis hashes the script and returns a SHA1 identifier
+SCRIPT_SHA = redis.script_load(LUA_SCRIPT)   # → "a1b2c3d4e5f6..."
+# This SHA is reused for ALL subsequent calls — the full script is NOT sent each time
+```
+
+**The actual Lua script file (`scripts/rate_limiter.lua`):**
+
+```lua
+-- scripts/rate_limiter.lua
+-- Token Bucket rate limiter — runs atomically inside Redis
+-- ONE script for ALL users — the user's key is passed as KEYS[1]
+
+local key = KEYS[1]
+local max_tokens = tonumber(ARGV[1])
+local refill_rate = tonumber(ARGV[2])
+local now = tonumber(ARGV[3])
+
+local bucket = redis.call('HMGET', key, 'tokens', 'last_refill')
+local tokens = tonumber(bucket[1]) or max_tokens
+local last_refill = tonumber(bucket[2]) or now
+
+local elapsed = now - last_refill
+local new_tokens = math.min(max_tokens, tokens + (elapsed * refill_rate))
+
+if new_tokens >= 1 then
+    new_tokens = new_tokens - 1
+    redis.call('HMSET', key, 'tokens', new_tokens, 'last_refill', now)
+    redis.call('EXPIRE', key, 3600)
+    return {1, math.floor(new_tokens)}   -- {allowed, remaining}
+else
+    redis.call('HMSET', key, 'tokens', new_tokens, 'last_refill', now)
+    redis.call('EXPIRE', key, 3600)
+    return {0, 0}                         -- {rejected, 0 remaining}
+end
+```
+
+**Step 2: Per request — call by SHA hash (one Redis round-trip):**
+
+```python
+# On every incoming request, the gateway calls EVALSHA (NOT EVAL)
+# EVALSHA sends only the tiny SHA hash, not the entire script text
+
+import time
+
+def check_rate_limit(client_id, rule):
+    result = redis.evalsha(
+        SCRIPT_SHA,                                         # Pre-loaded script hash
+        keys=[f"bucket:{client_id}:{rule.id}"],            # Which user's bucket
+        args=[rule.max_tokens, rule.refill_rate, time.time()]  # Rule params + current time
+    )
+    return {"allowed": result[0] == 1, "remaining": result[1]}
+
+# Same script, called with different keys:
+check_rate_limit("user:alice123",    default_rule)    # Alice's request
+check_rate_limit("user:bob456",      default_rule)    # Bob's request
+check_rate_limit("ip:203.0.113.42",  ip_rule)         # Anonymous IP
+check_rate_limit("apikey:dk_abc123", developer_rule)  # Developer API key
+```
+
+**Summary:**
+
+| What | How Many | Where It Lives |
+|---|---|---|
+| Lua script | **1** (loaded once at startup) | Your codebase → shipped to Redis via `SCRIPT LOAD` |
+| Script SHA hash | **1** (returned by Redis) | Stored in gateway memory |
+| Redis keys (state) | **1 per user per rule** (auto-created on first request) | Redis |
+| `EVALSHA` calls | **1 per request** | Gateway → Redis |
+
+> **Think of it like a stored procedure in a database:** you write it once, deploy it to Redis, and then call it by name (SHA). Redis executes it server-side, atomically, and returns the result. The script is just a text file in your codebase — not one script per user.
 
 > **Pattern: Dealing with Contention** — Race conditions in distributed counters are a classic contention challenge. The solution is expanding the atomic boundary to include the entire read-modify-write sequence.
 
