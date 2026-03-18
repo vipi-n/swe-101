@@ -1,1549 +1,962 @@
-# High-Level System Design: URL Shortener (bit.ly)
+# System Design: URL Shortener (Bit.ly)
 
-A comprehensive step-by-step guide to designing a URL shortening service like bit.ly, TinyURL, or short.io.
+> **Difficulty**: Easy–Medium | **Pattern**: Scaling Reads | **Asked at**: Amazon, PayPal, Microsoft, Google, OpenAI, Uber, Meta, and more
 
 ---
 
 ## Table of Contents
+
 1. [Problem Statement](#problem-statement)
-2. [Requirements Gathering](#requirements-gathering)
-3. [Capacity Estimation](#capacity-estimation)
-4. [System APIs](#system-apis)
-5. [Database Design](#database-design)
-6. [URL Shortening Algorithm](#url-shortening-algorithm)
-7. [High-Level Architecture](#high-level-architecture)
-8. [Component Deep Dive](#component-deep-dive)
-9. [Handling Redirects](#handling-redirects)
+2. [Functional Requirements](#functional-requirements)
+3. [Non-Functional Requirements](#non-functional-requirements)
+4. [Back-of-the-Envelope Estimation](#back-of-the-envelope-estimation)
+5. [Core Entities & Data Model](#core-entities--data-model)
+6. [API Design](#api-design)
+7. [High-Level Design](#high-level-design)
+8. [Short Code Generation Strategies](#short-code-generation-strategies)
+9. [Database Design & Indexing](#database-design--indexing)
 10. [Caching Strategy](#caching-strategy)
-11. [Database Scaling](#database-scaling)
-12. [Analytics System](#analytics-system)
-13. [Security Considerations](#security-considerations)
-14. [Complete System Flow](#complete-system-flow)
-15. [Trade-offs and Decisions](#trade-offs-and-decisions)
-16. [Interview Tips](#interview-tips)
+11. [Scaling the System](#scaling-the-system)
+12. [Redirect Flow & HTTP Status Codes](#redirect-flow--http-status-codes)
+13. [URL Expiry & Cleanup](#url-expiry--cleanup)
+14. [Security Considerations](#security-considerations)
+15. [Multi-Region Deployment](#multi-region-deployment)
+16. [Final Architecture](#final-architecture)
+17. [What is Expected at Each Level](#what-is-expected-at-each-level)
+18. [Common Interview Questions](#common-interview-questions)
 
 ---
 
 ## Problem Statement
 
-### What is a URL Shortener?
+Design a URL shortening service like **Bit.ly** that converts long URLs into shorter, manageable links. When a user clicks the short link, they are redirected to the original long URL.
 
-A URL shortener takes a long URL and creates a short, unique alias that redirects to the original URL.
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        URL SHORTENER - BASIC CONCEPT                        │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  LONG URL (Hard to share):                                                  │
-│  https://www.amazon.com/Apple-MacBook-Laptop-12-core-19-core/dp/B0CM5JV268  │
-│  /ref=sr_1_1?keywords=macbook+pro&qid=1705312847&sr=8-1                    │
-│                                                                             │
-│                              ↓ SHORTEN ↓                                    │
-│                                                                             │
-│  SHORT URL (Easy to share):                                                 │
-│  https://short.ly/abc123                                                    │
-│                                                                             │
-│                              ↓ REDIRECT ↓                                   │
-│                                                                             │
-│  When user clicks short URL → Redirected to original long URL              │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Why Do We Need It?
-
-| Use Case | Benefit |
-|----------|---------|
-| **Social Media** | Twitter character limits, cleaner posts |
-| **SMS/Messaging** | Shorter messages, less data |
-| **Print Media** | Easier to type manually |
-| **Analytics** | Track clicks, locations, devices |
-| **Branding** | Custom short domains (youtu.be, amzn.to) |
+**Why is this asked so often?** It touches on hashing, database design, caching, scaling reads vs writes, HTTP semantics, and distributed systems — all in a relatively contained problem.
 
 ---
 
-## Requirements Gathering
+## Functional Requirements
 
-> 💡 **Interview Tip:** Always start by clarifying requirements with the interviewer!
+### Core (In Scope)
 
-### Functional Requirements
+| # | Requirement |
+|---|-------------|
+| FR-1 | Users submit a long URL and receive a shortened URL |
+| FR-2 | Users access the original URL by visiting the shortened URL (redirect) |
+| FR-3 | *(Optional)* Users can specify a **custom alias** (e.g., `short.ly/my-brand`) |
+| FR-4 | *(Optional)* Users can specify an **expiration date** for the shortened URL |
 
-| Requirement | Description |
-|-------------|-------------|
-| **URL Shortening** | Given a long URL, generate a short unique URL |
-| **URL Redirection** | When user accesses short URL, redirect to original |
-| **Custom Aliases** | Users can pick custom short codes (optional) |
-| **Link Expiration** | URLs can have expiration time (optional) |
-| **Analytics** | Track click count, location, device (optional) |
+### Below the Line (Out of Scope)
 
-### Non-Functional Requirements
+- User authentication and account management
+- Analytics on link clicks (click counts, geographic data, referrers)
+- Rate limiting per user (though we'll briefly discuss it in security)
+- Link editing / updating after creation
 
-| Requirement | Target | Why It Matters |
-|-------------|--------|----------------|
-| **High Availability** | 99.99% uptime | Links must always work |
-| **Low Latency** | < 100ms redirect | Users expect instant redirect |
-| **Scalability** | Billions of URLs | System should handle growth |
-| **Durability** | No data loss | URLs shouldn't disappear |
-
-### Out of Scope (For Basic Design)
-
-- User authentication/accounts
-- Rate limiting
-- API keys
-- Monetization
-
-### Clarifying Questions to Ask
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    QUESTIONS TO ASK INTERVIEWER                             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  1. "What's the expected traffic?"                                          │
-│      → Helps with capacity planning                                         │
-│                                                                             │
-│  2. "How long should URLs be stored?"                                       │
-│      → Affects storage requirements                                         │
-│                                                                             │
-│  3. "Do we need custom short codes?"                                        │
-│      → Affects algorithm design                                             │
-│                                                                             │
-│  4. "Is analytics required?"                                                │
-│      → Affects system complexity                                            │
-│                                                                             │
-│  5. "What's the read/write ratio?"                                          │
-│      → Affects caching and database strategy                                │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+> **Tip**: In the interview, explicitly call out what's in and out of scope. It shows you can prioritize.
 
 ---
 
-## Capacity Estimation
+## Non-Functional Requirements
 
-> 💡 **Interview Tip:** Always do back-of-envelope calculations!
+| # | Requirement | Target |
+|---|-------------|--------|
+| NFR-1 | **Uniqueness**: Each short code maps to exactly one long URL | 0 collisions |
+| NFR-2 | **Low latency**: Redirection should be fast | < 100ms p99 |
+| NFR-3 | **High availability**: System must be reliable | 99.99% uptime |
+| NFR-4 | **Scalability** | 1B stored URLs, 100M DAU |
+| NFR-5 | **Availability > Consistency** | Eventual consistency is acceptable |
+
+### Key Insight: Read-Heavy System
+
+The read-to-write ratio is extremely skewed:
+
+```
+Reads (redirects)  : Writes (URL creation)  ≈  1000 : 1
+```
+
+This asymmetry drives every major design decision — caching, database choice, service separation, and architecture.
+
+---
+
+## Back-of-the-Envelope Estimation
+
+These calculations help you reason about hardware, storage, and bandwidth during the interview.
 
 ### Traffic Estimates
 
-Let's assume:
-- **500 million** new URLs shortened per month
-- **Read:Write ratio** = 100:1 (URLs are read much more than created)
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        TRAFFIC CALCULATIONS                                 │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  WRITES (URL Creation):                                                     │
-│  ─────────────────────                                                      │
-│  500 million URLs/month                                                     │
-│  = 500M / (30 days × 24 hours × 3600 seconds)                              │
-│  = 500M / 2.6M                                                              │
-│  ≈ 200 URLs/second                                                          │
-│                                                                             │
-│  READS (Redirects):                                                         │
-│  ─────────────────                                                          │
-│  100:1 read-to-write ratio                                                  │
-│  = 200 × 100                                                                │
-│  = 20,000 redirects/second                                                  │
-│                                                                             │
-│  This is a READ-HEAVY system!                                               │
-│  → Caching will be very effective                                           │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+| Metric | Calculation | Result |
+|--------|-------------|--------|
+| DAU | Given | 100M |
+| URL creations/day | ~1 per 1000 DAU (write-light) | ~100K/day |
+| Writes/second | 100K / 86400 | **~1.2 writes/sec** |
+| Redirects/day | 100M DAU × ~10 clicks/day | ~1B/day |
+| Reads/second | 1B / 86400 | **~12K reads/sec** |
+| Peak reads/sec | ~3× average | **~36K reads/sec** |
 
 ### Storage Estimates
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        STORAGE CALCULATIONS                                 │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  Assume we store URLs for 5 years:                                          │
-│  ─────────────────────────────────                                          │
-│  500 million/month × 12 months × 5 years                                    │
-│  = 30 billion URLs                                                          │
-│                                                                             │
-│  Each URL record:                                                           │
-│  ─────────────────                                                          │
-│  • Short code:    7 bytes                                                   │
-│  • Long URL:      500 bytes (average)                                       │
-│  • Created at:    8 bytes                                                   │
-│  • Expires at:    8 bytes                                                   │
-│  • User ID:       8 bytes (optional)                                        │
-│  ────────────────────────                                                   │
-│  Total:           ~530 bytes per URL                                        │
-│                                                                             │
-│  Total Storage:                                                             │
-│  ──────────────                                                             │
-│  30 billion × 530 bytes                                                     │
-│  = 15.9 TB                                                                  │
-│                                                                             │
-│  ≈ 16 TB of storage needed                                                  │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+| Field | Size |
+|-------|------|
+| Short code | ~8 bytes |
+| Long URL | ~100 bytes |
+| Creation timestamp | ~8 bytes |
+| Expiration date | ~8 bytes |
+| Custom alias | ~100 bytes |
+| User ID / metadata | ~80 bytes |
+| **Total per row** | **~300–500 bytes** |
+
+| Metric | Calculation | Result |
+|--------|-------------|--------|
+| 1B URLs | 500 bytes × 1B | **~500 GB** |
+| 5 years growth | 100K/day × 365 × 5 | ~182M new URLs |
+
+> **500 GB fits comfortably on a single modern SSD.** Sharding is not immediately necessary but may be needed for availability.
 
 ### Bandwidth Estimates
 
+| Direction | Calculation | Result |
+|-----------|-------------|--------|
+| Incoming (writes) | 1.2 req/sec × 500 bytes | ~600 bytes/sec (negligible) |
+| Outgoing (reads) | 12K req/sec × 500 bytes | ~6 MB/sec |
+
+### Cache Memory Estimate
+
+If we cache the top 20% of URLs (hot URLs follow a Pareto distribution):
+
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                       BANDWIDTH CALCULATIONS                                │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  INCOMING (Writes):                                                         │
-│  ─────────────────                                                          │
-│  200 requests/sec × 500 bytes (long URL)                                    │
-│  = 100 KB/second                                                            │
-│                                                                             │
-│  OUTGOING (Reads):                                                          │
-│  ────────────────                                                           │
-│  20,000 requests/sec × 500 bytes                                            │
-│  = 10 MB/second                                                             │
-│                                                                             │
-│  Total: ~10 MB/second bandwidth                                             │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+20% of 1B URLs = 200M entries
+200M × 500 bytes ≈ 100 GB of cache
 ```
 
-### Summary Table
-
-| Metric | Value |
-|--------|-------|
-| New URLs (writes) | 200/second |
-| Redirects (reads) | 20,000/second |
-| Read:Write ratio | 100:1 |
-| Storage (5 years) | ~16 TB |
-| Bandwidth | ~10 MB/second |
+This is achievable with a Redis cluster or a few high-memory nodes.
 
 ---
 
-## System APIs
+## Core Entities & Data Model
 
-### REST API Design
+### Entities
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                            API ENDPOINTS                                    │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  1. CREATE SHORT URL                                                        │
-│  ────────────────────────────────────────────────────────────────────────  │
-│  POST /api/v1/shorten                                                       │
-│                                                                             │
-│  Request:                                                                   │
-│  {                                                                          │
-│    "long_url": "https://www.example.com/very/long/path?param=value",       │
-│    "custom_alias": "my-link",        // optional                           │
-│    "expires_at": "2025-12-31"        // optional                           │
-│  }                                                                          │
-│                                                                             │
-│  Response (201 Created):                                                    │
-│  {                                                                          │
-│    "short_url": "https://short.ly/abc123",                                 │
-│    "short_code": "abc123",                                                  │
-│    "long_url": "https://www.example.com/very/long/path?param=value",       │
-│    "created_at": "2024-01-15T10:30:00Z",                                   │
-│    "expires_at": "2025-12-31T23:59:59Z"                                    │
-│  }                                                                          │
-│                                                                             │
-│  ════════════════════════════════════════════════════════════════════════  │
-│                                                                             │
-│  2. REDIRECT TO ORIGINAL URL                                                │
-│  ────────────────────────────────────────────────────────────────────────  │
-│  GET /{short_code}                                                          │
-│                                                                             │
-│  Example: GET /abc123                                                       │
-│                                                                             │
-│  Response (302 Found):                                                      │
-│  HTTP/1.1 302 Found                                                         │
-│  Location: https://www.example.com/very/long/path?param=value              │
-│                                                                             │
-│  ════════════════════════════════════════════════════════════════════════  │
-│                                                                             │
-│  3. GET URL INFO (Optional)                                                 │
-│  ────────────────────────────────────────────────────────────────────────  │
-│  GET /api/v1/urls/{short_code}                                              │
-│                                                                             │
-│  Response (200 OK):                                                         │
-│  {                                                                          │
-│    "short_code": "abc123",                                                  │
-│    "long_url": "https://www.example.com/...",                              │
-│    "created_at": "2024-01-15T10:30:00Z",                                   │
-│    "click_count": 1542,                                                     │
-│    "last_accessed": "2024-01-20T15:45:00Z"                                 │
-│  }                                                                          │
-│                                                                             │
-│  ════════════════════════════════════════════════════════════════════════  │
-│                                                                             │
-│  4. DELETE URL (Optional)                                                   │
-│  ────────────────────────────────────────────────────────────────────────  │
-│  DELETE /api/v1/urls/{short_code}                                           │
-│                                                                             │
-│  Response (204 No Content)                                                  │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌─────────────┐     ┌──────────────┐     ┌──────────┐
+│ Original URL │────▶│  Short URL   │◀────│   User   │
+└─────────────┘     └──────────────┘     └──────────┘
 ```
 
-### HTTP Status Codes
+### Database Schema
 
-| Status Code | Meaning | When to Use |
-|-------------|---------|-------------|
-| **201 Created** | URL created successfully | POST /shorten |
-| **302 Found** | Redirect to long URL | GET /{short_code} |
-| **400 Bad Request** | Invalid URL format | Malformed request |
-| **404 Not Found** | Short code doesn't exist | Unknown short code |
-| **409 Conflict** | Custom alias already taken | Duplicate alias |
-| **410 Gone** | URL has expired | Expired link |
+```sql
+CREATE TABLE urls (
+    short_code    VARCHAR(10)  PRIMARY KEY,
+    original_url  TEXT         NOT NULL,
+    custom_alias  VARCHAR(50)  UNIQUE,
+    created_at    TIMESTAMP    NOT NULL DEFAULT NOW(),
+    expires_at    TIMESTAMP    NULL,
+    created_by    UUID         NULL,
+
+    CONSTRAINT unique_short_code UNIQUE (short_code)
+);
+
+-- Index for reverse lookup (optional, if dedup is needed)
+CREATE INDEX idx_original_url ON urls(original_url);
+
+-- Index for expiration cleanup
+CREATE INDEX idx_expires_at ON urls(expires_at) WHERE expires_at IS NOT NULL;
+```
+
+### Why These Indexes?
+
+| Index | Purpose |
+|-------|---------|
+| Primary key on `short_code` | O(log n) lookup for redirects — the hot path |
+| Index on `original_url` | Fast dedup check if same URL was already shortened |
+| Partial index on `expires_at` | Efficient cleanup of expired URLs by background job |
 
 ---
 
-## Database Design
+## API Design
 
-### Option 1: SQL Database (PostgreSQL)
+### 1. Shorten a URL
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         SQL SCHEMA DESIGN                                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  TABLE: urls                                                                │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  Column        │  Type         │  Constraints                       │   │
-│  ├─────────────────────────────────────────────────────────────────────┤   │
-│  │  id            │  BIGINT       │  PRIMARY KEY, AUTO_INCREMENT       │   │
-│  │  short_code    │  VARCHAR(10)  │  UNIQUE, NOT NULL, INDEX          │   │
-│  │  long_url      │  TEXT         │  NOT NULL                          │   │
-│  │  created_at    │  TIMESTAMP    │  DEFAULT CURRENT_TIMESTAMP         │   │
-│  │  expires_at    │  TIMESTAMP    │  NULL (optional)                   │   │
-│  │  user_id       │  BIGINT       │  NULL, FOREIGN KEY                 │   │
-│  │  click_count   │  BIGINT       │  DEFAULT 0                         │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  SQL CREATE STATEMENT:                                                      │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  CREATE TABLE urls (                                                │   │
-│  │      id BIGSERIAL PRIMARY KEY,                                      │   │
-│  │      short_code VARCHAR(10) UNIQUE NOT NULL,                        │   │
-│  │      long_url TEXT NOT NULL,                                        │   │
-│  │      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,                │   │
-│  │      expires_at TIMESTAMP,                                          │   │
-│  │      user_id BIGINT REFERENCES users(id),                           │   │
-│  │      click_count BIGINT DEFAULT 0                                   │   │
-│  │  );                                                                 │   │
-│  │                                                                     │   │
-│  │  CREATE INDEX idx_short_code ON urls(short_code);                   │   │
-│  │  CREATE INDEX idx_expires_at ON urls(expires_at);                   │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+```http
+POST /api/v1/urls
+Content-Type: application/json
+
+{
+    "long_url": "https://www.example.com/some/very/long/url/with/params?x=1&y=2",
+    "custom_alias": "my-brand",       // optional
+    "expiration_date": "2026-12-31"    // optional, ISO 8601
+}
 ```
 
-### Option 2: NoSQL Database (DynamoDB/Cassandra)
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        NoSQL SCHEMA DESIGN                                  │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  DOCUMENT STRUCTURE (DynamoDB):                                             │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  {                                                                  │   │
-│  │    "PK": "URL#abc123",              // Partition Key                │   │
-│  │    "short_code": "abc123",                                          │   │
-│  │    "long_url": "https://www.example.com/...",                       │   │
-│  │    "created_at": "2024-01-15T10:30:00Z",                           │   │
-│  │    "expires_at": "2025-12-31T23:59:59Z",                           │   │
-│  │    "ttl": 1735689599                // Unix timestamp for auto-delete│  │
-│  │  }                                                                  │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  WHY NoSQL?                                                                 │
-│  • Simple key-value lookups (short_code → long_url)                        │
-│  • Horizontal scaling is easier                                             │
-│  • No complex joins needed                                                  │
-│  • Built-in TTL for expiration                                              │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+**Response (201 Created):**
+```json
+{
+    "short_url": "https://short.ly/abc123",
+    "short_code": "abc123",
+    "created_at": "2026-03-19T10:30:00Z",
+    "expires_at": "2026-12-31T00:00:00Z"
+}
 ```
 
-### SQL vs NoSQL - Which to Choose?
+**Error Responses:**
 
-| Factor | SQL (PostgreSQL) | NoSQL (DynamoDB) |
-|--------|------------------|------------------|
-| **Query Pattern** | Simple lookups | Simple lookups |
-| **Scaling** | Vertical + Read replicas | Horizontal (easier) |
-| **Consistency** | Strong ACID | Eventually consistent |
-| **Cost** | Predictable | Pay-per-request |
-| **Recommendation** | Good for startups | Good for high scale |
+| Code | Scenario |
+|------|----------|
+| 400 | Invalid URL format |
+| 409 | Custom alias already taken |
+| 429 | Rate limit exceeded |
 
-> 💡 **For URL Shortener:** NoSQL is often preferred due to simple key-value access pattern and easy horizontal scaling.
+### 2. Redirect to Original URL
+
+```http
+GET /{short_code}
+```
+
+**Response (302 Found):**
+```http
+HTTP/1.1 302 Found
+Location: https://www.example.com/some/very/long/url/with/params?x=1&y=2
+Cache-Control: no-store
+```
+
+**Error Responses:**
+
+| Code | Scenario |
+|------|----------|
+| 404 | Short code not found |
+| 410 | URL has expired (Gone) |
+
+### 3. Delete a URL (Optional)
+
+```http
+DELETE /api/v1/urls/{short_code}
+Authorization: Bearer <token>
+```
+
+**Response**: `204 No Content`
 
 ---
 
-## URL Shortening Algorithm
+## High-Level Design
 
-The core problem: **How do we generate a unique short code for each URL?**
-
-### Method 1: Base62 Encoding (Recommended)
-
-Use characters: `[a-z, A-Z, 0-9]` = 62 characters
+### URL Creation Flow
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         BASE62 ENCODING                                     │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  CHARACTERS AVAILABLE:                                                      │
-│  a-z: 26 characters                                                         │
-│  A-Z: 26 characters                                                         │
-│  0-9: 10 characters                                                         │
-│  ─────────────────────                                                      │
-│  Total: 62 characters                                                       │
-│                                                                             │
-│  HOW MANY UNIQUE CODES?                                                     │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  Length │     Formula      │        Total Unique Codes             │   │
-│  ├─────────────────────────────────────────────────────────────────────┤   │
-│  │    6    │   62^6           │   56.8 billion                        │   │
-│  │    7    │   62^7           │   3.5 trillion   ← Recommended!       │   │
-│  │    8    │   62^8           │   218 trillion                        │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  7 characters = 3.5 trillion combinations                                   │
-│  More than enough for 30 billion URLs!                                      │
-│                                                                             │
-│  EXAMPLE CONVERSION:                                                        │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                                                                     │   │
-│  │  Database ID: 12345678901                                           │   │
-│  │                    ↓                                                 │   │
-│  │  Base62 Encode                                                      │   │
-│  │                    ↓                                                 │   │
-│  │  Short Code: "dnh5S4k"                                              │   │
-│  │                                                                     │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌────────┐      POST /urls      ┌────────────────┐        ┌──────────┐
+│ Client │─────────────────────▶│ Primary Server  │───────▶│ Database │
+│        │◀─────────────────────│                 │        │(Postgres)│
+└────────┘   { short_url }      │  1. Validate    │        └──────────┘
+                                │  2. Gen code    │
+                                │  3. Store in DB │
+                                │  4. Return URL  │
+                                └────────────────┘
 ```
 
-#### Base62 Encoding Algorithm
+**Step-by-step:**
+
+1. **Validate** the long URL format (use a URL validation library).
+2. **Check custom alias** (if provided) — query DB to ensure it's not taken.
+3. **Generate short code** — using one of the strategies below.
+4. **Insert into database** — store `short_code → long_url` mapping with metadata.
+5. **Return** the full short URL to the client.
+
+### URL Redirect Flow
+
+```
+┌────────┐    GET /abc123     ┌────────────────┐    Cache     ┌───────┐
+│Browser │───────────────────▶│   Read Server   │────MISS────▶│  DB   │
+│        │◀───302 + Location──│                 │◀────────────│       │
+└────────┘                    │   1. Check cache│    Cache     ┌───────┐
+                              │   2. Check DB   │────HIT─────▶│ Redis │
+                              │   3. Redirect   │◀────────────│ Cache │
+                              └────────────────┘              └───────┘
+```
+
+**Step-by-step:**
+
+1. Browser sends `GET /abc123` to our server.
+2. Server checks **cache** (Redis) for the short code.
+3. **Cache HIT** → retrieve long URL directly. **Cache MISS** → query database, then populate cache.
+4. If found and **not expired** → return `302` redirect with `Location` header.
+5. If **expired** → return `410 Gone`.
+6. If **not found** → return `404`.
+
+---
+
+## Short Code Generation Strategies
+
+This is the most critical deep dive. We need codes that are **unique**, **short**, and **efficiently generated**.
+
+### How Short Can We Go?
+
+Using **Base62** encoding (a–z, A–Z, 0–9):
+
+| Length | Possible Codes | Sufficient for? |
+|--------|---------------|-----------------|
+| 6 | 62⁶ ≈ 56.8B | ✅ More than enough for 1B |
+| 7 | 62⁷ ≈ 3.5T | ✅ Massive headroom |
+| 8 | 62⁸ ≈ 218T | ✅ Overkill |
+
+**7 characters gives us 3.5 trillion combinations** — far more than we need.
+
+---
+
+### ❌ Bad: Using a Prefix of the Long URL
+
+Take the first N characters of the long URL as the short code.
+
+- **Pros**: Simple
+- **Cons**: Extremely high collision rate. Many URLs share prefixes (`https://www.`). Not a real shortening strategy.
+
+**Verdict**: Don't use this.
+
+---
+
+### ✅ Great: Hash Function (MD5/SHA-256) + Base62
+
+**How it works:**
+
+```
+long_url → MD5/SHA-256 → Take first 43 bits → Base62 encode → 7-char code
+```
+
+**Example:**
+
+```
+"https://example.com/long" → MD5 → "d41d8cd98f00b204..." → take first 7 base62 chars → "kA9f3Bc"
+```
+
+**Handling Collisions:**
+
+```
+1. Hash the URL → get short_code
+2. Check DB: does short_code exist?
+   a. YES and same long_url → return existing (dedup)
+   b. YES and different long_url → COLLISION!
+      → Append a counter/salt, re-hash, retry
+   c. NO → insert and return
+```
+
+| Pros | Cons |
+|------|------|
+| Deterministic (same input → same output) | Collisions possible (birthday problem) |
+| No coordination needed across servers | Retry logic adds complexity |
+| Stateless — easy to scale | Collision rate increases as DB fills up |
+| Can dedup same URL naturally | Need DB lookup to check for collision |
+
+**Collision probability**: With 7 base62 chars (56.8B space) and 1B URLs, collision chance per insertion is ~1/56.8 ≈ 1.7%. Handle with retry.
+
+---
+
+### ✅ Great: Unique Counter + Base62 Encoding
+
+**How it works:**
+
+```
+Global counter (1, 2, 3, ...) → Base62 encode → short code
+```
+
+**Example:**
+
+```
+Counter = 1000000 → Base62 → "4c92" (4 chars)
+Counter = 56800235584 → Base62 → "zzzzzzz" (7 chars)
+```
+
+**Base62 Encoding Algorithm:**
 
 ```python
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                      BASE62 ENCODING CODE                                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  CHARACTERS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-│                                                                             │
-│  def encode_base62(num):                                                    │
-│      """Convert number to base62 string"""                                  │
-│      if num == 0:                                                           │
-│          return CHARACTERS[0]                                               │
-│                                                                             │
-│      result = []                                                            │
-│      while num > 0:                                                         │
-│          result.append(CHARACTERS[num % 62])                                │
-│          num //= 62                                                         │
-│                                                                             │
-│      return ''.join(reversed(result))                                       │
-│                                                                             │
-│                                                                             │
-│  def decode_base62(string):                                                 │
-│      """Convert base62 string back to number"""                             │
-│      num = 0                                                                │
-│      for char in string:                                                    │
-│          num = num * 62 + CHARACTERS.index(char)                            │
-│      return num                                                             │
-│                                                                             │
-│                                                                             │
-│  # Example:                                                                 │
-│  encode_base62(12345678901)  # Returns: "dnh5S4k"                          │
-│  decode_base62("dnh5S4k")    # Returns: 12345678901                        │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+CHARSET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+def encode_base62(num: int) -> str:
+    if num == 0:
+        return CHARSET[0]
+    result = []
+    while num > 0:
+        result.append(CHARSET[num % 62])
+        num //= 62
+    return ''.join(reversed(result))
+
+def decode_base62(s: str) -> int:
+    num = 0
+    for ch in s:
+        num = num * 62 + CHARSET.index(ch)
+    return num
 ```
 
-### Method 2: Counter with Key Generation Service
+| Pros | Cons |
+|------|------|
+| **Zero collisions** by design | Requires a centralized counter |
+| Simple and predictable | Sequential = potentially guessable |
+| Very fast generation | Counter is a single point of failure |
+| No DB check needed for uniqueness | Needs coordination in distributed setup |
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    KEY GENERATION SERVICE (KGS)                             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  Pre-generate unique keys and store them in a database.                     │
-│  When a new URL needs shortening, fetch an unused key.                      │
-│                                                                             │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                                                                     │   │
-│  │   ┌─────────────┐                                                   │   │
-│  │   │     KGS     │  Pre-generates millions of unique keys           │   │
-│  │   │   Service   │                                                   │   │
-│  │   └──────┬──────┘                                                   │   │
-│  │          │                                                          │   │
-│  │          ▼                                                          │   │
-│  │   ┌─────────────────────────────────────────┐                      │   │
-│  │   │           KEY DATABASE                  │                      │   │
-│  │   ├──────────────────┬──────────────────────┤                      │   │
-│  │   │   UNUSED KEYS    │     USED KEYS        │                      │   │
-│  │   ├──────────────────┼──────────────────────┤                      │   │
-│  │   │   abc123         │     xyz789           │                      │   │
-│  │   │   def456         │     uvw456           │                      │   │
-│  │   │   ghi789         │     ...              │                      │   │
-│  │   │   ...            │                      │                      │   │
-│  │   └──────────────────┴──────────────────────┘                      │   │
-│  │          │                                                          │   │
-│  │          │ Fetch unused key                                         │   │
-│  │          ▼                                                          │   │
-│  │   ┌─────────────┐                                                   │   │
-│  │   │   URL API   │  Assigns key to new URL                          │   │
-│  │   │   Server    │  Moves key to "used" table                       │   │
-│  │   └─────────────┘                                                   │   │
-│  │                                                                     │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  PROS:                                                                      │
-│  • No collision possible (keys are pre-generated unique)                   │
-│  • Very fast (just fetch a key)                                            │
-│                                                                             │
-│  CONS:                                                                      │
-│  • Additional service to manage                                             │
-│  • Need to handle KGS failure                                               │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Method 3: MD5/SHA256 Hash
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           HASHING METHOD                                    │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  APPROACH:                                                                  │
-│  1. Hash the long URL using MD5/SHA256                                      │
-│  2. Take first 7 characters of the hash                                     │
-│  3. Use as short code                                                       │
-│                                                                             │
-│  EXAMPLE:                                                                   │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                                                                     │   │
-│  │  Long URL: "https://www.example.com/page"                           │   │
-│  │                    ↓                                                 │   │
-│  │  MD5 Hash: "5d41402abc4b2a76b9719d911017c592"                       │   │
-│  │                    ↓                                                 │   │
-│  │  Take first 7: "5d41402"                                            │   │
-│  │                    ↓                                                 │   │
-│  │  Short URL: short.ly/5d41402                                        │   │
-│  │                                                                     │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  PROBLEM: COLLISIONS!                                                       │
-│  ───────────────────                                                        │
-│  Different URLs might produce same first 7 characters.                      │
-│                                                                             │
-│  SOLUTION: Check if code exists, if yes → append counter or rehash          │
-│                                                                             │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  def generate_short_code(long_url):                                 │   │
-│  │      for i in range(5):  # Try 5 times                              │   │
-│  │          hash = md5(long_url + str(i))                              │   │
-│  │          short_code = hash[:7]                                      │   │
-│  │          if not exists_in_db(short_code):                           │   │
-│  │              return short_code                                      │   │
-│  │      raise Exception("Could not generate unique code")              │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  PROS:                                                                      │
-│  • Same URL always gets same short code (idempotent)                       │
-│                                                                             │
-│  CONS:                                                                      │
-│  • Collision handling is complex                                            │
-│  • Additional DB lookups to check existence                                 │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Algorithm Comparison
-
-| Method | Pros | Cons | Best For |
-|--------|------|------|----------|
-| **Base62 + Counter** | Simple, no collisions, reversible | Predictable (sequential) | Most cases |
-| **Key Generation Service** | No collisions, fast | Extra service complexity | High scale |
-| **MD5 Hash** | Same URL = same code | Collision handling | Deduplication |
-
-> 💡 **Recommendation:** Use **Base62 with auto-increment ID** for simplicity, or **KGS** for high-scale systems.
+**Custom Alias Handling:** To prevent custom aliases from colliding with counter-generated codes:
+- Option A: Prefix generated codes with a reserved character (e.g., `_abc123`)
+- Option B: Store custom aliases in a separate namespace
+- Option C: Reserve a range of the counter space for auto-generated codes
 
 ---
 
-## High-Level Architecture
+### ✅ Alternative: Pre-generated Key Service (KGS)
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                      HIGH-LEVEL ARCHITECTURE                                │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│                              USERS                                          │
-│                                │                                            │
-│                                ▼                                            │
-│                         ┌──────────────┐                                   │
-│                         │     CDN      │  Cache static assets              │
-│                         └──────┬───────┘                                   │
-│                                │                                            │
-│                                ▼                                            │
-│                         ┌──────────────┐                                   │
-│                         │    DNS       │  Resolve short.ly                 │
-│                         └──────┬───────┘                                   │
-│                                │                                            │
-│                                ▼                                            │
-│                    ┌───────────────────────┐                               │
-│                    │    LOAD BALANCER      │                               │
-│                    │    (AWS ALB/NGINX)    │                               │
-│                    └───────────┬───────────┘                               │
-│                                │                                            │
-│              ┌─────────────────┼─────────────────┐                         │
-│              │                 │                 │                         │
-│              ▼                 ▼                 ▼                         │
-│       ┌────────────┐   ┌────────────┐   ┌────────────┐                    │
-│       │   API      │   │   API      │   │   API      │                    │
-│       │  Server 1  │   │  Server 2  │   │  Server 3  │                    │
-│       └─────┬──────┘   └─────┬──────┘   └─────┬──────┘                    │
-│             │                │                │                            │
-│             └────────────────┼────────────────┘                            │
-│                              │                                              │
-│              ┌───────────────┴───────────────┐                             │
-│              │                               │                             │
-│              ▼                               ▼                             │
-│       ┌────────────┐                  ┌────────────┐                      │
-│       │   REDIS    │                  │  DATABASE  │                      │
-│       │   CACHE    │                  │ (Primary)  │                      │
-│       │            │                  │            │                      │
-│       │ short_code │                  │ PostgreSQL │                      │
-│       │  → long_url│                  │     or     │                      │
-│       └────────────┘                  │  DynamoDB  │                      │
-│                                       └─────┬──────┘                      │
-│                                             │                              │
-│                                    ┌────────┴────────┐                    │
-│                                    ▼                 ▼                    │
-│                             ┌──────────┐      ┌──────────┐               │
-│                             │ Read     │      │ Read     │               │
-│                             │ Replica 1│      │ Replica 2│               │
-│                             └──────────┘      └──────────┘               │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+**How it works:**
+
+1. A background **Key Generation Service** pre-generates millions of unique short codes and stores them in a `keys` table.
+2. When a URL is shortened, the Write Service picks an unused key from the pool.
+3. Mark the key as "used" atomically.
+
+```sql
+-- Key pool table
+CREATE TABLE key_pool (
+    short_code  VARCHAR(7)  PRIMARY KEY,
+    is_used     BOOLEAN     DEFAULT FALSE
+);
+
+-- Atomic claim
+UPDATE key_pool
+SET is_used = TRUE
+WHERE short_code = (
+    SELECT short_code FROM key_pool WHERE is_used = FALSE LIMIT 1 FOR UPDATE SKIP LOCKED
+)
+RETURNING short_code;
 ```
 
-### Component Responsibilities
-
-| Component | Responsibility |
-|-----------|----------------|
-| **CDN** | Cache static content, reduce latency |
-| **Load Balancer** | Distribute traffic across servers |
-| **API Servers** | Handle URL creation and redirects |
-| **Redis Cache** | Store frequently accessed URL mappings |
-| **Database** | Persistent storage of all URL mappings |
-| **Read Replicas** | Scale read operations |
+| Pros | Cons |
+|------|------|
+| No runtime computation for code generation | Pre-generation overhead |
+| Codes can be random (not sequential) | Adds another component |
+| Easy horizontal scaling | Key pool needs periodic refilling |
+| Decouples generation from serving | Slightly more complex operations |
 
 ---
 
-## Component Deep Dive
+### Comparison Summary
 
-### API Server Flow
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        API SERVER INTERNAL FLOW                             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  CREATE SHORT URL (POST /shorten):                                          │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                                                                     │   │
-│  │  1. Receive long URL                                                │   │
-│  │          │                                                          │   │
-│  │          ▼                                                          │   │
-│  │  2. Validate URL format                                             │   │
-│  │     • Is it a valid URL?                                            │   │
-│  │     • Is it not already a short URL?                                │   │
-│  │          │                                                          │   │
-│  │          ▼                                                          │   │
-│  │  3. Check if custom alias requested                                 │   │
-│  │     ├── YES: Check if alias available                              │   │
-│  │     │         • Available → Use it                                  │   │
-│  │     │         • Taken → Return 409 Conflict                         │   │
-│  │     │                                                               │   │
-│  │     └── NO: Generate short code                                     │   │
-│  │             • Get next ID from database                             │   │
-│  │             • Convert to Base62                                     │   │
-│  │          │                                                          │   │
-│  │          ▼                                                          │   │
-│  │  4. Store in database                                               │   │
-│  │     INSERT INTO urls (short_code, long_url, ...)                    │   │
-│  │          │                                                          │   │
-│  │          ▼                                                          │   │
-│  │  5. Store in cache                                                  │   │
-│  │     SET short_code → long_url (with TTL)                            │   │
-│  │          │                                                          │   │
-│  │          ▼                                                          │   │
-│  │  6. Return response                                                 │   │
-│  │     {short_url, short_code, long_url}                               │   │
-│  │                                                                     │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Short Code Generation
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                     SHORT CODE GENERATION FLOW                              │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  APPROACH: Auto-increment ID + Base62                                       │
-│                                                                             │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                                                                     │   │
-│  │  1. Insert new URL into database                                    │   │
-│  │     └── Database returns auto-increment ID                          │   │
-│  │                                                                     │   │
-│  │  2. Convert ID to Base62                                            │   │
-│  │     ┌─────────────────────────────────────────────┐                │   │
-│  │     │  ID: 1          → Base62: "1"               │                │   │
-│  │     │  ID: 62         → Base62: "10"              │                │   │
-│  │     │  ID: 3844       → Base62: "100"             │                │   │
-│  │     │  ID: 12345678   → Base62: "dnh5S"           │                │   │
-│  │     └─────────────────────────────────────────────┘                │   │
-│  │                                                                     │   │
-│  │  3. Pad to minimum length (optional)                                │   │
-│  │     └── "1" → "0000001" (7 characters)                              │   │
-│  │                                                                     │   │
-│  │  4. Update database with short_code                                 │   │
-│  │     UPDATE urls SET short_code = 'dnh5S' WHERE id = 12345678;      │   │
-│  │                                                                     │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  WHY THIS WORKS:                                                            │
-│  • Auto-increment guarantees unique IDs                                     │
-│  • Base62 conversion is deterministic                                       │
-│  • No collision possible                                                    │
-│  • Short codes are relatively random-looking                                │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+| Criteria | Hash + Base62 | Counter + Base62 | Pre-generated KGS |
+|----------|:------------:|:----------------:|:-----------------:|
+| Uniqueness guaranteed? | ❌ (need retry) | ✅ | ✅ |
+| Predictable codes? | ❌ | ⚠️ Yes (sequential) | ❌ |
+| Needs coordination? | ❌ | ✅ (centralized counter) | ❌ (at read time) |
+| Complexity | Medium | Low | Medium |
+| Speed | Fast (+ rare retry) | Very fast | Very fast |
+| **Recommended?** | ✅ Good | ✅ Great | ✅ Great |
 
 ---
 
-## Handling Redirects
+## Database Design & Indexing
 
-### Redirect Flow (GET /{short_code})
+### Why Indexing Matters
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           REDIRECT FLOW                                     │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  User clicks: https://short.ly/abc123                                       │
-│                        │                                                    │
-│                        ▼                                                    │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                                                                     │   │
-│  │  STEP 1: Check Cache First                                          │   │
-│  │  ───────────────────────────                                        │   │
-│  │                                                                     │   │
-│  │          API Server                    Redis Cache                  │   │
-│  │              │                              │                       │   │
-│  │              │  GET "url:abc123"            │                       │   │
-│  │              ├─────────────────────────────►│                       │   │
-│  │              │                              │                       │   │
-│  │              │◄─────────────────────────────┤                       │   │
-│  │              │  CACHE HIT:                  │                       │   │
-│  │              │  "https://www.example.com"   │                       │   │
-│  │              │                              │                       │   │
-│  │              │  (or CACHE MISS: null)       │                       │   │
-│  │                                                                     │   │
-│  │  IF CACHE HIT:  Skip to Step 3 (fast path!) 🚀                      │   │
-│  │  IF CACHE MISS: Continue to Step 2                                  │   │
-│  │                                                                     │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                        │                                                    │
-│                        ▼                                                    │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                                                                     │   │
-│  │  STEP 2: Query Database (only if cache miss)                        │   │
-│  │  ───────────────────────────────────────────                        │   │
-│  │                                                                     │   │
-│  │          API Server                    Database                     │   │
-│  │              │                              │                       │   │
-│  │              │  SELECT long_url             │                       │   │
-│  │              │  FROM urls                   │                       │   │
-│  │              │  WHERE short_code = 'abc123' │                       │   │
-│  │              ├─────────────────────────────►│                       │   │
-│  │              │                              │                       │   │
-│  │              │◄─────────────────────────────┤                       │   │
-│  │              │  long_url: "https://..."     │                       │   │
-│  │              │                              │                       │   │
-│  │                                                                     │   │
-│  │  IF FOUND:     Populate cache, continue to Step 3                   │   │
-│  │  IF NOT FOUND: Return 404 Not Found                                 │   │
-│  │  IF EXPIRED:   Return 410 Gone                                      │   │
-│  │                                                                     │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                        │                                                    │
-│                        ▼                                                    │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                                                                     │   │
-│  │  STEP 3: Return HTTP Redirect                                       │   │
-│  │  ────────────────────────────                                       │   │
-│  │                                                                     │   │
-│  │  HTTP/1.1 302 Found                                                 │   │
-│  │  Location: https://www.example.com/very/long/url                    │   │
-│  │  Cache-Control: private, max-age=0                                  │   │
-│  │                                                                     │   │
-│  │  (Browser automatically redirects user)                             │   │
-│  │                                                                     │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                        │                                                    │
-│                        ▼                                                    │
-│  User lands on: https://www.example.com/very/long/url                       │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+Without an index on `short_code`, every redirect requires a **full table scan** — O(n) for 1B rows. With a B-tree index (default for primary key), lookups are O(log n) ≈ 30 comparisons for 1B rows.
 
-### HTTP Redirect Codes: 301 vs 302
+### Database Choice
+
+Given our workload:
+- **~1 write/sec** (very low)
+- **~12K reads/sec** (high, but mitigated by cache)
+- **500 GB storage** (fits on one machine)
+
+Almost any RDBMS works. **PostgreSQL** is the recommended default:
+
+| Database | Fit |
+|----------|-----|
+| **PostgreSQL** | ✅ Excellent. ACID, replication, mature |
+| **MySQL** | ✅ Good. Similar to Postgres |
+| **DynamoDB** | ✅ Good. Key-value access pattern fits perfectly |
+| **Cassandra** | ⚠️ Overkill. Better for massive write throughput |
+| **MongoDB** | ⚠️ Works, but no strong advantage here |
+
+### Database Replication
+
+For high availability:
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                       301 vs 302 REDIRECTS                                  │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  301 MOVED PERMANENTLY                                                      │
-│  ─────────────────────                                                      │
-│  • Browser CACHES the redirect                                              │
-│  • Future requests go DIRECTLY to long URL                                  │
-│  • Your server doesn't see the request again                                │
-│                                                                             │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  Request 1: User → short.ly/abc → 301 → example.com                 │   │
-│  │  Request 2: User → example.com (skips short.ly!)                    │   │
-│  │                                                                     │   │
-│  │  ✓ Faster for users (cached)                                        │   │
-│  │  ✗ Can't track clicks after first visit                            │   │
-│  │  ✗ Can't change destination URL                                     │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  302 FOUND (TEMPORARY)                                                      │
-│  ─────────────────────                                                      │
-│  • Browser does NOT cache the redirect                                      │
-│  • Every request goes through your server                                   │
-│                                                                             │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  Request 1: User → short.ly/abc → 302 → example.com                 │   │
-│  │  Request 2: User → short.ly/abc → 302 → example.com                 │   │
-│  │                                                                     │   │
-│  │  ✓ Every click is tracked                                           │   │
-│  │  ✓ Can change destination anytime                                   │   │
-│  │  ✗ Slightly slower (extra hop)                                      │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  RECOMMENDATION: Use 302 for URL shorteners                                 │
-│  • Analytics (click tracking) is usually important                          │
-│  • Flexibility to change destination                                        │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+                  ┌──────────────┐
+    Writes ──────▶│   Primary    │
+                  │   (Leader)   │
+                  └──────┬───────┘
+                         │ Replication
+              ┌──────────┼──────────┐
+              ▼          ▼          ▼
+        ┌──────────┐ ┌──────────┐ ┌──────────┐
+        │ Replica 1│ │ Replica 2│ │ Replica 3│
+        │  (Read)  │ │  (Read)  │ │  (Read)  │
+        └──────────┘ └──────────┘ └──────────┘
 ```
+
+- **Single leader** receives all writes
+- **Read replicas** handle redirect lookups (though most reads hit cache)
+- Asynchronous replication is fine since availability > consistency
 
 ---
 
 ## Caching Strategy
 
-### What to Cache and Where
+Caching is **the single most impactful optimization** for a URL shortener due to the read-heavy workload.
+
+### Cache Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         CACHING ARCHITECTURE                                │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│                              CACHING LAYERS                                 │
-│                                                                             │
-│  ┌────────────────────────────────────────────────────────────────────┐    │
-│  │  LAYER 1: CDN (Edge Cache)                                         │    │
-│  │  • Not typically used for dynamic redirects                        │    │
-│  │  • Could cache 301 redirects                                       │    │
-│  └────────────────────────────────────────────────────────────────────┘    │
-│                                   │                                         │
-│                                   ▼                                         │
-│  ┌────────────────────────────────────────────────────────────────────┐    │
-│  │  LAYER 2: Application Cache (Redis)                                │    │
-│  │                                                                    │    │
-│  │  KEY: "url:abc123"                                                 │    │
-│  │  VALUE: "https://www.example.com/long/url"                         │    │
-│  │  TTL: 24 hours                                                     │    │
-│  │                                                                    │    │
-│  │  HIT RATIO: 80-90% for popular links                              │    │
-│  └────────────────────────────────────────────────────────────────────┘    │
-│                                   │                                         │
-│                                   ▼                                         │
-│  ┌────────────────────────────────────────────────────────────────────┐    │
-│  │  LAYER 3: Database                                                 │    │
-│  │  • Source of truth                                                 │    │
-│  │  • Only queried on cache miss                                      │    │
-│  └────────────────────────────────────────────────────────────────────┘    │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+Read Request → Check Redis Cache → HIT?
+                                    ├─ YES → Return long URL
+                                    └─ NO  → Query DB → Store in Redis → Return
 ```
 
-### Cache Population Strategies
+### Cache Design Decisions
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                       CACHE STRATEGIES                                      │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  1. CACHE-ASIDE (Lazy Loading) - RECOMMENDED                               │
-│  ───────────────────────────────────────────                               │
-│                                                                             │
-│  Read Path:                                                                 │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  1. Check cache for key                                             │   │
-│  │  2. If HIT → Return cached value                                    │   │
-│  │  3. If MISS → Query database                                        │   │
-│  │  4. Store result in cache                                           │   │
-│  │  5. Return result                                                   │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  Write Path:                                                                │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  1. Write to database                                               │   │
-│  │  2. Invalidate or update cache                                      │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  2. WRITE-THROUGH                                                           │
-│  ─────────────────                                                          │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  1. Write to cache AND database simultaneously                      │   │
-│  │  2. Cache is always up-to-date                                      │   │
-│  │  ✓ Read always hits cache                                           │   │
-│  │  ✗ Write latency is higher                                          │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  FOR URL SHORTENER:                                                         │
-│  • Use Cache-Aside for reads (most operations)                             │
-│  • On URL creation, write to both DB and cache                             │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| **Cache technology** | Redis | Sub-ms latency, supports TTL natively |
+| **Eviction policy** | LRU (Least Recently Used) | Hot URLs stay cached, cold URLs are evicted |
+| **Cache-aside pattern** | Yes | Application checks cache, falls back to DB |
+| **TTL** | Match URL expiration (or 24h default) | Prevent serving stale/expired URLs |
+| **Write strategy** | Write-around | Don't cache on creation (most URLs aren't accessed immediately) |
 
-### Redis Cache Implementation
+### Cache Performance Impact
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                      REDIS CACHE COMMANDS                                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  STORE URL MAPPING:                                                         │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                                                                     │   │
-│  │  # Set with 24-hour expiration                                      │   │
-│  │  SET url:abc123 "https://www.example.com/long" EX 86400             │   │
-│  │                                                                     │   │
-│  │  # Or using SETEX                                                   │   │
-│  │  SETEX url:abc123 86400 "https://www.example.com/long"              │   │
-│  │                                                                     │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  GET URL MAPPING:                                                           │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                                                                     │   │
-│  │  GET url:abc123                                                     │   │
-│  │  # Returns: "https://www.example.com/long"                          │   │
-│  │  # Or: (nil) if not found                                           │   │
-│  │                                                                     │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  DELETE (on URL deletion):                                                  │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                                                                     │   │
-│  │  DEL url:abc123                                                     │   │
-│  │                                                                     │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  CACHE SIZE ESTIMATION:                                                     │
-│  ───────────────────────                                                    │
-│  • Key: "url:" + 7 chars = ~11 bytes                                       │
-│  • Value: Average URL = 500 bytes                                           │
-│  • Per entry: ~511 bytes                                                    │
-│                                                                             │
-│  • 20% of 30 billion URLs = 6 billion hot URLs                              │
-│  • Cache size: 6B × 511 bytes = 3 TB                                        │
-│  • Use Redis Cluster with multiple nodes                                    │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+| Scenario | Latency | DB Load |
+|----------|---------|---------|
+| No cache | ~5–10ms (DB query) | 12K qps |
+| 80% cache hit rate | ~1ms avg | 2.4K qps |
+| 95% cache hit rate | ~0.5ms avg | 600 qps |
+| 99% cache hit rate | ~0.2ms avg | 120 qps |
+
+With a **Zipfian distribution** (few URLs get most traffic), a 95%+ cache hit rate is realistic.
+
+### Cache Invalidation
+
+- **Expiration**: Set Redis TTL equal to (or shorter than) the URL's `expires_at` date.
+- **Deletion**: When a URL is deleted, also remove it from cache.
+- **Update**: If we ever support URL updates, invalidate the cache entry.
+
+```python
+# Pseudocode for cache-aside read
+def redirect(short_code):
+    # 1. Check cache
+    long_url = redis.get(short_code)
+    if long_url:
+        return redirect_302(long_url)
+
+    # 2. Cache miss — check DB
+    row = db.query("SELECT original_url, expires_at FROM urls WHERE short_code = ?", short_code)
+    if not row:
+        return 404
+
+    # 3. Check expiry
+    if row.expires_at and row.expires_at < now():
+        return 410  # Gone
+
+    # 4. Populate cache with appropriate TTL
+    ttl = min(row.expires_at - now(), MAX_CACHE_TTL) if row.expires_at else MAX_CACHE_TTL
+    redis.setex(short_code, ttl, row.original_url)
+
+    return redirect_302(row.original_url)
 ```
 
 ---
 
-## Database Scaling
+## Scaling the System
 
-### Read Replicas
+### Service Separation
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         READ REPLICA SETUP                                  │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  For a 100:1 read-to-write ratio, we need to scale reads!                   │
-│                                                                             │
-│                        ┌──────────────┐                                    │
-│                        │   Primary    │                                    │
-│                        │   (Writes)   │                                    │
-│                        └──────┬───────┘                                    │
-│                               │                                             │
-│                               │ Replication                                 │
-│                               │                                             │
-│              ┌────────────────┼────────────────┐                           │
-│              │                │                │                           │
-│              ▼                ▼                ▼                           │
-│       ┌──────────┐     ┌──────────┐     ┌──────────┐                      │
-│       │ Replica  │     │ Replica  │     │ Replica  │                      │
-│       │    1     │     │    2     │     │    3     │                      │
-│       │ (Reads)  │     │ (Reads)  │     │ (Reads)  │                      │
-│       └──────────┘     └──────────┘     └──────────┘                      │
-│                                                                             │
-│  APPLICATION LOGIC:                                                         │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                                                                     │   │
-│  │  def get_long_url(short_code):                                      │   │
-│  │      # Read from replica (or cache)                                 │   │
-│  │      return read_replica.query("SELECT long_url ...")               │   │
-│  │                                                                     │   │
-│  │  def create_short_url(long_url):                                    │   │
-│  │      # Write to primary                                             │   │
-│  │      return primary.execute("INSERT INTO urls ...")                 │   │
-│  │                                                                     │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Database Sharding
+Since reads dominate writes by 1000:1, separate them into independent services:
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         DATABASE SHARDING                                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  When single database can't handle the load, SHARD the data.                │
-│                                                                             │
-│  SHARDING STRATEGY: Hash-based on short_code                                │
-│                                                                             │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                                                                     │   │
-│  │  shard_id = hash(short_code) % num_shards                           │   │
-│  │                                                                     │   │
-│  │  Example with 4 shards:                                             │   │
-│  │  ┌──────────────────────────────────────────────────────────────┐  │   │
-│  │  │  short_code │  hash(code) % 4  │  Shard                      │  │   │
-│  │  ├──────────────────────────────────────────────────────────────┤  │   │
-│  │  │   abc123    │        2         │  Shard 2                    │  │   │
-│  │  │   xyz789    │        0         │  Shard 0                    │  │   │
-│  │  │   def456    │        3         │  Shard 3                    │  │   │
-│  │  │   ghi012    │        1         │  Shard 1                    │  │   │
-│  │  └──────────────────────────────────────────────────────────────┘  │   │
-│  │                                                                     │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  SHARDING ARCHITECTURE:                                                     │
-│                                                                             │
-│                        ┌──────────────┐                                    │
-│                        │   Router/    │                                    │
-│                        │   Proxy      │                                    │
-│                        └──────┬───────┘                                    │
-│                               │                                             │
-│              ┌────────────────┼────────────────┐                           │
-│              │                │                │                           │
-│              ▼                ▼                ▼                           │
-│       ┌──────────┐     ┌──────────┐     ┌──────────┐                      │
-│       │ Shard 0  │     │ Shard 1  │     │ Shard 2  │                      │
-│       │ a-h      │     │ i-p      │     │ q-z      │                      │
-│       └──────────┘     └──────────┘     └──────────┘                      │
-│                                                                             │
-│  CONSIDERATIONS:                                                            │
-│  • Adding shards requires data rebalancing (complex)                        │
-│  • Use consistent hashing for easier scaling                                │
-│  • Each shard can have its own replicas                                     │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+                          ┌────────────────────┐
+                          │    API Gateway /    │
+              ┌──────────▶│   Load Balancer     │◀──────────┐
+              │           └────────┬───────────┘           │
+              │                    │                        │
+       POST /urls          GET /{short_code}         Other routes
+              │                    │                        │
+              ▼                    ▼                        ▼
+    ┌──────────────┐    ┌──────────────┐          ┌──────────────┐
+    │Write Service │    │ Read Service  │          │ Other APIs   │
+    │  (2 nodes)   │    │ (20+ nodes)  │          │              │
+    └──────┬───────┘    └──────┬───────┘          └──────────────┘
+           │                   │
+           ▼                   ▼
+    ┌──────────────┐    ┌──────────────┐
+    │Global Counter│    │  Redis Cache  │
+    │   (Redis)    │    │  (Cluster)    │
+    └──────────────┘    └──────────────┘
+           │                   │
+           ▼                   ▼
+    ┌──────────────────────────────────┐
+    │           PostgreSQL              │
+    │     (Primary + Read Replicas)     │
+    └──────────────────────────────────┘
 ```
+
+- **Read Service**: Scales to **20+ instances** to handle peak redirect load
+- **Write Service**: Only needs **2–3 instances** (low write volume)
+- Each scales independently based on demand
+
+### Scaling the Counter (Critical for Writes)
+
+When we horizontally scale the Write Service, the counter must remain globally unique.
+
+**Solution: Centralized Redis Counter with Batching**
+
+```
+┌───────────────┐      GET batch       ┌──────────────┐
+│Write Service 1│─────(1000 IDs)──────▶│              │
+│  Local: 1-1000│                      │ Redis Counter│
+└───────────────┘                      │  INCRBY 1000 │
+                                       │              │
+┌───────────────┐      GET batch       │  Current:    │
+│Write Service 2│─────(1000 IDs)──────▶│   50000      │
+│Local:1001-2000│                      │              │
+└───────────────┘                      └──────────────┘
+```
+
+**How counter batching works:**
+
+1. Write Service instance requests a **batch of 1000** counter values from Redis.
+2. Redis atomically increments by 1000 (`INCRBY counter 1000`) and returns the batch start.
+3. The Write Service uses these 1000 values **locally** without contacting Redis.
+4. When the batch is exhausted, it requests a new one.
+
+**Benefits:**
+- Reduces Redis calls by **1000×**
+- If Redis handles 100K ops/sec and each operation allocates 1000 IDs, effective throughput = **100M IDs/sec**
+- Local counter assignment is instant (no network hop)
+
+**What if a Write Service crashes mid-batch?** Some counter values are "lost" — but since we only need **uniqueness, not continuity**, this is perfectly acceptable.
+
+### Horizontal Scaling Summary
+
+| Component | Scaling Strategy | Nodes |
+|-----------|-----------------|-------|
+| Read Service | Horizontal (stateless) | 20+ |
+| Write Service | Horizontal (stateless + batching) | 2–3 |
+| Redis Cache | Redis Cluster (sharded) | 3–6 |
+| Redis Counter | Single instance + Sentinel | 1 + 2 replicas |
+| PostgreSQL | Primary + read replicas | 1 + 2–3 replicas |
 
 ---
 
-## Analytics System
+## Redirect Flow & HTTP Status Codes
 
-### Click Tracking Architecture
+### 301 vs 302 — The Important Choice
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                      ANALYTICS ARCHITECTURE                                 │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  Don't block redirect for analytics! Use async processing.                  │
-│                                                                             │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                                                                     │   │
-│  │   User clicks short URL                                             │   │
-│  │          │                                                          │   │
-│  │          ▼                                                          │   │
-│  │   ┌────────────────┐                                               │   │
-│  │   │   API Server   │                                               │   │
-│  │   │                │                                               │   │
-│  │   │  1. Lookup URL │                                               │   │
-│  │   │  2. Send 302   │───────────────────────► User redirected      │   │
-│  │   │  3. Log event  │                          (fast response!)     │   │
-│  │   │     (async)    │                                               │   │
-│  │   └───────┬────────┘                                               │   │
-│  │           │                                                         │   │
-│  │           │ Publish event                                           │   │
-│  │           ▼                                                         │   │
-│  │   ┌────────────────┐                                               │   │
-│  │   │  Message Queue │  (Kafka / SQS / RabbitMQ)                     │   │
-│  │   │                │                                               │   │
-│  │   │  {             │                                               │   │
-│  │   │   "short_code" │                                               │   │
-│  │   │   "timestamp"  │                                               │   │
-│  │   │   "user_agent" │                                               │   │
-│  │   │   "ip_address" │                                               │   │
-│  │   │   "referer"    │                                               │   │
-│  │   │  }             │                                               │   │
-│  │   └───────┬────────┘                                               │   │
-│  │           │                                                         │   │
-│  │           │ Consume events                                          │   │
-│  │           ▼                                                         │   │
-│  │   ┌────────────────┐     ┌────────────────┐                        │   │
-│  │   │   Analytics    │────►│  Time-Series   │                        │   │
-│  │   │   Worker       │     │   Database     │                        │   │
-│  │   │                │     │ (ClickHouse/   │                        │   │
-│  │   │  • Parse UA    │     │  TimescaleDB)  │                        │   │
-│  │   │  • GeoIP lookup│     │                │                        │   │
-│  │   │  • Aggregate   │     │  • Clicks/hour │                        │   │
-│  │   └────────────────┘     │  • By country  │                        │   │
-│  │                          │  • By device   │                        │   │
-│  │                          └────────────────┘                        │   │
-│  │                                                                     │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+| Aspect | 301 Permanent | 302 Found (Temporary) |
+|--------|:------------:|:---------------------:|
+| Browser caches? | ✅ Yes | ❌ No |
+| Subsequent requests hit our server? | ❌ No | ✅ Yes |
+| Can update/expire links? | ❌ Difficult | ✅ Easy |
+| Can track clicks? | ❌ No | ✅ Yes |
+| Performance for user | ✅ Faster (cached) | ⚠️ Slightly slower |
+
+### Recommendation: Use 302
+
+```http
+HTTP/1.1 302 Found
+Location: https://www.original-long-url.com/very/long/path
+Cache-Control: no-store
 ```
 
-### Analytics Data Model
+**Why 302?**
+- Gives us **full control** over the redirect process
+- Allows **updating or expiring** links at any time
+- Enables **click tracking** (even if out of scope now, keeps the door open)
+- Prevents browsers from caching stale redirects
 
+### Other HTTP Status Codes in the System
+
+| Code | When Used |
+|------|-----------|
+| 201 Created | URL successfully shortened |
+| 302 Found | Redirect to original URL |
+| 400 Bad Request | Invalid URL format or params |
+| 404 Not Found | Short code doesn't exist |
+| 409 Conflict | Custom alias already taken |
+| 410 Gone | URL has expired |
+| 429 Too Many Requests | Rate limit exceeded |
+
+---
+
+## URL Expiry & Cleanup
+
+### Expiration Check (Real-time)
+
+On every redirect, compare `expires_at` to current time:
+
+```python
+if row.expires_at and row.expires_at < datetime.utcnow():
+    redis.delete(short_code)  # Remove stale cache entry
+    return Response(status=410)  # Gone
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        ANALYTICS SCHEMA                                     │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  TABLE: click_events                                                        │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  Column          │  Type        │  Description                      │   │
-│  ├─────────────────────────────────────────────────────────────────────┤   │
-│  │  id              │  BIGINT      │  Primary key                      │   │
-│  │  short_code      │  VARCHAR(10) │  The short code clicked           │   │
-│  │  clicked_at      │  TIMESTAMP   │  When the click happened          │   │
-│  │  ip_address      │  INET        │  User's IP (for geo)              │   │
-│  │  user_agent      │  TEXT        │  Browser/device info              │   │
-│  │  referer         │  TEXT        │  Where user came from             │   │
-│  │  country         │  VARCHAR(2)  │  Derived from IP                  │   │
-│  │  device_type     │  VARCHAR(20) │  mobile/desktop/tablet            │   │
-│  │  browser         │  VARCHAR(50) │  Chrome/Safari/Firefox            │   │
-│  │  os              │  VARCHAR(50) │  Windows/macOS/iOS/Android        │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  TABLE: url_stats (Pre-aggregated for fast queries)                        │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  short_code      │  VARCHAR(10) │  Primary key                      │   │
-│  │  total_clicks    │  BIGINT      │  All-time clicks                  │   │
-│  │  unique_visitors │  BIGINT      │  Unique IPs                       │   │
-│  │  last_clicked    │  TIMESTAMP   │  Most recent click                │   │
-│  │  clicks_today    │  INT         │  Today's count                    │   │
-│  │  clicks_week     │  INT         │  This week's count                │   │
-│  │  clicks_month    │  INT         │  This month's count               │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  QUERIES:                                                                   │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                                                                     │   │
-│  │  -- Total clicks for a URL                                          │   │
-│  │  SELECT total_clicks FROM url_stats WHERE short_code = 'abc123';    │   │
-│  │                                                                     │   │
-│  │  -- Clicks by country                                               │   │
-│  │  SELECT country, COUNT(*) as clicks                                 │   │
-│  │  FROM click_events                                                  │   │
-│  │  WHERE short_code = 'abc123'                                        │   │
-│  │  GROUP BY country                                                   │   │
-│  │  ORDER BY clicks DESC;                                              │   │
-│  │                                                                     │   │
-│  │  -- Clicks over time                                                │   │
-│  │  SELECT DATE(clicked_at) as date, COUNT(*) as clicks                │   │
-│  │  FROM click_events                                                  │   │
-│  │  WHERE short_code = 'abc123'                                        │   │
-│  │  GROUP BY DATE(clicked_at);                                         │   │
-│  │                                                                     │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+
+### Background Cleanup Job
+
+Run a periodic CRON job to delete expired URLs:
+
+```sql
+-- Run every hour
+DELETE FROM urls
+WHERE expires_at IS NOT NULL
+  AND expires_at < NOW()
+LIMIT 10000;  -- Batch to avoid long-running transactions
+```
+
+### Cache TTL Alignment
+
+Set the Redis TTL to match (or be shorter than) the URL's expiration:
+
+```python
+if row.expires_at:
+    ttl_seconds = (row.expires_at - datetime.utcnow()).total_seconds()
+    ttl_seconds = min(ttl_seconds, 86400)  # Cap at 24 hours
+    redis.setex(short_code, int(ttl_seconds), row.original_url)
+else:
+    redis.setex(short_code, 86400, row.original_url)  # Default 24h TTL
 ```
 
 ---
 
 ## Security Considerations
 
+### 1. Predictable Short Codes (Counter-based)
+
+**Risk**: Sequential counter values let attackers enumerate all URLs.
+
+**Mitigations:**
+- Add a layer of indirection: hash or shuffle the sequential ID before Base62 encoding
+- Use a **block cipher** (e.g., Format-Preserving Encryption) on the counter value
+- Use a larger ID space to make brute-force impractical
+- Implement **rate limiting** on redirect endpoints
+
+### 2. Malicious URL Injection
+
+**Risk**: Users shorten URLs that lead to phishing, malware, or spam.
+
+**Mitigations:**
+- Validate URL format on creation
+- Check against **URL blacklists** (Google Safe Browsing API)
+- Scan with anti-malware services
+- Show a preview/interstitial page before redirecting (optional)
+
+### 3. Abuse / DDoS
+
+**Mitigations:**
+- **Rate limiting** on URL creation (e.g., 100 URLs/hour per IP)
+- **CAPTCHA** for anonymous users
+- **API keys** for programmatic access
+- **WAF** (Web Application Firewall) at the edge
+
+### 4. Open Redirect Vulnerability
+
+**Risk**: Short URLs used to disguise malicious destinations in phishing attacks.
+
+**Mitigations:**
+- Log all URL creations with source IP
+- Flag frequently reported shortened URLs
+- Allow reporting mechanism for suspicious links
+
+---
+
+## Multi-Region Deployment
+
+For a globally available service with low latency:
+
+### Counter Range Allocation
+
+Allocate **disjoint counter ranges** per region to avoid cross-region coordination:
+
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                       SECURITY MEASURES                                     │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  1. MALICIOUS URL DETECTION                                                 │
-│  ───────────────────────────                                                │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                                                                     │   │
-│  │  Before creating short URL:                                         │   │
-│  │                                                                     │   │
-│  │  1. Check against known malware/phishing databases                  │   │
-│  │     • Google Safe Browsing API                                      │   │
-│  │     • PhishTank                                                     │   │
-│  │     • VirusTotal                                                    │   │
-│  │                                                                     │   │
-│  │  2. Block suspicious patterns:                                      │   │
-│  │     • data: URLs                                                    │   │
-│  │     • javascript: URLs                                              │   │
-│  │     • URLs with excessive special characters                        │   │
-│  │                                                                     │   │
-│  │  3. Rate limit URL creation per IP                                  │   │
-│  │                                                                     │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  2. RATE LIMITING                                                           │
-│  ─────────────────                                                          │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                                                                     │   │
-│  │  • URL Creation: 100 requests/hour per IP                          │   │
-│  │  • Redirects: 1000 requests/minute per IP                          │   │
-│  │  • Use token bucket or sliding window algorithm                    │   │
-│  │                                                                     │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  3. SPAM PREVENTION                                                         │
-│  ───────────────────                                                        │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                                                                     │   │
-│  │  • CAPTCHA for URL creation (optional)                              │   │
-│  │  • Require user authentication for bulk creation                    │   │
-│  │  • Monitor for abuse patterns                                       │   │
-│  │                                                                     │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  4. PREVIEW PAGE (Optional)                                                 │
-│  ──────────────────────────                                                 │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                                                                     │   │
-│  │  Instead of direct redirect, show preview:                          │   │
-│  │                                                                     │   │
-│  │  ┌───────────────────────────────────────────────────────────────┐ │   │
-│  │  │                                                               │ │   │
-│  │  │   You are being redirected to:                                │ │   │
-│  │  │   https://www.example.com/some/path                           │ │   │
-│  │  │                                                               │ │   │
-│  │  │   [Continue]  [Cancel]                                        │ │   │
-│  │  │                                                               │ │   │
-│  │  │   ⚠️ Warning: We cannot guarantee this link is safe           │ │   │
-│  │  │                                                               │ │   │
-│  │  └───────────────────────────────────────────────────────────────┘ │   │
-│  │                                                                     │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  5. HTTPS ONLY                                                              │
-│  ─────────────                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                                                                     │   │
-│  │  • Force HTTPS for all requests                                     │   │
-│  │  • Use HSTS headers                                                 │   │
-│  │  • Valid SSL certificate                                            │   │
-│  │                                                                     │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+Region US-East:  Counter range 0         – 1,000,000,000
+Region EU-West:  Counter range 1,000,000,001 – 2,000,000,000
+Region AP-South: Counter range 2,000,000,001 – 3,000,000,000
+```
+
+Each region has its **own Redis counter instance** starting from its range base.
+
+### Multi-Region Architecture
+
+```
+                    ┌─────────────────────────┐
+                    │      Global DNS /        │
+                    │   GeoDNS / Anycast       │
+                    └────────┬────────────────┘
+                             │
+            ┌────────────────┼────────────────┐
+            ▼                ▼                ▼
+     ┌──────────┐    ┌──────────┐     ┌──────────┐
+     │ US-East  │    │ EU-West  │     │ AP-South │
+     │ Region   │    │ Region   │     │ Region   │
+     │          │    │          │     │          │
+     │ Read Svc │    │ Read Svc │     │ Read Svc │
+     │ Write Svc│    │ Write Svc│     │ Write Svc│
+     │ Redis    │    │ Redis    │     │ Redis    │
+     │ DB (R/W) │    │ DB (R/W) │     │ DB (R/W) │
+     └────┬─────┘    └────┬─────┘     └────┬─────┘
+          │               │                │
+          └───────────────┼────────────────┘
+                          │
+                  Cross-Region DB
+                  Replication (Async)
+```
+
+- **Writes** go to the local region's Redis and DB
+- **Reads** are served globally via distributed caches
+- **Cross-region replication** ensures all regions can serve any short code
+- The DB `UNIQUE` constraint on `short_code` is the **ultimate safety net** against duplicates
+
+---
+
+## Final Architecture
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                           CLIENTS                                    │
+│                  (Web Browsers, Mobile Apps)                         │
+└─────────────────────────┬────────────────────────────────────────────┘
+                          │
+                          ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                    CDN / Edge Network                                │
+│              (Cache 301 redirects at edge)                           │
+└─────────────────────────┬────────────────────────────────────────────┘
+                          │
+                          ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                 API Gateway / Load Balancer                          │
+│          (Route POST → Write Service, GET → Read Service)            │
+└──────────┬──────────────────────────────────┬────────────────────────┘
+           │                                  │
+           ▼                                  ▼
+┌─────────────────────┐            ┌─────────────────────┐
+│   Write Service     │            │   Read Service       │
+│   (2–3 instances)   │            │   (20+ instances)    │
+│                     │            │                      │
+│ 1. Validate URL     │            │ 1. Check Redis Cache │
+│ 2. Get counter batch│            │ 2. Fallback to DB    │
+│ 3. Base62 encode    │            │ 3. Return 302        │
+│ 4. Store in DB      │            │                      │
+└────────┬────────────┘            └──────┬───────────────┘
+         │                                │
+         ▼                                ▼
+┌──────────────────┐            ┌──────────────────┐
+│  Global Counter  │            │   Redis Cache     │
+│  (Redis)         │            │   (Cluster)       │
+│  INCRBY + batch  │            │   LRU eviction    │
+└────────┬─────────┘            └──────┬───────────┘
+         │                             │
+         ▼                             ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                        PostgreSQL                                    │
+│              Primary (Writes) + Read Replicas (Reads)                │
+│                                                                      │
+│  urls: short_code | original_url | created_at | expires_at | ...     │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Complete System Flow
+## What is Expected at Each Level
 
-### End-to-End URL Shortening
+### Mid-Level
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                      COMPLETE SHORTENING FLOW                               │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  User                  Load          API          Redis       Database     │
-│    │                  Balancer      Server        Cache                    │
-│    │                     │            │             │            │          │
-│    │  POST /shorten      │            │             │            │          │
-│    │  {long_url: "..."}  │            │             │            │          │
-│    ├────────────────────►│            │             │            │          │
-│    │                     │            │             │            │          │
-│    │                     │  Forward   │             │            │          │
-│    │                     ├───────────►│             │            │          │
-│    │                     │            │             │            │          │
-│    │                     │            │ Validate    │            │          │
-│    │                     │            │ URL format  │            │          │
-│    │                     │            │             │            │          │
-│    │                     │            │ Insert URL  │            │          │
-│    │                     │            ├─────────────┼───────────►│          │
-│    │                     │            │             │            │          │
-│    │                     │            │◄────────────┼────────────┤          │
-│    │                     │            │ Returns     │  ID: 123   │          │
-│    │                     │            │             │            │          │
-│    │                     │            │ Base62(123) │            │          │
-│    │                     │            │ = "1Z"      │            │          │
-│    │                     │            │             │            │          │
-│    │                     │            │ Cache it    │            │          │
-│    │                     │            ├────────────►│            │          │
-│    │                     │            │             │            │          │
-│    │                     │◄───────────┤             │            │          │
-│    │◄────────────────────┤            │             │            │          │
-│    │                     │            │             │            │          │
-│    │  Response:          │            │             │            │          │
-│    │  {short_url:        │            │             │            │          │
-│    │   "short.ly/1Z"}    │            │             │            │          │
-│    │                     │            │             │            │          │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+- Produce a working **high-level design** for shortening + redirection
+- Understand basic flow: user submits URL → generate short code → store → redirect
+- Recognize **uniqueness** requirement, propose at least one approach (hashing or counter)
+- Understand why **302 redirect** is preferred
+- Discuss **basic database indexing**
+- With prompting, recognize that **caching** helps given read-heavy workload
 
-### End-to-End Redirect
+### Senior
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        COMPLETE REDIRECT FLOW                               │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  User                  Load          API          Redis       Database     │
-│    │                  Balancer      Server        Cache                    │
-│    │                     │            │             │            │          │
-│    │  GET /1Z            │            │             │            │          │
-│    ├────────────────────►│            │             │            │          │
-│    │                     │            │             │            │          │
-│    │                     │  Forward   │             │            │          │
-│    │                     ├───────────►│             │            │          │
-│    │                     │            │             │            │          │
-│    │                     │            │ Check cache │            │          │
-│    │                     │            ├────────────►│            │          │
-│    │                     │            │             │            │          │
-│    │                     │            │◄────────────┤            │          │
-│    │                     │            │ CACHE HIT!  │            │          │
-│    │                     │            │ long_url    │            │          │
-│    │                     │            │             │            │          │
-│    │                     │            │ (If miss,   │            │          │
-│    │                     │            │  query DB,  │            │          │
-│    │                     │            │  update     │            │          │
-│    │                     │            │  cache)     │            │          │
-│    │                     │            │             │            │          │
-│    │                     │            │ Log click   │            │          │
-│    │                     │            │ (async)     │            │          │
-│    │                     │            ├──────────── ─ ─►  Kafka  │          │
-│    │                     │            │             │            │          │
-│    │                     │◄───────────┤             │            │          │
-│    │◄────────────────────┤            │             │            │          │
-│    │                     │            │             │            │          │
-│    │  302 Found          │            │             │            │          │
-│    │  Location: long_url │            │             │            │          │
-│    │                     │            │             │            │          │
-│    │                     │            │             │            │          │
-│    ├────────────────────────────────────────────────────────────────►       │
-│    │                                                                        │
-│    │  User redirected to long URL!                                          │
-│    │                                                                        │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+- **Drive the conversation** proactively and identify key challenges
+- Articulate **tradeoffs** between hashing (collision handling) vs counter-based (coordination overhead)
+- Discuss **caching strategies** in detail, including invalidation for expired URLs
+- Propose a reasonable **database choice** and justify it
+- Recognize that **separating read/write services** makes sense
+- Understand how to **scale the counter** across write instances via Redis
+
+### Staff+
+
+- See past the "textbook" solution and discuss **real production concerns**
+- Structure design for **read-heavy workload** from the start
+- Proactively cover **multi-region deployment**, counter range allocation, Redis failover
+- Understand **security implications** of predictable short codes and propose mitigations
+- Discuss **custom alias collision prevention** and cleanup strategies
+- Show **product thinking** and **operational maturity** (monitoring, alerting, runbooks)
+- Discuss how the system would **evolve** as requirements change
 
 ---
 
-## Trade-offs and Decisions
+## Common Interview Questions
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    KEY DESIGN TRADE-OFFS                                    │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  DECISION 1: Short Code Length                                              │
-│  ───────────────────────────────                                            │
-│  ┌────────────┬──────────────────────┬────────────────────────────────┐    │
-│  │   Length   │     Combinations     │          Trade-off             │    │
-│  ├────────────┼──────────────────────┼────────────────────────────────┤    │
-│  │   6 chars  │   56 billion         │  Shorter but fewer options     │    │
-│  │   7 chars  │   3.5 trillion       │  ✓ Sweet spot                  │    │
-│  │   8 chars  │   218 trillion       │  Longer but more headroom      │    │
-│  └────────────┴──────────────────────┴────────────────────────────────┘    │
-│                                                                             │
-│  DECISION 2: HTTP Redirect Code                                             │
-│  ───────────────────────────────                                            │
-│  ┌────────────┬──────────────────────────────────────────────────────┐     │
-│  │   Code     │   Trade-off                                          │     │
-│  ├────────────┼──────────────────────────────────────────────────────┤     │
-│  │   301      │   Cached by browser (fast) but loses analytics      │     │
-│  │   302      │   ✓ Every click tracked (slower but measurable)     │     │
-│  └────────────┴──────────────────────────────────────────────────────┘     │
-│                                                                             │
-│  DECISION 3: Database Type                                                  │
-│  ─────────────────────────                                                  │
-│  ┌────────────┬──────────────────────────────────────────────────────┐     │
-│  │   Type     │   Trade-off                                          │     │
-│  ├────────────┼──────────────────────────────────────────────────────┤     │
-│  │   SQL      │   Strong consistency, complex queries, vertical      │     │
-│  │   NoSQL    │   ✓ Easy scaling, simple access pattern             │     │
-│  └────────────┴──────────────────────────────────────────────────────┘     │
-│                                                                             │
-│  DECISION 4: Cache Strategy                                                 │
-│  ─────────────────────────                                                  │
-│  ┌────────────────────┬───────────────────────────────────────────────┐    │
-│  │   Strategy         │   Trade-off                                   │    │
-│  ├────────────────────┼───────────────────────────────────────────────┤    │
-│  │   Cache-aside      │   ✓ Simple, but first request slow (miss)    │    │
-│  │   Write-through    │   Always fast reads, higher write latency    │    │
-│  └────────────────────┴───────────────────────────────────────────────┘    │
-│                                                                             │
-│  DECISION 5: Analytics Processing                                           │
-│  ───────────────────────────────                                            │
-│  ┌────────────────────┬───────────────────────────────────────────────┐    │
-│  │   Approach         │   Trade-off                                   │    │
-│  ├────────────────────┼───────────────────────────────────────────────┤    │
-│  │   Synchronous      │   Accurate but slows down redirects          │    │
-│  │   Asynchronous     │   ✓ Fast redirects, eventual consistency     │    │
-│  └────────────────────┴───────────────────────────────────────────────┘    │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+### Q1: Why not use auto-increment ID from the database?
+
+Auto-increment works for a single DB instance but fails when you need:
+- Multiple write instances (each has its own sequence)
+- Predictable distribution across shards
+- No single point of failure for ID generation
+
+### Q2: What if two users shorten the same URL?
+
+Most URL shorteners **allow multiple short codes** for the same long URL because:
+- Different users may want different expiration dates
+- Independent analytics tracking per short code
+- Privacy — don't reveal that a URL was already shortened
+
+### Q3: How do you handle Redis (counter) going down?
+
+- **Redis Sentinel** or **Redis Cluster** with automatic failover
+- If Redis fails before replicating, a few counter values may be lost — but we only need uniqueness, not continuity
+- The database `UNIQUE` constraint is the ultimate safety net
+- Fallback: derive counter from `MAX(short_code)` in the DB + a safety offset
+
+### Q4: Why not use NoSQL?
+
+You can! DynamoDB, for example, works well for this key-value access pattern. But:
+- The dataset is small (~500 GB)
+- Write volume is low (~1/sec)
+- PostgreSQL is simpler to operate and reason about
+- Pick what you know best in the interview
+
+### Q5: How would you add analytics?
+
+- Emit a **click event** to a message queue (Kafka) on every redirect
+- A separate **analytics service** consumes events and aggregates data
+- Store aggregated metrics in a time-series DB (ClickHouse, TimescaleDB)
+- This keeps the redirect path fast (fire-and-forget to Kafka)
+
+### Q6: What about link preview / OG tags?
+
+When social media platforms fetch a short URL for preview:
+- They follow the redirect and scrape the destination page
+- Our 302 redirect works transparently for this
+- No special handling needed on our end
+
+### Q7: Can the system handle a viral link?
+
+Yes, because:
+- **CDN** caches the redirect at edge locations worldwide
+- **Redis cache** absorbs repeated reads for the same short code
+- **Read service** scales horizontally
+- A single viral link hits cache 99.9%+ of the time
 
 ---
 
-## Interview Tips
+## Key Takeaways
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                       INTERVIEW CHECKLIST                                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  ✅ STEP 1: CLARIFY REQUIREMENTS (3-5 minutes)                              │
-│     • Ask about scale (traffic, storage)                                    │
-│     • Ask about features (custom aliases, expiration, analytics)            │
-│     • Ask about constraints (latency, availability)                         │
-│                                                                             │
-│  ✅ STEP 2: CAPACITY ESTIMATION (5 minutes)                                 │
-│     • Calculate read/write QPS                                              │
-│     • Estimate storage requirements                                         │
-│     • Show your math!                                                       │
-│                                                                             │
-│  ✅ STEP 3: HIGH-LEVEL DESIGN (10 minutes)                                  │
-│     • Draw the main components                                              │
-│     • Explain data flow                                                     │
-│     • Justify your choices                                                  │
-│                                                                             │
-│  ✅ STEP 4: DEEP DIVE (15 minutes)                                          │
-│     • URL generation algorithm                                              │
-│     • Database schema                                                       │
-│     • Caching strategy                                                      │
-│     • Scaling approach                                                      │
-│                                                                             │
-│  ✅ STEP 5: HANDLE EDGE CASES (5 minutes)                                   │
-│     • What if DB is down?                                                   │
-│     • What if cache is full?                                                │
-│     • How to handle duplicate long URLs?                                    │
-│     • How to handle expired URLs?                                           │
-│                                                                             │
-│  ─────────────────────────────────────────────────────────────────────────  │
-│                                                                             │
-│  KEY POINTS TO MENTION:                                                     │
-│                                                                             │
-│  • "This is a read-heavy system (100:1 ratio)"                             │
-│  • "We'll use Base62 encoding for short codes"                             │
-│  • "Cache will handle 80-90% of reads"                                     │
-│  • "302 redirect allows us to track analytics"                             │
-│  • "Async processing for analytics won't block redirects"                  │
-│                                                                             │
-│  ─────────────────────────────────────────────────────────────────────────  │
-│                                                                             │
-│  COMMON FOLLOW-UP QUESTIONS:                                                │
-│                                                                             │
-│  Q: "What if we need to delete a URL?"                                     │
-│  A: Delete from DB, invalidate cache, return 410 Gone                      │
-│                                                                             │
-│  Q: "How to prevent abuse?"                                                 │
-│  A: Rate limiting, CAPTCHA, malware URL checking                           │
-│                                                                             │
-│  Q: "What if the same long URL is submitted twice?"                        │
-│  A: Option 1: Return existing short URL (dedupe)                           │
-│     Option 2: Create new short URL (each is unique)                        │
-│                                                                             │
-│  Q: "How to make short codes unpredictable?"                               │
-│  A: Use random ID generator or shuffle Base62 characters                   │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+| Topic | Decision |
+|-------|----------|
+| **Short code generation** | Counter + Base62 (preferred) or Hash + Base62 |
+| **Database** | PostgreSQL (or any RDBMS) |
+| **Cache** | Redis with LRU eviction |
+| **Redirect type** | 302 Found |
+| **Scaling reads** | Cache + CDN + horizontal read service scaling |
+| **Scaling writes** | Redis counter with batching |
+| **Counter HA** | Redis Sentinel / Cluster |
+| **Multi-region** | Disjoint counter ranges per region |
+| **Expiry** | Real-time check + background cleanup job |
 
 ---
 
-## Summary
-
-### Key Components
-
-| Component | Technology | Purpose |
-|-----------|------------|---------|
-| Load Balancer | NGINX/ALB | Distribute traffic |
-| API Servers | Node.js/Java/Go | Handle requests |
-| Cache | Redis | Fast URL lookups |
-| Database | PostgreSQL/DynamoDB | Persistent storage |
-| Message Queue | Kafka/SQS | Async analytics |
-
-### Key Numbers
-
-| Metric | Value |
-|--------|-------|
-| Short code length | 7 characters |
-| Total combinations | 3.5 trillion |
-| Read:Write ratio | 100:1 |
-| Cache hit rate | 80-90% |
-| Redirect latency | < 100ms |
-
-### Key Algorithms
-
-| Task | Algorithm |
-|------|-----------|
-| Short code generation | Base62 encoding |
-| Sharding | Consistent hashing |
-| Rate limiting | Token bucket |
-| Cache eviction | LRU |
-
----
-
-## Next Steps
-
-After mastering URL Shortener, try these related designs:
-1. **Paste Bin** (similar but with content storage)
-2. **Rate Limiter** (uses similar counting techniques)
-3. **Key-Value Store** (same data access patterns)
-
----
-
-## Additional Resources
-
-- [System Design Interview Book](https://www.amazon.com/System-Design-Interview-insiders-Second/dp/B08CMF2CQF)
-- [Grokking the System Design Interview](https://www.educative.io/courses/grokking-the-system-design-interview)
-- [bit.ly Architecture Blog](https://word.bitly.com/)
-- [High Scalability](http://highscalability.com/)
-
----
-
-*Last Updated: January 2026*
+*Reference: [Hello Interview — Bit.ly System Design](https://www.hellointerview.com/learn/system-design/problem-breakdowns/bitly)*
