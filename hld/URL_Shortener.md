@@ -6,24 +6,61 @@
 
 ## Table of Contents
 
-1. [Problem Statement](#problem-statement)
-2. [Functional Requirements](#functional-requirements)
-3. [Non-Functional Requirements](#non-functional-requirements)
-4. [Back-of-the-Envelope Estimation](#back-of-the-envelope-estimation)
-5. [Core Entities & Data Model](#core-entities--data-model)
-6. [API Design](#api-design)
-7. [High-Level Design](#high-level-design)
-8. [Short Code Generation Strategies](#short-code-generation-strategies)
-9. [Database Design & Indexing](#database-design--indexing)
-10. [Caching Strategy](#caching-strategy)
-11. [Scaling the System](#scaling-the-system)
+1. [Interview Delivery Framework](#interview-delivery-framework)
+2. [Problem Statement](#problem-statement)
+3. [Functional Requirements](#functional-requirements)
+4. [Non-Functional Requirements](#non-functional-requirements)
+5. [Back-of-the-Envelope Estimation](#back-of-the-envelope-estimation)
+6. [Core Entities & Data Model](#core-entities--data-model)
+7. [API Design](#api-design)
+8. [High-Level Design](#high-level-design)
+9. [Deep Dive 1: Short Code Generation Strategies](#deep-dive-1-short-code-generation-strategies)
+10. [Deep Dive 2: Making Redirects Fast](#deep-dive-2-making-redirects-fast)
+11. [Deep Dive 3: Scaling to 1B URLs and 100M DAU](#deep-dive-3-scaling-to-1b-urls-and-100m-dau)
 12. [Redirect Flow & HTTP Status Codes](#redirect-flow--http-status-codes)
 13. [URL Expiry & Cleanup](#url-expiry--cleanup)
 14. [Security Considerations](#security-considerations)
 15. [Multi-Region Deployment](#multi-region-deployment)
-16. [Final Architecture](#final-architecture)
-17. [What is Expected at Each Level](#what-is-expected-at-each-level)
-18. [Common Interview Questions](#common-interview-questions)
+16. [Monitoring & Observability](#monitoring--observability)
+17. [Final Architecture](#final-architecture)
+18. [What is Expected at Each Level](#what-is-expected-at-each-level)
+19. [Common Interview Questions](#common-interview-questions)
+
+---
+
+## Interview Delivery Framework
+
+Hello Interview recommends a structured 4-phase approach to deliver system design answers. Here's how it maps to this problem:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    INTERVIEW TIMELINE (~45 minutes)                     │
+├───────────────┬───────────────┬────────────────┬───────────────────────┤
+│  Phase 1      │  Phase 2      │  Phase 3       │  Phase 4              │
+│  REQUIREMENTS │  THE SET UP   │  HIGH-LEVEL    │  DEEP DIVES           │
+│  (5 min)      │  (5 min)      │  DESIGN        │  (10 min)             │
+│               │               │  (10-15 min)   │                       │
+├───────────────┼───────────────┼────────────────┼───────────────────────┤
+│ • Functional  │ • Core        │ • URL creation │ • How to ensure       │
+│   requirements│   entities    │   flow         │   uniqueness?         │
+│ • Non-func    │ • API design  │ • URL redirect │ • How to make         │
+│   requirements│   (REST)      │   flow         │   redirects fast?     │
+│ • Clarify     │ • Data model  │ • Component    │ • How to scale to     │
+│   scope       │   sketch      │   diagram      │   1B URLs + 100M DAU? │
+└───────────────┴───────────────┴────────────────┴───────────────────────┘
+```
+
+### How to Use This Framework
+
+**Phase 1 — Requirements (5 min):** Start by listing functional and non-functional requirements on the whiteboard. Tell the interviewer what's in scope and what's below the line. This shows you can prioritize and prevent scope creep.
+
+**Phase 2 — The Set Up (5 min):** Define core entities (Original URL, Short URL, User), then write out the REST API endpoints. This creates a contract between client and server. Don't go deep into the data model yet — just a simple list.
+
+**Phase 3 — High-Level Design (10–15 min):** Walk through each functional requirement one-by-one. Draw a basic system diagram (Client → Server → Database). Abstract away complex details ("some magic function generates the short code") — you'll fill them in during deep dives.
+
+**Phase 4 — Deep Dives (10 min):** This is where you shine. Go back to your non-functional requirements and pick the most interesting/challenging ones. For URL shortener, the three big deep dives are: (1) ensuring uniqueness, (2) fast redirects, and (3) scaling.
+
+> **Pro Tip**: Tell the interviewer your plan upfront: *"I'll start with requirements, then entities and API, then a simple high-level design, and then dive deep into the interesting problems."* This shows structure and lets them guide you.
 
 ---
 
@@ -32,6 +69,16 @@
 Design a URL shortening service like **Bit.ly** that converts long URLs into shorter, manageable links. When a user clicks the short link, they are redirected to the original long URL.
 
 **Why is this asked so often?** It touches on hashing, database design, caching, scaling reads vs writes, HTTP semantics, and distributed systems — all in a relatively contained problem.
+
+### What is Bit.ly?
+
+[Bit.ly](https://bitly.com/) is a URL shortening service that:
+- Converts long URLs into shorter, manageable links (e.g., `https://example.com/very/long/path` → `https://bit.ly/3xK9f2`)
+- Provides analytics for shortened URLs (click counts, geographic data, referrers)
+- Supports custom branded short domains
+- Processes **billions of clicks per month** across millions of active links
+
+Designing a URL shortener is one of the most common **beginner-to-intermediate** system design interview questions. Despite its apparent simplicity, it covers a surprising depth of topics.
 
 ---
 
@@ -55,6 +102,34 @@ Design a URL shortening service like **Bit.ly** that converts long URLs into sho
 
 > **Tip**: In the interview, explicitly call out what's in and out of scope. It shows you can prioritize.
 
+### How to Present This on the Whiteboard
+
+```
+┌─────────────────────────────────────────────────┐
+│          FUNCTIONAL REQUIREMENTS                 │
+│                                                  │
+│  ✅ IN SCOPE:                                    │
+│  1. Shorten URL (long → short)                   │
+│     - optional custom alias                      │
+│     - optional expiration time                   │
+│  2. Redirect (short → long)                      │
+│                                                  │
+│  ❌ OUT OF SCOPE:                                │
+│  • User auth / accounts                          │
+│  • Click analytics                               │
+│  • Spam detection                                │
+├─────────────────────────────────────────────────┤
+│          NON-FUNCTIONAL REQUIREMENTS             │
+│                                                  │
+│  • Unique short codes                            │
+│  • Low latency redirects (< 100ms)               │
+│  • 99.99% availability (avail >> consistency)    │
+│  • Scale: 1B URLs, 100M DAU                      │
+└─────────────────────────────────────────────────┘
+```
+
+Draw this box on your whiteboard first. It anchors the entire conversation and you'll refer back to it during deep dives.
+
 ---
 
 ## Non-Functional Requirements
@@ -76,6 +151,12 @@ Reads (redirects)  : Writes (URL creation)  ≈  1000 : 1
 ```
 
 This asymmetry drives every major design decision — caching, database choice, service separation, and architecture.
+
+**Why does this matter?** When your interviewer gives you "100M DAU", immediately compute the read/write ratio. For URL shortener:
+- Almost all DAU interactions are **clicks** (reads) not **creations** (writes)
+- This means: cache aggressively, optimize the read path, tolerate eventual consistency
+- Your architecture should have **many more read servers** than write servers
+- This is the single most important insight to communicate early in the interview
 
 ---
 
@@ -240,53 +321,196 @@ Authorization: Bearer <token>
 
 ## High-Level Design
 
-### URL Creation Flow
+> **Hello Interview approach**: Walk through each functional requirement one-by-one. Start with a simple diagram — Client, Primary Server, Database. Don't optimize yet. Abstract complex parts as "magic functions" — you'll unpack them in deep dives.
+
+### Requirement 1: Users Should Be Able to Submit a Long URL and Receive a Shortened Version
+
+The first thing we need is to figure out how a user's long URL becomes a short URL. Let's outline the core components:
 
 ```
-┌────────┐      POST /urls      ┌────────────────┐        ┌──────────┐
-│ Client │─────────────────────▶│ Primary Server  │───────▶│ Database │
-│        │◀─────────────────────│                 │        │(Postgres)│
-└────────┘   { short_url }      │  1. Validate    │        └──────────┘
-                                │  2. Gen code    │
-                                │  3. Store in DB │
-                                │  4. Return URL  │
-                                └────────────────┘
+┌────────┐      POST /urls      ┌────────────────┐        ┌──────────────┐
+│        │─────────────────────▶│                 │       │              │
+│ Client │                      │ Primary Server  │──────▶│   Database   │
+│ (Web / │◀─────────────────────│                 │       │  (Postgres)  │
+│ Mobile)│   { short_url }      │  1. Validate    │       │              │
+│        │                      │  2. Gen code    │       │  Urls table: │
+└────────┘                      │  3. Store in DB │       │  - short_code│
+                                │  4. Return URL  │       │  - long_url  │
+                                └────────────────┘       │  - created_at│
+                                                          │  - expires_at│
+                                                          └──────────────┘
 ```
 
-**Step-by-step:**
+**Step-by-step walkthrough of what happens when a user shortens a URL:**
 
-1. **Validate** the long URL format (use a URL validation library).
-2. **Check custom alias** (if provided) — query DB to ensure it's not taken.
-3. **Generate short code** — using one of the strategies below.
-4. **Insert into database** — store `short_code → long_url` mapping with metadata.
-5. **Return** the full short URL to the client.
+**Step 1: Client sends request**
 
-### URL Redirect Flow
+The user enters a long URL in our web app or calls our API. The client sends a `POST /urls` request to our Primary Server with the long URL, and optionally a custom alias and expiration date.
 
+**Step 2: Server validates the URL**
+
+The Primary Server receives the request and validates the long URL format. We use standard URL validation libraries (like Python's `urllib.parse`, Java's `java.net.URL`, or npm's `is-url`) to ensure:
+- The URL has a valid scheme (`http://` or `https://`)
+- The domain is resolvable
+- The URL is not empty or malformed
+
+If validation fails → return `400 Bad Request`.
+
+**Step 3: Handle custom alias (if provided)**
+
+If the user specified a custom alias (e.g., "my-brand"):
+- Query the database: `SELECT * FROM urls WHERE short_code = 'my-brand'`
+- If it already exists → return `409 Conflict` ("alias already taken")
+- If available → use it as the short code
+
+> **Important**: To prevent custom aliases from colliding with auto-generated codes in the future, consider prefixing generated codes with a character that custom aliases can't use, or store them in separate namespaces.
+
+**Step 4: Generate a short code**
+
+For now, we'll abstract this away as *some magic function* that takes in the long URL and returns a unique short code. We'll dive deep into exactly how this works in [Deep Dive 1](#deep-dive-1-short-code-generation-strategies).
+
+```python
+short_code = generate_short_code()  # Magic! We'll explain later.
 ```
-┌────────┐    GET /abc123     ┌────────────────┐    Cache     ┌───────┐
-│Browser │───────────────────▶│   Read Server   │────MISS────▶│  DB   │
-│        │◀───302 + Location──│                 │◀────────────│       │
-└────────┘                    │   1. Check cache│    Cache     ┌───────┐
-                              │   2. Check DB   │────HIT─────▶│ Redis │
-                              │   3. Redirect   │◀────────────│ Cache │
-                              └────────────────┘              └───────┘
+
+**Step 5: Optionally check for deduplication**
+
+Should we check if this exact long URL was already shortened?
+
+Most URL shorteners **allow multiple short codes** for the same long URL because:
+- Different users may want separate expiration dates
+- Independent analytics tracking per short code  
+- Privacy — don't reveal that a URL was already shortened by someone else
+
+However, if storage efficiency is important, you could look up the long URL and return the existing short code. This is a **product decision** worth discussing with your interviewer.
+
+**Step 6: Store in database**
+
+Insert the mapping into our `urls` table:
+
+```sql
+INSERT INTO urls (short_code, original_url, created_at, expires_at, created_by)
+VALUES ('abc123', 'https://www.example.com/very/long/url', NOW(), '2026-12-31', 'user-uuid');
 ```
 
-**Step-by-step:**
+**Step 7: Return the short URL**
 
-1. Browser sends `GET /abc123` to our server.
-2. Server checks **cache** (Redis) for the short code.
-3. **Cache HIT** → retrieve long URL directly. **Cache MISS** → query database, then populate cache.
-4. If found and **not expired** → return `302` redirect with `Location` header.
-5. If **expired** → return `410 Gone`.
-6. If **not found** → return `404`.
+Construct the full short URL and return it to the client:
+
+```json
+{
+    "short_url": "https://short.ly/abc123",
+    "short_code": "abc123",
+    "created_at": "2026-03-19T10:30:00Z"
+}
+```
 
 ---
 
-## Short Code Generation Strategies
+### Requirement 2: Users Should Be Able to Access the Original URL by Using the Shortened URL
 
-This is the most critical deep dive. We need codes that are **unique**, **short**, and **efficiently generated**.
+Now the short URL is live. When someone clicks `https://short.ly/abc123`, their browser sends a request to our domain (`short.ly`), which we own. Our server handles all requests to that domain.
+
+```
+┌────────┐    GET /abc123     ┌────────────────┐               ┌────────────┐
+│        │───────────────────▶│                │  Cache MISS   │            │
+│Browser │                    │ Primary Server │──────────────▶│  Database  │
+│        │◀──302 + Location───│                │◀──────────────│            │
+│        │                    │ 1. Look up code│               └────────────┘
+└────────┘                    │ 2. Check expiry│  Cache HIT    ┌────────────┐
+   │                          │ 3. Redirect    │──────────────▶│Redis Cache │
+   │                          └────────────────┘◀──────────────│            │
+   │                                                           └────────────┘
+   ▼
+  Original URL
+  (user lands here)
+```
+
+**Step-by-step walkthrough of what happens when a user clicks a short URL:**
+
+**Step 1: Browser sends GET request**
+
+User clicks `https://short.ly/abc123`. The browser sends `GET /abc123` to our Primary Server. Note: the user only typed (or clicked) the short URL — the browser does the rest automatically.
+
+**Step 2: Server looks up the short code**
+
+The server extracts `abc123` from the URL path and looks it up. First in cache (Redis), then in the database if cache misses. We'll optimize this in [Deep Dive 2](#deep-dive-2-making-redirects-fast).
+
+```sql
+SELECT original_url, expires_at FROM urls WHERE short_code = 'abc123';
+```
+
+**Step 3: Check if the URL has expired**
+
+If the row has an `expires_at` field and the current date is past it:
+- Return `410 Gone` — tells the client the resource existed but is no longer available
+- Optionally clean up the cache entry
+
+**Step 4: Server sends HTTP redirect**
+
+If found and not expired, the server sends an HTTP redirect response:
+
+```http
+HTTP/1.1 302 Found
+Location: https://www.example.com/very/long/url
+```
+
+The browser receives this and **automatically** navigates to the `Location` URL. The user never sees the redirect happen — it's instant and transparent.
+
+**Step 5: If not found**
+
+Return `404 Not Found`.
+
+### Understanding HTTP Redirects: 301 vs 302
+
+This is a critical design decision that interviewers love to probe. Both redirect the browser, but they behave very differently:
+
+```
+                     301 Permanent Redirect
+┌────────┐  GET /abc  ┌────────┐  302   ┌───────────────┐
+│Browser │───────────▶│ Server │───────▶│ Original URL  │
+│        │            └────────┘        └───────────────┘
+│        │  (Browser caches this!)
+│        │  Next time: Browser goes DIRECTLY to original URL
+│        │  (Our server is BYPASSED — no control!)
+└────────┘
+
+                     302 Found (Temporary)
+┌────────┐  GET /abc  ┌────────┐  302   ┌───────────────┐
+│Browser │───────────▶│ Server │───────▶│ Original URL  │
+│        │            └────────┘        └───────────────┘
+│        │  (Browser does NOT cache!)
+│        │  Next time: Browser hits our server AGAIN
+│        │  (We maintain full control!)
+└────────┘
+```
+
+**We choose 302** because:
+- Allows us to **update or expire** links after creation
+- Lets us **track clicks** (each click hits our server)
+- Prevents stale cached redirects if we need to change the destination
+- Gives us full observability over link usage
+
+> **In the interview**: Mention both options and explain the tradeoff. Saying "we'll prefer 302 so we maintain control over the redirect and can handle expiration" is a strong answer.
+
+### Cleanup Strategy
+
+For expired URLs, we use two mechanisms:
+1. **Real-time check**: On every redirect, compare `expires_at` to current time
+2. **Background job**: A periodic CRON job that batch-deletes expired rows from the database
+
+Set the **cache TTL** to match or be shorter than URL expiration times, so stale entries are automatically evicted from Redis.
+
+---
+
+## Deep Dive 1: Short Code Generation Strategies
+
+> **Hello Interview says**: *\"In our high-level design, we abstracted away the details of how we generate a short URL — now it's time to get into the nitty-gritty!\"*
+
+This is the most critical deep dive and **the one interviewers care about most**. We need codes that are:
+1. **Unique** — each short code maps to exactly one long URL
+2. **Short** — it IS a URL shortener after all
+3. **Efficiently generated** — fast enough for production throughput
 
 ### How Short Can We Go?
 
@@ -313,55 +537,165 @@ Take the first N characters of the long URL as the short code.
 
 ---
 
-### ✅ Great: Hash Function (MD5/SHA-256) + Base62
+### ✅ Great Solution: Hash Function (MD5/SHA-256) + Base62
 
-**How it works:**
+**Core idea**: Feed the long URL into a hash function, take a portion of the output, and Base62-encode it.
 
-```
-long_url → MD5/SHA-256 → Take first 43 bits → Base62 encode → 7-char code
-```
-
-**Example:**
+**How it works step-by-step:**
 
 ```
-"https://example.com/long" → MD5 → "d41d8cd98f00b204..." → take first 7 base62 chars → "kA9f3Bc"
+Step 1: Take the long URL
+  "https://www.example.com/very/long/path?query=123"
+
+Step 2: Hash it with MD5 (or SHA-256)
+  MD5 → "e4d909c290d0fb1ca068ffaddf22cbd0" (128-bit hex string)
+
+Step 3: Take the first 43 bits of the hash
+  (43 bits gives us ~8.8 trillion combinations in base62)
+
+Step 4: Base62 encode those bits
+  → "kA9f3Bc" (7 characters)
+
+Step 5: Use this as the short code
+  → https://short.ly/kA9f3Bc
 ```
 
-**Handling Collisions:**
+**Why 43 bits?** Because 62^7 = 3.52 trillion. We need at least ceil(log2(62^7)) = 42 bits to represent all 7-character Base62 strings. Using 43 bits gives us enough entropy.
+
+**The Collision Problem:**
+
+Since we're truncating a 128-bit hash to ~43 bits, we lose entropy. Different long URLs can produce the same short code. This is inevitable due to the pigeonhole principle — we're mapping a large space to a smaller one.
+
+**Collision Handling — The Full Flow:**
 
 ```
-1. Hash the URL → get short_code
-2. Check DB: does short_code exist?
-   a. YES and same long_url → return existing (dedup)
-   b. YES and different long_url → COLLISION!
-      → Append a counter/salt, re-hash, retry
-   c. NO → insert and return
+                            ┌─────────────────────────┐
+                            │    Receive long URL      │
+                            └──────────┬──────────────┘
+                                       ▼
+                            ┌─────────────────────────┐
+                            │  Hash(url) → short_code  │
+                            └──────────┬──────────────┘
+                                       ▼
+                            ┌─────────────────────────┐
+                       NO   │ Does short_code exist    │  YES
+                    ┌───────│     in the DB?            │───────┐
+                    │       └─────────────────────────┘       │
+                    ▼                                          ▼
+          ┌─────────────────┐              ┌──────────────────────────┐
+          │ INSERT into DB  │              │ Is it the SAME long URL? │
+          │ Return short_url│              └──────────┬───────────────┘
+          └─────────────────┘                    YES  │  NO
+                                            ┌────────┘  └─────────┐
+                                            ▼                     ▼
+                                   ┌────────────────┐   ┌─────────────────┐
+                                   │ Return existing │   │   COLLISION!    │
+                                   │ short_url       │   │ Append salt,    │
+                                   │ (dedup)         │   │ re-hash, retry  │
+                                   └────────────────┘   └─────────────────┘
 ```
+
+**Collision handling in pseudocode:**
+
+```python
+import hashlib
+
+def shorten_url_with_hash(long_url: str, max_retries: int = 5) -> str:
+    url_to_hash = long_url
+    
+    for attempt in range(max_retries):
+        # Step 1: Hash the URL
+        hash_hex = hashlib.md5(url_to_hash.encode()).hexdigest()
+        
+        # Step 2: Take first 43 bits, convert to integer
+        hash_int = int(hash_hex[:11], 16) >> 1  # ~43 bits
+        
+        # Step 3: Base62 encode to 7 chars
+        short_code = encode_base62(hash_int)[:7]
+        
+        # Step 4: Check database for collision
+        existing = db.query(
+            "SELECT original_url FROM urls WHERE short_code = ?", short_code
+        )
+        
+        if not existing:
+            # No collision — insert and return
+            db.execute(
+                "INSERT INTO urls (short_code, original_url) VALUES (?, ?)", 
+                short_code, long_url
+            )
+            return short_code
+        
+        if existing.original_url == long_url:
+            # Same URL — dedup, return existing
+            return short_code
+        
+        # Collision! Different URL with same hash
+        # Append attempt number as salt and retry
+        url_to_hash = long_url + str(attempt)
+    
+    raise Exception("Failed to generate unique short code after max retries")
+```
+
+**Collision probability math (Birthday Problem):**
+
+P(collision) ≈ 1 - e^(-n² / 2m)
+
+Where n = number of URLs stored, m = size of the hash space.
+
+| URLs stored (n) | Hash space (m = 62⁷) | Collision probability |
+|---|---|---|
+| 1 million | 3.5 trillion | ~0.00014% (negligible) |
+| 100 million | 3.5 trillion | ~1.4% |
+| 1 billion | 3.5 trillion | ~13% |
+
+At 1B URLs, ~13% of insertions would collide. Each collision requires a retry (re-hash with salt), but retries are fast. In practice, this works fine.
 
 | Pros | Cons |
 |------|------|
 | Deterministic (same input → same output) | Collisions possible (birthday problem) |
 | No coordination needed across servers | Retry logic adds complexity |
-| Stateless — easy to scale | Collision rate increases as DB fills up |
-| Can dedup same URL naturally | Need DB lookup to check for collision |
-
-**Collision probability**: With 7 base62 chars (56.8B space) and 1B URLs, collision chance per insertion is ~1/56.8 ≈ 1.7%. Handle with retry.
+| Stateless — easy to scale horizontally | Collision rate increases as DB fills |
+| Can dedup same URL naturally | Requires DB lookup to verify uniqueness |
+| Works in multi-region without coordination | Slightly slower due to hash computation |
 
 ---
 
-### ✅ Great: Unique Counter + Base62 Encoding
+### ✅ Great Solution: Unique Counter + Base62 Encoding
 
-**How it works:**
+**Core idea**: Maintain a global auto-incrementing counter. Each new URL gets the next number, which is Base62-encoded to form the short code.
 
-```
-Global counter (1, 2, 3, ...) → Base62 encode → short code
-```
-
-**Example:**
+**How it works step-by-step:**
 
 ```
-Counter = 1000000 → Base62 → "4c92" (4 chars)
-Counter = 56800235584 → Base62 → "zzzzzzz" (7 chars)
+Step 1: Request comes in to shorten a URL
+
+Step 2: Get the next counter value (atomically)
+  Counter was 999,999 → now it's 1,000,000
+
+Step 3: Base62 encode the counter value
+  1,000,000 → Base62 → "4c92"
+
+Step 4: Use this as the short code
+  → https://short.ly/4c92
+
+Step 5: Store mapping in DB
+  short_code="4c92" → original_url="https://example.com/long"
+```
+
+**Why is this great?** Because a monotonically increasing counter **guarantees uniqueness by definition** — no two requests will ever get the same number.
+
+**Visual example of counter progression:**
+
+```
+Counter    Base62     Short URL
+─────────  ─────────  ─────────────────────
+1          1          short.ly/1
+62         10         short.ly/10
+3844       100        short.ly/100
+1000000    4c92       short.ly/4c92
+100000000  6LAze      short.ly/6LAze
+3.5T       zzzzzzz    short.ly/zzzzzzz  (7-char max!)
 ```
 
 **Base62 Encoding Algorithm:**
@@ -396,6 +730,57 @@ def decode_base62(s: str) -> int:
 - Option A: Prefix generated codes with a reserved character (e.g., `_abc123`)
 - Option B: Store custom aliases in a separate namespace
 - Option C: Reserve a range of the counter space for auto-generated codes
+
+---
+
+### ✅ Alternative: Random Number + Base62
+
+**Core idea**: Generate a cryptographically random number, Base62-encode it, and check if it already exists.
+
+```python
+import secrets
+
+def generate_random_code(length=7):
+    CHARSET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    while True:
+        code = ''.join(secrets.choice(CHARSET) for _ in range(length))
+        # Must check DB every time to ensure uniqueness
+        if not db.exists("SELECT 1 FROM urls WHERE short_code = ?", code):
+            return code
+        # Collision — retry with new random code
+```
+
+| Pros | Cons |
+|------|------|
+| Simple to implement | Collision risk (must check DB every time) |
+| Not predictable/guessable | Gets slower as DB fills up |
+| No coordination needed | Requires DB roundtrip for every generation |
+| Works across regions | Worst-case: many retries at high fill rates |
+
+**When to use**: When you need non-predictable codes and don't want the complexity of a hash function or centralized counter.
+
+---
+
+### 💡 Twitter Snowflake IDs (Advanced Alternative)
+
+A common follow-up question: *"Can we use Snowflake IDs?"*
+
+Snowflake generates 64-bit unique IDs with built-in timestamp and worker ID:
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│ 0 │ 41 bits: timestamp │ 10 bits: machine ID │ 12 bits: sequence │
+│   │   (69 years)       │   (1024 machines)   │   (4096/ms)       │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+Base62-encoding a 64-bit Snowflake ID produces an **11-character** string (vs 7 for counter-based). This is longer, but:
+- **No centralized counter needed** — each machine generates IDs independently
+- IDs are **roughly time-ordered**
+- Built-in machine ID prevents cross-server collisions
+- Used by Twitter, Discord, Instagram (with modifications)
+
+**Verdict**: Valid approach that trades URL length (7 → 11 chars) for simpler distributed coordination. Worth mentioning if the interviewer asks about alternatives to a centralized counter.
 
 ---
 
@@ -445,39 +830,274 @@ RETURNING short_code;
 
 ---
 
-## Database Design & Indexing
+## Deep Dive 2: Making Redirects Fast
 
-### Why Indexing Matters
+> **Hello Interview says**: *\"When dealing with a large database of shortened URLs, finding the right match quickly becomes crucial for a smooth user experience. Without any optimization, our system would need to check every single pair of short and original URLs in the database.\"*
 
-Without an index on `short_code`, every redirect requires a **full table scan** — O(n) for 1B rows. With a B-tree index (default for primary key), lookups are O(log n) ≈ 30 comparisons for 1B rows.
+This deep dive follows three progressive layers of optimization, each building on the previous one — exactly how you'd present it in the interview.
 
-### Database Choice
+```
+Layer 1: Database Index          → O(log n) lookups       → ~5ms
+Layer 2: In-Memory Cache (Redis) → O(1) lookups on HIT    → ~0.5ms
+Layer 3: CDN / Edge Computing    → Cached at edge          → ~10ms globally
+```
 
-Given our workload:
+---
+
+### Good Solution: Add a Database Index
+
+**The problem without it:**
+
+Without an index on `short_code`, every redirect performs a **full table scan** — the database must check every row sequentially.
+
+```
+Without Index:
+  1 billion rows × sequential scan = TERRIBLE performance
+  O(n) = 1,000,000,000 comparisons worst case
+
+With B-Tree Index on short_code (Primary Key):
+  O(log n) = log₂(1,000,000,000) ≈ 30 comparisons
+  ~5ms per lookup
+```
+
+**How a B-Tree index works visually:**
+
+```
+                          ┌─────────┐
+                          │  [M]    │           Level 0 (root)
+                          └────┬────┘
+                     ┌─────────┼─────────┐
+                     ▼         ▼         ▼
+                ┌─────────┐ ┌─────────┐ ┌─────────┐
+                │ [D, H]  │ │ [P, T]  │ │ [X]     │  Level 1
+                └────┬────┘ └────┬────┘ └────┬────┘
+              ┌──────┼──┐  ┌─────┼──┐  ┌─────┼──┐
+              ▼      ▼  ▼  ▼     ▼  ▼  ▼     ▼  ▼
+            ┌───┐ ┌───┐ ... Leaf nodes contain actual row pointers
+            │A-C│ │E-G│     Each leaf has the short_code → row location
+            └───┘ └───┘
+```
+
+To find `short_code = "kA9f3B"`, the DB traverses just ~30 levels down the tree instead of scanning 1B rows.
+
+**Implementation** — it's the PRIMARY KEY, so the index is automatic:
+
+```sql
+CREATE TABLE urls (
+    short_code VARCHAR(10) PRIMARY KEY,  -- B-tree index created automatically
+    original_url TEXT NOT NULL,
+    ...
+);
+```
+
+**This is the baseline.** Any serious system needs this. But ~5ms per lookup is still too slow when you have 12K+ reads/second.
+
+---
+
+### Great Solution: In-Memory Cache (Redis)
+
+**The insight**: Most URL traffic follows a **Zipfian distribution** — a small number of URLs get the vast majority of clicks. If we cache these hot URLs in memory, we can serve most reads without touching the database at all.
+
+```
+                    ┌──────────────────────────────────┐
+                    │         TRAFFIC DISTRIBUTION      │
+                    │                                    │
+                    │  ████                               │
+                    │  ████                               │
+                    │  ████ █                              │
+                    │  ████ ██                             │
+                    │  ████ ████                           │
+                    │  ████ ██████████████████████████ ... │
+                    │                                    │
+                    │  Top 1%     Long tail (millions)   │
+                    │  of URLs    of URLs                 │
+                    │  get 80%    get 20%                  │
+                    │  of clicks  of clicks                │
+                    └──────────────────────────────────┘
+```
+
+**Cache-Aside Pattern (Read-Through):**
+
+This is the standard pattern for URL shortener caching:
+
+```
+┌────────┐   GET /abc123   ┌────────────────┐
+│Browser │───────────────▶│  Read Service   │
+│        │◀──302 redirect──│                 │
+└────────┘                 │                 │
+                           │  1. redis.GET   │
+                           │     ("abc123")  │
+                           │                 │
+                           │     ┌─── HIT ──▶ Return long_url ✅
+                           │     │            (sub-ms response)
+                           │     │
+                           │     └── MISS ──▶ 2. Query PostgreSQL
+                           │                     SELECT original_url
+                           │                     FROM urls
+                           │                     WHERE short_code = 'abc123'
+                           │
+                           │                  3. redis.SETEX("abc123",
+                           │                     ttl, long_url)
+                           │
+                           │                  4. Return long_url ✅
+                           └────────────────┘
+```
+
+**Detailed Redis Cache Implementation:**
+
+```python
+import redis
+import time
+
+redis_client = redis.Redis(host='cache.internal', port=6379)
+MAX_CACHE_TTL = 86400  # 24 hours
+
+def redirect(short_code: str):
+    """Full redirect flow with caching."""
+    
+    # ─── Step 1: Check Redis cache ───
+    cached_url = redis_client.get(f"url:{short_code}")
+    if cached_url:
+        # Cache HIT — serve directly (sub-millisecond)
+        return http_redirect_302(cached_url.decode())
+    
+    # ─── Step 2: Cache MISS — query database ───
+    row = db.query(
+        "SELECT original_url, expires_at FROM urls WHERE short_code = %s",
+        (short_code,)
+    )
+    
+    if not row:
+        return http_response(404, "Short URL not found")
+    
+    # ─── Step 3: Check expiration ───
+    if row.expires_at and row.expires_at < datetime.utcnow():
+        # URL has expired — clean up cache and return 410
+        redis_client.delete(f"url:{short_code}")
+        return http_response(410, "This URL has expired")
+    
+    # ─── Step 4: Populate cache with smart TTL ───
+    if row.expires_at:
+        # TTL = time until URL expires, capped at MAX_CACHE_TTL
+        remaining = (row.expires_at - datetime.utcnow()).total_seconds()
+        ttl = int(min(remaining, MAX_CACHE_TTL))
+    else:
+        ttl = MAX_CACHE_TTL
+    
+    redis_client.setex(f"url:{short_code}", ttl, row.original_url)
+    
+    # ─── Step 5: Redirect ───
+    return http_redirect_302(row.original_url)
+```
+
+**Cache Design Decisions:**
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| **Cache technology** | Redis | Sub-ms latency, supports TTL natively, widely adopted |
+| **Eviction policy** | LRU (Least Recently Used) | Hot URLs stay cached, cold URLs are evicted automatically |
+| **Pattern** | Cache-aside (lazy loading) | Only cache what's actually requested — avoids wasting memory |
+| **TTL** | Match URL expiration (or 24h default) | Prevents serving stale/expired URLs |
+| **Write strategy** | Write-around | Don't cache on URL creation (most new URLs aren't accessed immediately) |
+| **Key format** | `url:{short_code}` | Namespaced to avoid key collisions with other Redis uses |
+
+**Cache Performance Impact:**
+
+| Scenario | Avg Latency | DB Load | Cache Memory |
+|----------|-------------|---------|-------------|
+| No cache | ~5–10ms | 12K qps to DB | 0 |
+| 80% hit rate | ~1ms | 2.4K qps to DB | ~20 GB |
+| 95% hit rate | ~0.5ms | 600 qps to DB | ~50 GB |
+| 99% hit rate | ~0.2ms | 120 qps to DB | ~80 GB |
+
+With Zipfian distribution, a **95%+ cache hit rate** is realistic with moderate memory.
+
+**Cache Invalidation — When to Evict:**
+
+| Event | Action |
+|-------|--------|
+| URL expires | Redis TTL handles this automatically |
+| URL deleted by user | Explicitly `DEL url:{short_code}` from Redis |
+| URL updated (rare) | Delete old cache entry, new request will repopulate |
+| Cache full | LRU eviction removes least recently accessed URLs |
+
+---
+
+### Great Solution: CDN / Edge Computing
+
+**The insight**: Even with Redis, every request still has to travel to our data center. For a global service, users in Tokyo hitting a server in Virginia add ~200ms of network latency. CDNs cache content at **edge locations** worldwide.
+
+```
+Without CDN:
+  User in Tokyo ──── 200ms ────▶ Server in Virginia ──── 200ms ────▶ Response
+  Total: ~400ms round trip + processing
+
+With CDN:
+  User in Tokyo ──── 10ms ────▶ CDN Edge in Tokyo (cached!) ──── 10ms ────▶ Response
+  Total: ~20ms round trip
+```
+
+**How CDN caching works for URL shortener:**
+
+```
+┌────────────┐    GET /abc123    ┌─────────────────┐
+│            │──────────────────▶│  CDN Edge Node   │
+│  User in   │◀──302 redirect───│  (Tokyo)          │
+│  Tokyo     │                  │                   │
+└────────────┘                  │ Cache-Control:    │
+                                │   max-age=3600    │
+                                │                   │
+                                │ HIT? ─▶ Serve     │
+                                │         from edge │
+                                │                   │
+                                │ MISS? ─▶ Forward  │
+                                │   to origin server│
+                                └─────────┬─────────┘
+                                          │
+                                          ▼
+                                ┌──────────────────┐
+                                │  Origin Server    │
+                                │  (Virginia)       │
+                                └──────────────────┘
+```
+
+**Considerations:**
+- Works best with **301 redirects** (CDN can cache permanent redirects longer)
+- With **302 redirects**, CDN caching is shorter-lived (which is what we want for control)
+- Must be careful with `Cache-Control` headers to prevent stale redirects
+- CDN costs scale with number of edge locations and cache size
+
+**When to add CDN:** When you have significant global traffic and want to reduce latency for international users. Not necessary for a single-region deployment.
+
+---
+
+### Database Design & Choice
+
+Given our workload after caching:
 - **~1 write/sec** (very low)
-- **~12K reads/sec** (high, but mitigated by cache)
-- **500 GB storage** (fits on one machine)
+- **~600 reads/sec hitting DB** (95% served by cache)
+- **~500 GB storage** (fits on one machine)
 
-Almost any RDBMS works. **PostgreSQL** is the recommended default:
+**Database comparison:**
 
-| Database | Fit |
-|----------|-----|
-| **PostgreSQL** | ✅ Excellent. ACID, replication, mature |
-| **MySQL** | ✅ Good. Similar to Postgres |
-| **DynamoDB** | ✅ Good. Key-value access pattern fits perfectly |
-| **Cassandra** | ⚠️ Overkill. Better for massive write throughput |
-| **MongoDB** | ⚠️ Works, but no strong advantage here |
+| Database | Fit | Why? |
+|----------|-----|------|
+| **PostgreSQL** | ✅ Excellent | ACID, strong replication, mature ecosystem, your default choice |
+| **MySQL** | ✅ Good | Similar to Postgres, equally capable for this workload |
+| **DynamoDB** | ✅ Good | Key-value access pattern fits perfectly, auto-scaling, serverless |
+| **Cassandra** | ⚠️ Overkill | Optimized for massive writes — we have ~1 write/sec |
+| **MongoDB** | ⚠️ Works | No strong advantage over Postgres here |
 
-### Database Replication
+> **Interview tip**: Pick the database you know best and justify it. *\"I'd use Postgres because I'm most familiar with it, it handles our workload easily, and it gives us ACID guarantees for our URL mappings.\"*
 
-For high availability:
+**Database Replication for High Availability:**
 
 ```
                   ┌──────────────┐
     Writes ──────▶│   Primary    │
                   │   (Leader)   │
                   └──────┬───────┘
-                         │ Replication
+                         │ Async Replication (streaming)
               ┌──────────┼──────────┐
               ▼          ▼          ▼
         ┌──────────┐ ┌──────────┐ ┌──────────┐
@@ -486,145 +1106,258 @@ For high availability:
         └──────────┘ └──────────┘ └──────────┘
 ```
 
-- **Single leader** receives all writes
-- **Read replicas** handle redirect lookups (though most reads hit cache)
-- Asynchronous replication is fine since availability > consistency
+- **Single leader** receives all writes (URL creation)
+- **Read replicas** handle the small percentage of redirect queries that miss the cache
+- **Async replication** is fine since availability >> consistency for our use case
+- If the primary fails, promote a replica to primary (automated via Postgres Patroni or AWS RDS)
 
 ---
 
-## Caching Strategy
+## Deep Dive 3: Scaling to 1B URLs and 100M DAU
 
-Caching is **the single most impactful optimization** for a URL shortener due to the read-heavy workload.
+> **Hello Interview says**: *\"We've done much of the hard work to scale already! We introduced a caching layer which will help with read scalability. Now let's talk about scaling writes.\"*
 
-### Cache Architecture
+This deep dive covers three aspects: (1) database sizing, (2) service separation, and (3) scaling the counter for writes.
+
+---
+
+### Step 1: Can Our Database Handle It?
+
+Let's first check if scaling is even a problem:
 
 ```
-Read Request → Check Redis Cache → HIT?
-                                    ├─ YES → Return long URL
-                                    └─ NO  → Query DB → Store in Redis → Return
+Storage per URL:    ~500 bytes
+Total URLs:         1 billion
+Total storage:      500 bytes × 1B = 500 GB
+
+Modern SSD:         Can handle 500 GB easily
+Single Postgres:    Can handle 500 GB + indexes
+Sharding needed?    NOT YET
 ```
 
-### Cache Design Decisions
+The write volume is also tiny:
+```
+URL creations/day:  ~100K
+Writes/second:      ~1.2
+Postgres capacity:  Thousands of writes/sec easily
+Write bottleneck?   ABSOLUTELY NOT
+```
 
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| **Cache technology** | Redis | Sub-ms latency, supports TTL natively |
-| **Eviction policy** | LRU (Least Recently Used) | Hot URLs stay cached, cold URLs are evicted |
-| **Cache-aside pattern** | Yes | Application checks cache, falls back to DB |
-| **TTL** | Match URL expiration (or 24h default) | Prevent serving stale/expired URLs |
-| **Write strategy** | Write-around | Don't cache on creation (most URLs aren't accessed immediately) |
+> **Key insight to communicate in the interview**: *\"Our dataset is only 500 GB and we have ~1 write/sec. A single Postgres instance handles this trivially. The real scaling challenge is reads, which we've already addressed with caching.\"*
 
-### Cache Performance Impact
+**But what if the DB goes down?** Two strategies:
 
-| Scenario | Latency | DB Load |
-|----------|---------|---------|
-| No cache | ~5–10ms (DB query) | 12K qps |
-| 80% cache hit rate | ~1ms avg | 2.4K qps |
-| 95% cache hit rate | ~0.5ms avg | 600 qps |
-| 99% cache hit rate | ~0.2ms avg | 120 qps |
+1. **Database Replication**: Primary-replica setup with async streaming replication. If primary fails, promote a replica. Use Postgres Patroni, AWS RDS Multi-AZ, or similar.
 
-With a **Zipfian distribution** (few URLs get most traffic), a 95%+ cache hit rate is realistic.
+2. **Database Backups**: Periodic snapshots (e.g., every 6 hours) stored in S3. Last resort for disaster recovery.
 
-### Cache Invalidation
+---
 
-- **Expiration**: Set Redis TTL equal to (or shorter than) the URL's `expires_at` date.
-- **Deletion**: When a URL is deleted, also remove it from cache.
-- **Update**: If we ever support URL updates, invalidate the cache entry.
+### Step 2: Separate Read and Write Services
+
+Coming back to our core observation — reads are 1000× more frequent than writes. We should **separate read and write paths** into independent microservices:
+
+```
+                          ┌─────────────────────────┐
+                          │    API Gateway /         │
+              ┌──────────▶│    Load Balancer          │◀──────────┐
+              │           └──────────┬──────────────┘           │
+              │                      │                           │
+     POST /api/v1/urls        GET /{short_code}           Other routes
+              │                      │                           │
+              ▼                      ▼                           ▼
+    ┌──────────────────┐  ┌──────────────────┐       ┌──────────────────┐
+    │  Write Service   │  │   Read Service    │       │  Other APIs      │
+    │  (2-3 instances) │  │  (20+ instances)  │       │                  │
+    │                  │  │                   │       └──────────────────┘
+    │  Responsibilities│  │  Responsibilities │
+    │  ─────────────── │  │  ──────────────── │
+    │  • Validate URL  │  │  • Check Redis    │
+    │  • Get counter   │  │  • Fallback to DB │
+    │  • Base62 encode │  │  • 302 redirect   │
+    │  • Insert to DB  │  │  • Handle expiry  │
+    └────────┬─────────┘  └────────┬──────────┘
+             │                     │
+             ▼                     ▼
+    ┌──────────────────┐  ┌──────────────────┐
+    │  Global Counter  │  │   Redis Cache     │
+    │  (Redis)         │  │   (Cluster)       │
+    └────────┬─────────┘  └────────┬──────────┘
+             │                     │
+             ▼                     ▼
+    ┌──────────────────────────────────────────┐
+    │              PostgreSQL                    │
+    │    Primary (Writes) + Replicas (Reads)     │
+    └──────────────────────────────────────────┘
+```
+
+**Why separate?**
+- Read Service needs **20+ instances** at peak (36K reads/sec)
+- Write Service only needs **2-3 instances** (1.2 writes/sec)
+- Each scales independently — save money by scaling only what's needed
+- Different deployment cadences — read service is simple and stable, write service changes when code generation logic changes
+- Failure isolation — write service crashing doesn't break redirects
+
+**How does the API Gateway route?**<br>
+Based on HTTP method + path:
+- `POST /api/v1/urls` → route to **Write Service** pool
+- `GET /{short_code}` → route to **Read Service** pool
+
+This is standard load balancer configuration (nginx, AWS ALB, Kong, etc.).
+
+---
+
+### Step 3: Scaling the Counter Across Multiple Write Instances
+
+Here's the critical problem: if we horizontally scale the Write Service to 3 instances, and each uses a local counter, they'll generate **duplicate short codes**!
+
+```
+❌ THE PROBLEM:
+
+Write Service 1:  Counter = 1, 2, 3, 4, 5...
+Write Service 2:  Counter = 1, 2, 3, 4, 5...  ← DUPLICATES!
+Write Service 3:  Counter = 1, 2, 3, 4, 5...  ← DUPLICATES!
+```
+
+**Solution: Centralized Redis Counter**
+
+Use a dedicated Redis instance to maintain the global counter. Redis is single-threaded and supports atomic `INCR` operations — perfect for this.
+
+```
+✅ THE SOLUTION:
+
+                    ┌──────────────────┐
+                    │   Redis Counter   │
+                    │   (Single Source   │
+                    │    of Truth)       │
+                    │                    │
+                    │   INCR counter     │
+                    │   Current: 50001   │
+                    └──────┬───────────┘
+                     ┌─────┼─────┐
+                     ▼     ▼     ▼
+              ┌──────┐ ┌──────┐ ┌──────┐
+              │ WS-1 │ │ WS-2 │ │ WS-3 │
+              │=50001│ │=50002│ │=50003│  ← All unique!
+              └──────┘ └──────┘ └──────┘
+```
+
+**But wait — is the extra network call a problem?**
+
+Not really! In-datacenter Redis calls are ~0.1ms. But we can do even better with **counter batching**.
+
+---
+
+### Step 4: Counter Batching (The Optimization)
+
+Instead of asking Redis for one counter value per URL, each Write Service requests a **batch of 1000 values** at once:
+
+```
+┌─────────────────┐                              ┌──────────────────┐
+│ Write Service 1  │                              │                  │
+│                  │  INCRBY counter 1000         │  Redis Counter   │
+│ "Give me 1000   │─────────────────────────────▶│                  │
+│  IDs please"    │                              │  Was: 0          │
+│                  │◀─────────────────────────────│  Now: 1000       │
+│ Local range:    │  Returns: 1                  │                  │
+│ [1 ... 1000]    │  (start of your batch)       └──────────────────┘
+│                  │
+│ Next URL → 1    │                              ┌──────────────────┐
+│ Next URL → 2    │                              │                  │
+│ Next URL → 3    │  (no Redis call needed!)     │  Meanwhile...    │
+│ ...             │                              │                  │
+│ Next URL → 1000 │                              │  Write Service 2 │
+│                  │                              │  requests batch  │
+│ Batch exhausted!│  INCRBY counter 1000         │  Gets [1001-2000]│
+│ "Give me 1000  │─────────────────────────────▶│                  │
+│  more please"  │                              └──────────────────┘
+│                  │
+│ Local range:    │
+│ [2001 ... 3000] │
+└─────────────────┘
+```
+
+**Counter batching in code:**
 
 ```python
-# Pseudocode for cache-aside read
-def redirect(short_code):
-    # 1. Check cache
-    long_url = redis.get(short_code)
-    if long_url:
-        return redirect_302(long_url)
+import redis
+import threading
 
-    # 2. Cache miss — check DB
-    row = db.query("SELECT original_url, expires_at FROM urls WHERE short_code = ?", short_code)
-    if not row:
-        return 404
+class CounterBatchAllocator:
+    """Allocates unique IDs using Redis counter with batching."""
+    
+    def __init__(self, redis_client, batch_size=1000):
+        self.redis = redis_client
+        self.batch_size = batch_size
+        self.current_id = 0
+        self.max_id = 0
+        self.lock = threading.Lock()
+    
+    def get_next_id(self) -> int:
+        with self.lock:
+            if self.current_id >= self.max_id:
+                # Batch exhausted — request new batch from Redis
+                self._fetch_new_batch()
+            
+            next_id = self.current_id
+            self.current_id += 1
+            return next_id
+    
+    def _fetch_new_batch(self):
+        """Atomically claim a batch of IDs from Redis."""
+        # INCRBY is atomic — returns the NEW value after increment
+        new_max = self.redis.incrby("url_counter", self.batch_size)
+        self.current_id = new_max - self.batch_size + 1
+        self.max_id = new_max + 1
 
-    # 3. Check expiry
-    if row.expires_at and row.expires_at < now():
-        return 410  # Gone
+# Usage in Write Service:
+allocator = CounterBatchAllocator(redis.Redis(), batch_size=1000)
 
-    # 4. Populate cache with appropriate TTL
-    ttl = min(row.expires_at - now(), MAX_CACHE_TTL) if row.expires_at else MAX_CACHE_TTL
-    redis.setex(short_code, ttl, row.original_url)
-
-    return redirect_302(row.original_url)
+def shorten_url(long_url: str) -> str:
+    counter_value = allocator.get_next_id()
+    short_code = encode_base62(counter_value)
+    db.execute(
+        "INSERT INTO urls (short_code, original_url) VALUES (%s, %s)",
+        (short_code, long_url)
+    )
+    return f"https://short.ly/{short_code}"
 ```
 
----
+**Benefits of batching:**
 
-## Scaling the System
+| Metric | Without Batching | With Batching (1000) |
+|--------|-----------------|---------------------|
+| Redis calls per URL | 1 | 1/1000 = 0.001 |
+| Redis load (100K URLs/day) | 100K calls/day | 100 calls/day |
+| Network latency per URL | ~0.1ms | ~0.0001ms (amortized) |
+| Redis SPOF risk | High (every write depends on it) | Low (batch lasts a long time) |
 
-### Service Separation
+**What if a Write Service crashes mid-batch?**
 
-Since reads dominate writes by 1000:1, separate them into independent services:
+Some counter values from the unfinished batch are "lost." For example, if WS-1 had [5001-6000] and crashed at 5500, values 5501-6000 are never used. This is **perfectly fine** because:
+- We need **uniqueness**, not **continuity** (no gaps doesn't matter)
+- Lost values are a tiny fraction of the 3.5 trillion total space
+- The database `UNIQUE` constraint on `short_code` is the ultimate safety net
 
-```
-                          ┌────────────────────┐
-                          │    API Gateway /    │
-              ┌──────────▶│   Load Balancer     │◀──────────┐
-              │           └────────┬───────────┘           │
-              │                    │                        │
-       POST /urls          GET /{short_code}         Other routes
-              │                    │                        │
-              ▼                    ▼                        ▼
-    ┌──────────────┐    ┌──────────────┐          ┌──────────────┐
-    │Write Service │    │ Read Service  │          │ Other APIs   │
-    │  (2 nodes)   │    │ (20+ nodes)  │          │              │
-    └──────┬───────┘    └──────┬───────┘          └──────────────┘
-           │                   │
-           ▼                   ▼
-    ┌──────────────┐    ┌──────────────┐
-    │Global Counter│    │  Redis Cache  │
-    │   (Redis)    │    │  (Cluster)    │
-    └──────────────┘    └──────────────┘
-           │                   │
-           ▼                   ▼
-    ┌──────────────────────────────────┐
-    │           PostgreSQL              │
-    │     (Primary + Read Replicas)     │
-    └──────────────────────────────────┘
-```
-
-- **Read Service**: Scales to **20+ instances** to handle peak redirect load
-- **Write Service**: Only needs **2–3 instances** (low write volume)
-- Each scales independently based on demand
-
-### Scaling the Counter (Critical for Writes)
-
-When we horizontally scale the Write Service, the counter must remain globally unique.
-
-**Solution: Centralized Redis Counter with Batching**
+**Redis High Availability:**
 
 ```
-┌───────────────┐      GET batch       ┌──────────────┐
-│Write Service 1│─────(1000 IDs)──────▶│              │
-│  Local: 1-1000│                      │ Redis Counter│
-└───────────────┘                      │  INCRBY 1000 │
-                                       │              │
-┌───────────────┐      GET batch       │  Current:    │
-│Write Service 2│─────(1000 IDs)──────▶│   50000      │
-│Local:1001-2000│                      │              │
-└───────────────┘                      └──────────────┘
+┌──────────────┐     Writes     ┌──────────────┐
+│ Redis Primary│◀──────────────│ Write Service │
+│              │               └──────────────┘
+└──────┬───────┘
+       │ Replication
+       ▼
+┌──────────────┐
+│ Redis Replica│  ← Auto-promotes if Primary fails
+│  (Sentinel)  │     (Redis Sentinel orchestrates)
+└──────────────┘
 ```
 
-**How counter batching works:**
-
-1. Write Service instance requests a **batch of 1000** counter values from Redis.
-2. Redis atomically increments by 1000 (`INCRBY counter 1000`) and returns the batch start.
-3. The Write Service uses these 1000 values **locally** without contacting Redis.
-4. When the batch is exhausted, it requests a new one.
-
-**Benefits:**
-- Reduces Redis calls by **1000×**
-- If Redis handles 100K ops/sec and each operation allocates 1000 IDs, effective throughput = **100M IDs/sec**
-- Local counter assignment is instant (no network hop)
-
-**What if a Write Service crashes mid-batch?** Some counter values are "lost" — but since we only need **uniqueness, not continuity**, this is perfectly acceptable.
+- A single Redis instance handles **100K+ operations/sec** — far exceeding our needs
+- With batching, Redis load is negligible
+- **Redis Sentinel** or **Redis Cluster** provides automatic failover
+- If Redis fails before replicating the latest counter, we might lose a few batch values — but uniqueness is preserved via the DB's `UNIQUE` constraint
 
 ### Horizontal Scaling Summary
 
@@ -640,17 +1373,21 @@ When we horizontally scale the Write Service, the counter must remain globally u
 
 ## Redirect Flow & HTTP Status Codes
 
+> This section consolidates all HTTP status code details for quick reference.
+
 ### 301 vs 302 — The Important Choice
 
 | Aspect | 301 Permanent | 302 Found (Temporary) |
 |--------|:------------:|:---------------------:|
-| Browser caches? | ✅ Yes | ❌ No |
-| Subsequent requests hit our server? | ❌ No | ✅ Yes |
-| Can update/expire links? | ❌ Difficult | ✅ Easy |
-| Can track clicks? | ❌ No | ✅ Yes |
-| Performance for user | ✅ Faster (cached) | ⚠️ Slightly slower |
+| Browser caches? | ✅ Yes (indefinitely) | ❌ No |
+| Subsequent requests hit our server? | ❌ No (browser goes direct) | ✅ Yes (always hits us) |
+| Can update/expire links later? | ❌ Very difficult | ✅ Easy |
+| Can track clicks? | ❌ No (browser bypasses us) | ✅ Yes |
+| Performance for end user | ✅ Faster (no server round-trip) | ⚠️ Slightly slower |
+| CDN cacheability | ✅ Highly cacheable | ⚠️ Short cache times |
+| SEO impact | Passes link equity to destination | Does NOT pass link equity |
 
-### Recommendation: Use 302
+### Recommendation: Use 302 (and here's exactly why)
 
 ```http
 HTTP/1.1 302 Found
@@ -658,23 +1395,29 @@ Location: https://www.original-long-url.com/very/long/path
 Cache-Control: no-store
 ```
 
-**Why 302?**
-- Gives us **full control** over the redirect process
-- Allows **updating or expiring** links at any time
-- Enables **click tracking** (even if out of scope now, keeps the door open)
-- Prevents browsers from caching stale redirects
+**Choose 302 because:**
+1. **Control**: We can change or delete a short URL at any time and the change takes effect immediately
+2. **Expiration**: If a URL expires, users see `410 Gone` instead of being forever redirected
+3. **Analytics**: Every click goes through our server, enabling future click tracking
+4. **Debugging**: We can see every request in our logs for troubleshooting
 
-### Other HTTP Status Codes in the System
+**When would you use 301?** Only if:
+- The short URL is a permanent alias (like a vanity URL that will never change)
+- You want maximum performance and are willing to lose control
+- You're using a CDN edge-caching strategy where serving from edge is critical
 
-| Code | When Used |
-|------|-----------|
-| 201 Created | URL successfully shortened |
-| 302 Found | Redirect to original URL |
-| 400 Bad Request | Invalid URL format or params |
-| 404 Not Found | Short code doesn't exist |
-| 409 Conflict | Custom alias already taken |
-| 410 Gone | URL has expired |
-| 429 Too Many Requests | Rate limit exceeded |
+### Complete HTTP Status Code Reference
+
+| Code | Status | When Used | Response Body |
+|------|--------|-----------|---------------|
+| **201** | Created | URL successfully shortened | `{ short_url, short_code }` |
+| **302** | Found | Redirect to original URL | Empty (just `Location` header) |
+| **400** | Bad Request | Invalid URL format or missing params | `{ error: "Invalid URL format" }` |
+| **404** | Not Found | Short code doesn't exist in DB | `{ error: "URL not found" }` |
+| **409** | Conflict | Custom alias already taken | `{ error: "Alias already exists" }` |
+| **410** | Gone | URL existed but has expired | `{ error: "URL has expired" }` |
+| **429** | Too Many Requests | Rate limit exceeded | `{ error: "Rate limit exceeded", retry_after: 60 }` |
+| **500** | Internal Server Error | Unexpected server failure | `{ error: "Internal error" }` |
 
 ---
 
@@ -807,6 +1550,44 @@ Each region has its **own Redis counter instance** starting from its range base.
 
 ---
 
+## Monitoring & Observability
+
+> Staff+ candidates should proactively mention monitoring. It shows you think about **operating** systems, not just building them.
+
+### Key Metrics to Track
+
+| Metric | What It Tells You | Alert Threshold |
+|--------|-------------------|-----------------|
+| **Redirect latency (p50/p95/p99)** | Are redirects fast enough? | p99 > 100ms |
+| **Cache hit rate** | Is caching effective? | < 90% |
+| **URL creation rate** | Normal traffic vs abuse | > 10x normal |
+| **Error rate (4xx/5xx)** | System health | 5xx > 0.1% |
+| **Redis memory usage** | Cache capacity | > 80% allocated |
+| **DB connection pool** | DB under stress | > 80% connections used |
+| **Counter batch exhaustion rate** | Batch size tuning | Batches running out too fast |
+| **Expired URL cleanup lag** | Background job health | > 1 hour behind |
+
+### Logging Strategy
+
+```
+[INFO]  URL_CREATED    short_code=abc123  long_url=https://...  custom=false  ttl=86400
+[INFO]  REDIRECT       short_code=abc123  cache=HIT  latency_ms=0.3
+[INFO]  REDIRECT       short_code=xyz789  cache=MISS  latency_ms=4.2
+[WARN]  URL_EXPIRED    short_code=old456  expired_at=2026-03-01
+[ERROR] COLLISION      short_code=abc123  attempt=2  strategy=hash
+[ERROR] REDIS_DOWN     failover=sentinel  recovery_ms=1200
+```
+
+### Health Check Endpoints
+
+```http
+GET /health          → 200 OK (basic liveness)
+GET /health/ready    → 200 OK if DB + Redis are reachable (readiness)
+GET /metrics         → Prometheus-format metrics export
+```
+
+---
+
 ## Final Architecture
 
 ```
@@ -893,23 +1674,29 @@ Each region has its **own Redis counter instance** starting from its range base.
 ### Q1: Why not use auto-increment ID from the database?
 
 Auto-increment works for a single DB instance but fails when you need:
-- Multiple write instances (each has its own sequence)
+- Multiple write instances (each has its own sequence — duplicates!)
 - Predictable distribution across shards
 - No single point of failure for ID generation
+
+That said, **Postgres SEQUENCE** can work if you only have one write instance. It becomes problematic only when you horizontally scale writes. Redis counter with batching solves this elegantly.
 
 ### Q2: What if two users shorten the same URL?
 
 Most URL shorteners **allow multiple short codes** for the same long URL because:
 - Different users may want different expiration dates
 - Independent analytics tracking per short code
-- Privacy — don't reveal that a URL was already shortened
+- Privacy — don't reveal that a URL was already shortened by someone else
+- Simpler implementation (no need to index and query by long_url)
+
+If your interviewer specifically asks for dedup, add an index on `original_url` and check it before generating a new code.
 
 ### Q3: How do you handle Redis (counter) going down?
 
-- **Redis Sentinel** or **Redis Cluster** with automatic failover
+- **Redis Sentinel** or **Redis Cluster** with automatic failover (sub-second recovery)
 - If Redis fails before replicating, a few counter values may be lost — but we only need uniqueness, not continuity
-- The database `UNIQUE` constraint is the ultimate safety net
-- Fallback: derive counter from `MAX(short_code)` in the DB + a safety offset
+- The database `UNIQUE` constraint on `short_code` is the ultimate safety net
+- Fallback: derive counter from `MAX(short_code)` in the DB + a safety offset (e.g., +10,000)
+- With counter batching, each Write Service has a local batch that works even if Redis is temporarily unavailable
 
 ### Q4: Why not use NoSQL?
 
@@ -919,43 +1706,146 @@ You can! DynamoDB, for example, works well for this key-value access pattern. Bu
 - PostgreSQL is simpler to operate and reason about
 - Pick what you know best in the interview
 
+**When DynamoDB would be better**: If you need auto-scaling, serverless deployment, or are already in the AWS ecosystem with DynamoDB expertise.
+
 ### Q5: How would you add analytics?
 
-- Emit a **click event** to a message queue (Kafka) on every redirect
-- A separate **analytics service** consumes events and aggregates data
-- Store aggregated metrics in a time-series DB (ClickHouse, TimescaleDB)
-- This keeps the redirect path fast (fire-and-forget to Kafka)
+Analytics should be **completely decoupled** from the redirect path to keep redirects fast:
+
+```
+┌────────┐  GET /abc  ┌─────────────┐  302   ┌──────────┐
+│Browser │──────────▶│Read Service │───────▶│ Original │
+│        │           │             │        │   URL    │
+└────────┘           │ ALSO: emit  │        └──────────┘
+                     │ click event │
+                     └──────┬──────┘
+                            │ Async (fire-and-forget)
+                            ▼
+                     ┌──────────────┐
+                     │    Kafka     │
+                     │  Click Topic │
+                     └──────┬──────┘
+                            │ Consume
+                            ▼
+                     ┌──────────────┐    ┌──────────────┐
+                     │  Analytics   │───▶│ ClickHouse / │
+                     │  Service     │    │ TimescaleDB  │
+                     └──────────────┘    └──────────────┘
+```
+
+- Emit a **click event** to Kafka on every redirect (non-blocking)
+- Analytics service consumes events and aggregates data
+- Store in a time-series DB (ClickHouse, TimescaleDB, or DynamoDB)
+- This keeps the redirect path fast — no synchronous write for analytics
 
 ### Q6: What about link preview / OG tags?
 
-When social media platforms fetch a short URL for preview:
-- They follow the redirect and scrape the destination page
-- Our 302 redirect works transparently for this
-- No special handling needed on our end
+When social media platforms (Slack, Twitter, Facebook) fetch a short URL for a link preview:
+- Their bot/crawler follows the 302 redirect automatically
+- Scrapes the destination page for Open Graph tags
+- Our 302 redirect works transparently — no special handling needed
+- The preview shows the destination page's metadata, not our shortener's
 
 ### Q7: Can the system handle a viral link?
 
-Yes, because:
-- **CDN** caches the redirect at edge locations worldwide
-- **Redis cache** absorbs repeated reads for the same short code
-- **Read service** scales horizontally
-- A single viral link hits cache 99.9%+ of the time
+Yes, because of **layered caching**:
+
+```
+1. CDN Edge          → Cached globally, serves millions
+2. Redis Cache       → Absorbs repeated reads, sub-ms
+3. Read Replicas     → Multiple DB copies share remaining load
+4. Read Service      → Stateless, scales horizontally to 20+ nodes
+```
+
+A single viral link getting 1M clicks/hour:
+- ~99.9% served from CDN edge or Redis cache
+- Only ~1000 requests actually hit the database
+- The system barely notices
+
+### Q8: How do you prevent abuse (someone shortening millions of URLs)?
+
+Multiple layers of defense:
+1. **IP-based rate limiting**: Max 100 URLs/hour per IP (at API Gateway / WAF level)
+2. **API key rate limiting**: Authenticated users get higher limits, tracked per key
+3. **CAPTCHA**: For anonymous web users creating URLs
+4. **URL blocklist**: Check against Google Safe Browsing API on creation
+5. **Anomaly detection**: Alert on sudden spikes in URL creation from single source
+
+### Q9: What happens if someone creates a short URL for a malicious site?
+
+- **On creation**: Validate URL format, check against Safe Browsing API blacklists
+- **On report**: Implement a reporting mechanism (`POST /api/v1/urls/{code}/report`)
+- **On redirect** (optional): Show an interstitial warning page for flagged URLs
+- **Automated**: Periodically re-scan stored URLs against updated blacklists
+
+### Q10: Could you use Postgres SEQUENCE instead of Redis for the counter?
+
+Yes, for a single-instance setup. Postgres SEQUENCE is:
+- ACID-compliant
+- Atomic (no duplicates)
+- Simpler (fewer components)
+
+But it has limitations:
+- **Not horizontally scalable** — tied to one Postgres instance
+- **Slightly higher latency** (~1-2ms vs Redis's ~0.1ms)
+- **Restart behavior** — may have gaps after crashes (but gaps are fine for us)
+
+Redis is preferred when you have **multiple write instances** that need a shared counter.
+
+### Q11: How would you handle URL shortener for internal/enterprise use?
+
+Key differences from public service:
+- **Authentication required** — integrate with SSO/LDAP
+- **Private namespaces** — each team gets their own short domain prefix
+- **Audit logging** — track who created what, when
+- **No CDN needed** — all traffic is internal
+- **Tighter security** — VPN-only access, no public exposure
+- **Smaller scale** — can use simpler architecture (single server + Postgres)
+
+### Q12: What's the difference between Base62 and Base64?
+
+| Encoding | Characters | URL-safe? | Use in short URLs? |
+|----------|-----------|-----------|-------------------|
+| **Base62** | `a-z, A-Z, 0-9` | ✅ Yes | ✅ Preferred |
+| **Base64** | `a-z, A-Z, 0-9, +, /` | ❌ No (`+`, `/` have special meaning in URLs) | ❌ Avoid |
+| **Base64URL** | `a-z, A-Z, 0-9, -, _` | ✅ Yes | ✅ Also works |
+
+Base62 is the standard choice because every character is URL-safe without encoding.
 
 ---
 
 ## Key Takeaways
 
-| Topic | Decision |
-|-------|----------|
-| **Short code generation** | Counter + Base62 (preferred) or Hash + Base62 |
-| **Database** | PostgreSQL (or any RDBMS) |
-| **Cache** | Redis with LRU eviction |
-| **Redirect type** | 302 Found |
-| **Scaling reads** | Cache + CDN + horizontal read service scaling |
-| **Scaling writes** | Redis counter with batching |
-| **Counter HA** | Redis Sentinel / Cluster |
-| **Multi-region** | Disjoint counter ranges per region |
-| **Expiry** | Real-time check + background cleanup job |
+### The 30-Second Summary (If You Only Remember One Thing)
+
+> URL Shortener = **Write** (generate unique short code, store mapping) + **Read** (lookup code, 302 redirect). Reads are 1000× writes. Cache aggressively. Use Base62-encoded counter for uniqueness.
+
+### Decision Summary
+
+| Topic | Decision | Why |
+|-------|----------|-----|
+| **Short code generation** | Counter + Base62 (primary) | Zero collisions, simplest |
+| **Alternative generation** | Hash + Base62 | Stateless, no coordination |
+| **Database** | PostgreSQL | ACID, mature, simple. Dataset is small (~500GB) |
+| **Cache** | Redis with LRU eviction | Sub-ms reads, supports TTL natively |
+| **Redirect type** | 302 Found | Maintain control, enable expiration + tracking |
+| **Scaling reads** | Cache → CDN → horizontal Read Service | Layer by impact |
+| **Scaling writes** | Redis counter with batching | Amortizes Redis calls, maintains uniqueness |
+| **Counter HA** | Redis Sentinel / Cluster | Auto failover, DB UNIQUE as safety net |
+| **Multi-region** | Disjoint counter ranges per region | No cross-region coordination needed |
+| **Expiry** | Real-time check + background CRON cleanup | Two-layer: immediate + batch |
+| **Service separation** | Read Service (20+ nodes) + Write Service (2-3 nodes) | Scale independently |
+
+### How to Present This in 45 Minutes
+
+```
+0:00 - 0:05  Requirements (functional + non-functional + whiteboard)
+0:05 - 0:10  Entities + API Design (POST /urls, GET /{code})
+0:10 - 0:25  High-Level Design (creation flow, redirect flow, 302 vs 301)
+0:25 - 0:35  Deep Dives (uniqueness: counter+base62, fast reads: index→cache→CDN)
+0:35 - 0:40  Scaling (service separation, counter batching, multi-region)
+0:40 - 0:45  Q&A / Discussion (security, analytics, production concerns)
+```
 
 ---
 
