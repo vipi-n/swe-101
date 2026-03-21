@@ -787,6 +787,61 @@ flowchart TD
 
 ## Final Architecture Summary
 
+### How the Upload Flow Works (End-to-End)
+
+The upload is a **two-step process**. The client never sends the video file to your server.
+
+**Step 1 — Ask for permission to upload (Client → Video Service):**
+```
+POST /presigned_url
+Body: { name: "my video", description: "..." }   ← just metadata, NO video file
+```
+The Video Service:
+1. Saves the metadata to Cassandra (`status: uploading`)
+2. Calls the **AWS S3 SDK** to generate a **presigned URL** — a temporary, signed URL that grants the client permission to upload a file directly to a specific S3 bucket/key
+3. Returns `{ presignedUrl: "https://s3.amazonaws.com/bucket/abc?signature=...", videoId: "abc" }`
+
+**Step 2 — Upload the actual video (Client → S3 directly):**
+```
+PUT https://s3.amazonaws.com/bucket/abc?signature=...   ← directly to S3
+Body: <raw video binary>
+```
+The client uses the presigned URL to upload **directly to S3**. Your application server is completely out of the picture — no video bytes flow through it.
+
+**Step 3 — Post-processing triggers automatically:**
+- S3 emits an event (`ObjectCreated:CompleteMultipartUpload`)
+- Video Processing Service picks it up → splits, transcodes, generates manifests → stores back in S3
+- Updates `VideoMetadata` with manifest URLs, sets `status: ready`
+
+> **Bouncer Analogy:** You go to the Video Service and say "I want to upload a video." It checks your credentials, gives you a **VIP pass** (presigned URL) with an expiry time, and says "go directly to S3, show them this pass." You never go back through the bouncer to deliver the video.
+
+### How the Watch Flow Works (End-to-End)
+
+**Step 1 — Get video metadata (Client → Video Service):**
+```
+GET /videos/{videoId}
+```
+Video Service checks Cache (Redis) → falls back to Cassandra → returns `VideoMetadata` containing manifest URLs.
+
+**Step 2 — Client streams directly from CDN/S3 (no backend needed):**
+1. Client fetches the **primary manifest** from CDN/S3 (lists all available formats/qualities)
+2. Client picks a **media manifest** based on device + bandwidth (e.g., 1080p H.264)
+3. Client downloads **segments** one by one from CDN
+4. If bandwidth drops → client switches to a lower quality manifest for the next segment
+
+> After Step 1, **the backend is never contacted again**. All streaming happens Client ↔ CDN/S3.
+
+### What Talks to What
+
+| | What the Client Calls | What It Talks To | What's Transferred |
+|---|---|---|---|
+| **Upload Step 1** | `POST /presigned_url` | Video Service | Just metadata (JSON) |
+| **Upload Step 2** | `PUT <presigned URL>` | S3 directly | Video binary |
+| **Watch Step 1** | `GET /videos/{videoId}` | Video Service | Metadata + manifest URLs |
+| **Watch Step 2** | `GET <manifest/segment URLs>` | CDN / S3 directly | Manifest files + video segments |
+
+> **Key insight:** Your application server only handles lightweight JSON. All heavy data (video upload + video streaming) bypasses it entirely.
+
 #### Diagram: Final Architecture (Mermaid)
 
 ```mermaid
