@@ -285,6 +285,27 @@ The API Gateway already sits on the request path. No extra network hops since th
 - **Envoy Proxy** — local and global rate limiting filters
 - **Zuul / Spring Cloud Gateway** — rate limiter filters
 
+#### Diagram: Rate Limiter Placement in API Gateway
+
+```mermaid
+flowchart LR
+    C[Client] -->|HTTP Request| LB[Load Balancer]
+    LB --> GW[API Gateway]
+
+    subgraph API Gateway
+        direction TB
+        GW --> Auth[1. Authentication<br/>JWT / API Key]
+        Auth --> Extract[2. Extract Client ID]
+        Extract --> RL[3. Rate Limit Check]
+        RL -->|EVALSHA| Redis[(Redis Cluster)]
+        Redis -->|allowed / rejected| RL
+    end
+
+    RL -->|✅ Allowed| Backend[Backend<br/>Microservices]
+    RL -->|❌ Rejected<br/>HTTP 429| C
+    Backend -->|Response| C
+```
+
 ### 3.2 Client Identification
 
 Since the rate limiter lives in the API Gateway, it only has access to information in the HTTP request itself:
@@ -783,6 +804,27 @@ class LeakyBucket:
 
 > **Interview Tip:** Most interviewers are happy with Token Bucket. Only bring up Leaky Bucket if asked about smoothing bursty traffic or if the interviewer specifically mentions constant-rate processing.
 
+#### Diagram: Token Bucket Algorithm Flow
+
+```mermaid
+flowchart TD
+    A[Request Arrives] --> B{Bucket exists<br/>for client?}
+    B -->|No| C[Initialize bucket<br/>tokens = max_tokens<br/>last_refill = now]
+    B -->|Yes| D[Read bucket state<br/>tokens, last_refill]
+    C --> D
+
+    D --> E[Calculate elapsed time<br/>elapsed = now - last_refill]
+    E --> F[Refill tokens<br/>new_tokens = min\(max,<br/>tokens + elapsed × rate\)]
+    F --> G{new_tokens >= 1?}
+
+    G -->|Yes| H[Consume 1 token<br/>tokens = tokens - 1]
+    H --> I[Update bucket state<br/>in Redis]
+    I --> J[✅ ALLOW request<br/>Return remaining tokens]
+
+    G -->|No| K[Update last_refill<br/>in Redis]
+    K --> L[❌ REJECT request<br/>Return HTTP 429]
+```
+
 ### 3.4 Algorithm Comparison Matrix
 
 | Algorithm | Memory | Accuracy | Burst Handling | Complexity | Best For |
@@ -1065,6 +1107,33 @@ check_rate_limit("apikey:dk_abc123", developer_rule)  # Developer API key
 
 > **Pattern: Dealing with Contention** — Race conditions in distributed counters are a classic contention challenge. The solution is expanding the atomic boundary to include the entire read-modify-write sequence.
 
+#### Diagram: Race Condition & Lua Script Solution
+
+```mermaid
+sequenceDiagram
+    participant GW_A as Gateway A
+    participant GW_B as Gateway B
+    participant Redis as Redis Shard
+
+    Note over GW_A, Redis: ❌ WITHOUT Lua Script (Race Condition)
+    GW_A->>Redis: HMGET alice:bucket tokens
+    Redis-->>GW_A: tokens = 1
+    GW_B->>Redis: HMGET alice:bucket tokens
+    Redis-->>GW_B: tokens = 1 (stale!)
+    GW_A->>Redis: HMSET alice:bucket tokens 0
+    Note right of GW_A: ✅ ALLOW (correct)
+    GW_B->>Redis: HMSET alice:bucket tokens 0
+    Note right of GW_B: ✅ ALLOW (WRONG! should be rejected)
+
+    Note over GW_A, Redis: ✅ WITH Lua Script (Atomic)
+    GW_A->>Redis: EVALSHA token_bucket_lua<br/>key=alice:bucket args=[max, rate, now]
+    Note over Redis: Lua runs atomically:<br/>read → refill → consume → write
+    Redis-->>GW_A: {1, 0} → ALLOW, 0 remaining
+    GW_B->>Redis: EVALSHA token_bucket_lua<br/>key=alice:bucket args=[max, rate, now]
+    Note over Redis: Lua runs atomically:<br/>read → 0 tokens → reject
+    Redis-->>GW_B: {0, 0} → REJECT ✅
+```
+
 **Alternative: Redis WATCH (Optimistic Locking)**
 
 Another approach is Redis's `WATCH` command for optimistic locking:
@@ -1220,6 +1289,38 @@ This ensures each client's rate limiting state lives on **exactly one shard**, w
 
 > **Production Tip:** Use **Redis Cluster** rather than managing individual instances. Redis Cluster automatically divides keys across 16,384 hash slots distributed across nodes. It handles routing automatically — no custom consistent hashing logic needed in your gateways.
 
+#### Diagram: Redis Cluster Sharding with Consistent Hashing
+
+```mermaid
+flowchart TD
+    subgraph API Gateways
+        GW1[Gateway 1]
+        GW2[Gateway 2]
+        GW3[Gateway N]
+    end
+
+    GW1 & GW2 & GW3 -->|EVALSHA| Router[Redis Cluster Router<br/>CRC16\(key\) mod 16384]
+
+    subgraph Redis Cluster - 16384 Hash Slots
+        Router -->|Slots 0-5460| S1[Shard 1 Primary<br/>+ Replica]
+        Router -->|Slots 5461-10922| S2[Shard 2 Primary<br/>+ Replica]
+        Router -->|Slots 10923-16383| S3[Shard 3 Primary<br/>+ Replica]
+    end
+
+    S1 ---|"bucket:alice → slot 7234"| S2
+    S3 ---|"bucket:ip:203.x → slot 14891"| S3
+```
+
+```mermaid
+flowchart LR
+    subgraph Scaling Math
+        direction TB
+        Target["Target: 1M req/s"] --> PerShard["Per Redis Shard: ~100K ops/s"]
+        PerShard --> Shards["Shards needed: ~10"]
+        Shards --> Memory["Memory per shard:<br/>~1.5-2.5 GB"]
+    end
+```
+
 **Redis Cluster Hash Slot Mechanism:**
 
 ```
@@ -1350,6 +1451,46 @@ Circuit Breaker State Transitions:
 | **Max throughput** | ~100-200K ops/s | Millions of ops/s |
 | **Failover** | Automatic (Sentinel monitors) | Automatic (peer-to-peer) |
 | **Use when** | Small scale, no sharding needed | **Our choice: need both HA and sharding** |
+
+#### Diagram: High Availability with Failover & Circuit Breaker
+
+```mermaid
+sequenceDiagram
+    participant GW as API Gateway
+    participant CB as Circuit Breaker
+    participant RM as Redis Master
+    participant RR as Redis Replica
+
+    Note over GW, RR: Normal Operation
+    GW->>CB: check_rate_limit(alice)
+    CB->>RM: EVALSHA token_bucket
+    RM-->>CB: {1, 848}
+    CB-->>GW: ALLOW
+
+    Note over RM: ❌ Redis Master DIES
+    GW->>CB: check_rate_limit(bob)
+    CB->>RM: EVALSHA token_bucket
+    RM--xCB: Connection refused
+    CB->>CB: failure_count++ (1/5)
+
+    GW->>CB: check_rate_limit(charlie)
+    CB->>RM: EVALSHA token_bucket
+    RM--xCB: Connection refused
+    CB->>CB: failure_count++ (5/5)
+    Note over CB: Circuit OPEN → Fail-closed
+    CB-->>GW: REJECT ALL (429)
+
+    Note over RM, RR: Auto-failover (1-2s)
+    RR->>RR: Promoted to new Master
+
+    Note over CB: 30s recovery timeout
+    CB->>CB: Circuit → HALF_OPEN
+    GW->>CB: check_rate_limit(alice)
+    CB->>RR: EVALSHA token_bucket
+    RR-->>CB: {1, 847}
+    CB->>CB: Circuit → CLOSED ✅
+    CB-->>GW: ALLOW
+```
 
 ### 4.3 Minimizing Latency Overhead
 
@@ -1877,6 +2018,39 @@ http {
 | **Backpressure** | Signal upstream to send less | Traffic light: "Stop sending until I'm ready" |
 
 Rate limiting returns 429 immediately. Throttling might queue requests and process them slowly. Backpressure propagates upstream (e.g., TCP flow control, reactive streams).
+
+#### Diagram: End-to-End Request Flow (Happy + Unhappy Path)
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant GW as API Gateway
+    participant Mem as Local Memory<br/>(Rules Cache)
+    participant Redis as Redis Cluster<br/>(Shard B)
+    participant Backend as Backend Service
+
+    Note over Client, Backend: ✅ Happy Path - Request ALLOWED
+    Client->>GW: POST /api/tweets<br/>Authorization: Bearer <JWT>
+    GW->>GW: Extract client_id from JWT<br/>→ user:alice123
+    GW->>Mem: Lookup matching rules
+    Mem-->>GW: rule_default (1000/hr)<br/>rule_tweets (300/3hr)
+    GW->>Redis: EVALSHA lua_sha<br/>key=bucket:alice:rule_default<br/>args=[1000, 0.278, now]
+    Redis-->>GW: {1, 848} → ALLOW
+    GW->>Redis: EVALSHA lua_sha<br/>key=bucket:alice:rule_tweets<br/>args=[300, 0.028, now]
+    Redis-->>GW: {1, 212} → ALLOW
+    GW->>Backend: Forward POST /api/tweets
+    Backend-->>GW: 201 Created
+    GW-->>Client: 201 Created<br/>X-RateLimit-Remaining: 212<br/>X-RateLimit-Reset: 1641006000
+
+    Note over Client, Backend: ❌ Unhappy Path - Request REJECTED
+    Client->>GW: POST /api/tweets<br/>Authorization: Bearer <JWT>
+    GW->>GW: Extract client_id
+    GW->>Mem: Lookup rules
+    GW->>Redis: EVALSHA lua_sha<br/>key=bucket:alice:rule_tweets
+    Redis-->>GW: {0, 0} → REJECT
+    Note over GW: No backend call needed!
+    GW-->>Client: 429 Too Many Requests<br/>Retry-After: 42<br/>X-RateLimit-Remaining: 0
+```
 
 ### Q5: "Can you implement rate limiting without a centralized store?"
 
