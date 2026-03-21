@@ -2190,14 +2190,14 @@ The complete end-to-end architecture of the distributed rate limiter:
 #### Diagram: Final Architecture (Mermaid)
 
 ```mermaid
-flowchart TD
+flowchart LR
     Client[Client] --> LB[Load Balancer]
+    LB --> GW[API Gateway]
+
     Admin[Admin UI] --> ZK[(ZooKeeper / etcd)]
     ZK -->|Push rules| GW
 
-    LB --> GW[API Gateway<br/>Extract Client ID<br/>Match Rules<br/>EVALSHA Lua Script]
-
-    GW -->|EVALSHA| Redis[(Redis Cluster<br/>Token Bucket State)]
+    GW -->|EVALSHA| Redis[(Redis Cluster)]
     Redis -->|Allowed / Rejected| GW
 
     GW -->|Allowed| Backend[Backend Services]
