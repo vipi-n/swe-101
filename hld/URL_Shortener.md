@@ -405,6 +405,33 @@ Construct the full short URL and return it to the client:
 }
 ```
 
+#### Diagram: URL Creation Flow
+
+```mermaid
+sequenceDiagram
+    participant C as Client<br/>(Web / Mobile)
+    participant S as Primary Server
+    participant DB as PostgreSQL
+
+    C->>S: POST /api/v1/urls<br/>{long_url, custom_alias?, expires_at?}
+    S->>S: 1. Validate URL format
+    alt Custom alias provided
+        S->>DB: SELECT * FROM urls<br/>WHERE short_code = 'my-brand'
+        alt Alias exists
+            DB-->>S: Row found
+            S-->>C: 409 Conflict (alias taken)
+        else Alias available
+            DB-->>S: No rows
+            S->>S: Use custom alias as short_code
+        end
+    else No custom alias
+        S->>S: 2. Generate short_code<br/>(counter + Base62 OR hash + Base62)
+    end
+    S->>DB: INSERT INTO urls<br/>(short_code, original_url, ...)
+    DB-->>S: OK
+    S-->>C: 201 Created<br/>{short_url, short_code, created_at}
+```
+
 ---
 
 ### Requirement 2: Users Should Be Able to Access the Original URL by Using the Shortened URL
@@ -500,6 +527,41 @@ For expired URLs, we use two mechanisms:
 2. **Background job**: A periodic CRON job that batch-deletes expired rows from the database
 
 Set the **cache TTL** to match or be shorter than URL expiration times, so stale entries are automatically evicted from Redis.
+
+#### Diagram: URL Redirect Flow (with Cache)
+
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant S as Primary Server
+    participant R as Redis Cache
+    participant DB as PostgreSQL
+    participant Dest as Original URL
+
+    B->>S: GET /abc123
+    S->>R: GET url:abc123
+    alt Cache HIT
+        R-->>S: long_url
+        S->>S: Check expiration
+        S-->>B: 302 Found<br/>Location: long_url
+    else Cache MISS
+        R-->>S: null
+        S->>DB: SELECT original_url, expires_at<br/>FROM urls WHERE short_code='abc123'
+        alt Not found
+            DB-->>S: No rows
+            S-->>B: 404 Not Found
+        else Found but expired
+            DB-->>S: Row (expires_at < now)
+            S->>R: DEL url:abc123
+            S-->>B: 410 Gone
+        else Found and valid
+            DB-->>S: Row
+            S->>R: SETEX url:abc123 TTL long_url
+            S-->>B: 302 Found<br/>Location: long_url
+        end
+    end
+    B->>Dest: GET long_url (automatic redirect)
+```
 
 ---
 
@@ -650,6 +712,25 @@ Where n = number of URLs stored, m = size of the hash space.
 | 1 billion | 3.5 trillion | ~13% |
 
 At 1B URLs, ~13% of insertions would collide. Each collision requires a retry (re-hash with salt), but retries are fast. In practice, this works fine.
+
+#### Diagram: Hash + Base62 Code Generation with Collision Handling
+
+```mermaid
+flowchart TD
+    A[Receive long URL] --> B[Hash URL with MD5/SHA-256]
+    B --> C[Take first 43 bits]
+    C --> D[Base62 encode → 7-char short_code]
+    D --> E{Does short_code<br/>exist in DB?}
+
+    E -->|No| F[INSERT into DB<br/>Return short_url ✅]
+
+    E -->|Yes| G{Same long URL?}
+    G -->|Yes| H[Return existing short_url<br/>dedup ✅]
+    G -->|No| I[COLLISION!<br/>Append salt to URL]
+    I --> J{Retries < max?}
+    J -->|Yes| B
+    J -->|No| K[❌ Error: Failed to<br/>generate unique code]
+```
 
 | Pros | Cons |
 |------|------|
@@ -1012,6 +1093,34 @@ def redirect(short_code: str):
 
 With Zipfian distribution, a **95%+ cache hit rate** is realistic with moderate memory.
 
+#### Diagram: Cache-Aside Pattern for Fast Redirects
+
+```mermaid
+flowchart TD
+    B[Browser GET /abc123] --> RS[Read Service]
+
+    RS --> CacheCheck{Redis Cache<br/>Lookup}
+
+    CacheCheck -->|HIT<br/>sub-ms| Return1[✅ Return 302 redirect]
+
+    CacheCheck -->|MISS| DBQuery[Query PostgreSQL<br/>O\(log n\) via B-Tree index]
+
+    DBQuery --> Found{Row found?}
+    Found -->|No| Return404[404 Not Found]
+    Found -->|Yes, expired| Cleanup[DEL from cache<br/>410 Gone]
+    Found -->|Yes, valid| Populate[SETEX in Redis<br/>with smart TTL]
+    Populate --> Return2[✅ Return 302 redirect]
+```
+
+```mermaid
+flowchart LR
+    subgraph Optimization Layers
+        direction LR
+        L1["Layer 1: DB Index<br/>O(log n) ~5ms"] --> L2["Layer 2: Redis Cache<br/>O(1) ~0.5ms on HIT"]
+        L2 --> L3["Layer 3: CDN Edge<br/>~10ms globally"]
+    end
+```
+
 **Cache Invalidation — When to Evict:**
 
 | Event | Action |
@@ -1204,6 +1313,62 @@ Based on HTTP method + path:
 - `GET /{short_code}` → route to **Read Service** pool
 
 This is standard load balancer configuration (nginx, AWS ALB, Kong, etc.).
+
+#### Diagram: Separated Read/Write Services with Counter Batching
+
+```mermaid
+flowchart TD
+    subgraph Clients
+        C1[Client<br/>POST /api/v1/urls]
+        C2[Client<br/>GET /abc123]
+    end
+
+    subgraph API Gateway / Load Balancer
+        LB[Route by<br/>HTTP method + path]
+    end
+
+    C1 --> LB
+    C2 --> LB
+
+    subgraph Write Path
+        LB -->|POST /api/v1/urls| WS1[Write Service 1]
+        LB -->|POST /api/v1/urls| WS2[Write Service 2]
+        WS1 & WS2 -->|INCRBY 1000<br/>batch allocation| RedisCounter[(Redis Counter<br/>Global Atomic)]
+        WS1 & WS2 -->|INSERT| PG_Primary[(PostgreSQL<br/>Primary)]
+    end
+
+    subgraph Read Path
+        LB -->|GET /short_code| RS1[Read Service 1]
+        LB -->|GET /short_code| RS2[Read Service 2]
+        LB -->|GET /short_code| RSN[Read Service N<br/>20+ instances]
+        RS1 & RS2 & RSN -->|Cache lookup| RedisCache[(Redis Cache<br/>Cluster LRU)]
+        RedisCache -.->|Cache miss| PG_Replica[(PostgreSQL<br/>Read Replicas)]
+    end
+
+    PG_Primary -->|Async replication| PG_Replica
+```
+
+```mermaid
+sequenceDiagram
+    participant WS as Write Service
+    participant RC as Redis Counter
+    participant DB as PostgreSQL
+
+    Note over WS, RC: Counter Batching
+    WS->>RC: INCRBY url_counter 1000
+    RC-->>WS: 5000 (new max)
+    Note over WS: Local range: [4001...5000]
+
+    loop For each URL creation (no Redis call!)
+        WS->>WS: next_id = 4001 → Base62 → "1Bq"
+        WS->>DB: INSERT (short_code="1Bq", ...)
+    end
+
+    Note over WS: Batch exhausted at 5000
+    WS->>RC: INCRBY url_counter 1000
+    RC-->>WS: 6000
+    Note over WS: New local range: [5001...6000]
+```
 
 ---
 
@@ -1548,6 +1713,42 @@ Each region has its **own Redis counter instance** starting from its range base.
 - **Cross-region replication** ensures all regions can serve any short code
 - The DB `UNIQUE` constraint on `short_code` is the **ultimate safety net** against duplicates
 
+#### Diagram: Multi-Region Deployment
+
+```mermaid
+flowchart TD
+    DNS[Global DNS / GeoDNS] --> US[US-East Region]
+    DNS --> EU[EU-West Region]
+    DNS --> AP[AP-South Region]
+
+    subgraph US-East Region
+        US --> US_RS[Read Service \(N\)]
+        US --> US_WS[Write Service \(2-3\)]
+        US_WS --> US_Redis_Counter["Redis Counter<br/>Range: 0 - 1B"]
+        US_RS --> US_Redis_Cache[(Redis Cache)]
+        US_RS & US_WS --> US_DB[(PostgreSQL)]
+    end
+
+    subgraph EU-West Region
+        EU --> EU_RS[Read Service \(N\)]
+        EU --> EU_WS[Write Service \(2-3\)]
+        EU_WS --> EU_Redis_Counter["Redis Counter<br/>Range: 1B - 2B"]
+        EU_RS --> EU_Redis_Cache[(Redis Cache)]
+        EU_RS & EU_WS --> EU_DB[(PostgreSQL)]
+    end
+
+    subgraph AP-South Region
+        AP --> AP_RS[Read Service \(N\)]
+        AP --> AP_WS[Write Service \(2-3\)]
+        AP_WS --> AP_Redis_Counter["Redis Counter<br/>Range: 2B - 3B"]
+        AP_RS --> AP_Redis_Cache[(Redis Cache)]
+        AP_RS & AP_WS --> AP_DB[(PostgreSQL)]
+    end
+
+    US_DB <-->|Async Cross-Region<br/>Replication| EU_DB
+    EU_DB <-->|Async Cross-Region<br/>Replication| AP_DB
+```
+
 ---
 
 ## Monitoring & Observability
@@ -1633,6 +1834,56 @@ GET /metrics         → Prometheus-format metrics export
 │                                                                      │
 │  urls: short_code | original_url | created_at | expires_at | ...     │
 └──────────────────────────────────────────────────────────────────────┘
+```
+
+#### Diagram: Final Architecture (Mermaid)
+
+```mermaid
+flowchart TD
+    subgraph Clients
+        Browser[Web Browser / Mobile App]
+    end
+
+    subgraph Edge
+        CDN[CDN / Edge Network<br/>Cache 302 redirects]
+    end
+
+    subgraph Gateway
+        LB[API Gateway / Load Balancer<br/>Route POST → Write Service<br/>Route GET → Read Service]
+    end
+
+    subgraph Write Path
+        WS[Write Service<br/>2-3 instances<br/><br/>1. Validate URL<br/>2. Get counter batch<br/>3. Base62 encode<br/>4. Store in DB]
+        RedisCounter[(Redis Counter<br/>INCRBY + batch)]
+    end
+
+    subgraph Read Path
+        RS[Read Service<br/>20+ instances<br/><br/>1. Check Redis Cache<br/>2. Fallback to DB<br/>3. Return 302]
+        RedisCache[(Redis Cache Cluster<br/>LRU eviction)]
+    end
+
+    subgraph Database
+        PG_Primary[(PostgreSQL Primary<br/>Writes)]
+        PG_R1[(Replica 1<br/>Reads)]
+        PG_R2[(Replica 2<br/>Reads)]
+    end
+
+    Browser --> CDN
+    CDN --> LB
+    Browser --> LB
+
+    LB -->|POST /api/v1/urls| WS
+    LB -->|GET /short_code| RS
+
+    WS --> RedisCounter
+    WS --> PG_Primary
+
+    RS --> RedisCache
+    RedisCache -.->|Cache miss| PG_R1 & PG_R2
+
+    PG_Primary -->|Streaming<br/>replication| PG_R1 & PG_R2
+
+    CDN -.->|Cache miss| RS
 ```
 
 ---
