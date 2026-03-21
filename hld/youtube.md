@@ -2,7 +2,6 @@
 
 > **Difficulty:** Hard
 > **Asked at:** Amazon, Datadog, Meta, Snapchat, and more
-> **Source:** [Hello Interview - YouTube System Design](https://www.hellointerview.com/learn/system-design/problem-breakdowns/youtube)
 > **Patterns Used:** Handling Large Blobs, Scaling Reads
 
 ---
@@ -27,6 +26,8 @@
   - [Additional Deep Dives](#additional-deep-dives)
 - [Final Architecture Summary](#final-architecture-summary)
 - [What is Expected at Each Level?](#what-is-expected-at-each-level)
+- [Key Takeaways](#key-takeaways)
+- [Interview Q&A — Frequently Asked Questions](#interview-qa--frequently-asked-questions)
 
 ---
 
@@ -90,13 +91,17 @@ Before designing the system, plan your strategy:
 
 ### Core Entities
 
-Establishing key entities upfront will guide our thought process and lay a solid foundation as we progress towards defining the API.
+Start with a broad overview of the primary entities. At this stage, it is not necessary to know every specific column or detail. We will focus on these intricacies later when we have a clearer grasp of the system (during the high-level design). Initially, establishing these key entities will guide our thought process and lay a solid foundation as we progress towards defining the API.
+
+For YouTube, the primary entities are straightforward:
 
 | Entity | Description |
 |---|---|
 | **User** | A user of the system — either an uploader or viewer. |
 | **Video** | A video that is uploaded/watched (the actual binary data). |
-| **VideoMetadata** | Metadata associated with the video — uploading user, URL reference to a transcript, S3 URLs, etc. |
+| **VideoMetadata** | Metadata associated with the video — uploading user, URL reference to a transcript, S3 URLs, etc. We'll go into more detail later about what specifically we'll be storing here. |
+
+> In the actual interview, this can be as simple as a short list like this. Just make sure you talk through the entities with your interviewer to ensure you are on the same page.
 
 ### API Design
 
@@ -105,33 +110,21 @@ The API is the primary interface that users will interact with. We need an endpo
 #### Upload a Video
 
 ```
-POST /presigned_url
+POST /upload
 Request:
 {
-  VideoMetadata  (name, description, etc.)
-}
-Response:
-{
-  presignedUrl: string,
-  videoId: string
+  Video,
+  VideoMetadata
 }
 ```
-
-> **Note:** Initially you might think of `POST /upload` with the video binary in the body, but as we'll see, uploading directly to S3 via a presigned URL is far more efficient. The server creates a presigned URL to enable the client to upload directly to S3.
 
 #### Stream / Watch a Video
 
 ```
-GET /videos/{videoId}
-Response:
-{
-  VideoMetadata  (name, description, manifest URLs, etc.)
-}
+GET /videos/{videoId} -> Video & VideoMetadata
 ```
 
-> The GET endpoint returns **VideoMetadata** (not the video binary itself). The metadata record contains the URL(s) necessary to watch the video (manifest file URLs). The client uses these URLs to stream directly from S3/CDN.
-
-> **Important:** Your APIs may change or evolve as you progress. Proactively communicate this to your interviewer: *"I am going to outline some simple APIs, but may come back and improve them as we delve deeper into the design."*
+> **Important:** Your APIs may change or evolve as you progress. In this case, our upload and stream APIs actually evolve significantly as we weigh the trade-offs of various approaches in our high-level design (more on this later). Proactively communicate this to your interviewer: *"I am going to outline some simple APIs, but may come back and improve them as we delve deeper into the design."*
 
 ---
 
@@ -163,6 +156,17 @@ A video **container** is a file format that stores video data (frames, audio) an
 - **Container** dictates the **file format** for how the video is stored.
 - Support for video containers varies by device/OS.
 
+**Popular containers:**
+
+| Container | Extension | Typical Use |
+|---|---|---|
+| **MP4** | .mp4 | Most universal — works on nearly all devices and browsers. |
+| **WebM** | .webm | Open format by Google, optimized for web (Chrome, Firefox). |
+| **MOV** | .mov | Apple ecosystem (QuickTime). |
+| **MKV** | .mkv | Feature-rich, supports multiple audio/subtitle tracks. Common in media libraries. |
+| **FLV** | .flv | Legacy Flash video — mostly deprecated. |
+| **TS** | .ts | Transport Stream — used in HLS streaming for segments. |
+
 #### Bitrate
 
 The **bitrate** of a video is the number of bits transmitted over a period of time, typically measured in **kbps** (kilobits per second) or **Mbps** (megabits per second).
@@ -183,6 +187,22 @@ A video version is typically split into **small segments, each a few seconds lon
 
 > **"Video format"** = a shorthand for a **container + codec** combination.
 
+#### HLS vs. DASH — Streaming Protocols
+
+Two dominant standards for adaptive bitrate streaming:
+
+| Feature | **HLS** (HTTP Live Streaming) | **DASH** (Dynamic Adaptive Streaming over HTTP) |
+|---|---|---|
+| **Developed by** | Apple | MPEG (open standard) |
+| **Manifest format** | `.m3u8` (playlist) | `.mpd` (Media Presentation Description) |
+| **Segment format** | `.ts` (MPEG-2 Transport Stream) or `.fmp4` | `.m4s` (fragmented MP4) |
+| **Browser support** | Safari native; other browsers via JS (hls.js) | All modern browsers via JS (dash.js); no native Safari |
+| **Segment duration** | Typically 6s (default), 2-10s recommended | Flexible, commonly 2-6s |
+| **Adoption** | Dominant in mobile/iOS ecosystem | More flexible, gaining adoption |
+| **DRM** | FairPlay (Apple) | Widevine (Google), PlayReady (Microsoft) |
+
+> Most large-scale video platforms support **both** HLS and DASH to maximize device compatibility. YouTube primarily uses DASH internally.
+
 ---
 
 ### 1. Users Can Upload Videos
@@ -199,6 +219,15 @@ When uploading a video, we need to consider:
 - Cassandra offers **high availability** and lets us choose a **partition key**.
 - Partition on `videoId` — we aren't worried about bulk-accessing videos, just querying individual videos (point lookups).
 
+**Why Cassandra over other options?**
+
+| Option | Why / Why Not |
+|---|---|
+| **Cassandra** ✅ | Leaderless replication → high availability. Tunable consistency. Excellent write throughput for ~1M uploads/day. Built-in horizontal scaling via consistent hashing. |
+| **DynamoDB** ✅ | Also viable — managed, auto-scaled, single-digit ms latency. Good alternative if you prefer managed infra. |
+| **PostgreSQL/MySQL** ❌ | Single-leader replication creates write bottlenecks at this scale. Sharding is manual and complex. |
+| **MongoDB** ⚠️ | Could work with sharding, but less battle-tested for this write-heavy pattern at YouTube-scale. |
+
 **VideoMetadata schema:**
 
 ```
@@ -207,21 +236,40 @@ VideoMetadata {
   uploaderId:   string
   name:         string
   description:  string
-  chunks:       JSON[]    // for resumable uploads
-  s3Urls:       string[]  // URLs for manifest files
+  s3Urls:       string[]  // URLs for manifest files (populated after processing)
+  status:       string    // uploading | processing | ready
   ...
 }
 ```
+
+> **Note:** We'll add more fields (like `chunks` for resumable uploads) later as we explore deep dives. Keep the schema simple at this stage.
 
 > **Partitioning note:** Some systems require careful partitioning to read from a single node, or require relational DBs with ACID guarantees sharded by a domain key (e.g., Ticketmaster shards by concert ID). For YouTube, we can shard by `videoId` because we'd only ever do a **point look-up** by `videoId`.
 
 #### Video Data Storage — Direct Upload to S3
 
-For storing video data, upload directly to a **blob store like S3** via a **presigned URL** with **multi-part upload**.
+For storing video data, uploading directly through our application server would be extremely inefficient for multi-gigabyte files. There is significant overlap between this problem and the Dropbox file upload design. The key insight is that it's most efficient to upload data directly to a **blob store like S3** via a **presigned URL** with **multi-part upload**.
 
 ##### Pattern: Handling Large Blobs
 
 > Multi-gigabyte video files **bypass application servers entirely** using presigned URLs for direct S3 uploads, with resumable chunked transfers and CDN distribution. This same pattern applies to any system handling large files (photo storage, document sharing, backup services).
+
+**API Evolution:** This design decision means we need to change our initial `POST /upload` API to a `POST /presigned_url` API. The server creates a presigned URL to enable the client to upload directly to S3. The request payload becomes just the video metadata (not the video file itself):
+
+```
+POST /presigned_url
+Request:
+{
+  VideoMetadata  (name, description, etc.)
+}
+Response:
+{
+  presignedUrl: string,
+  videoId: string
+}
+```
+
+> **Presigned URL Security:** Presigned URLs should have a **short expiry** (e.g., 15-60 minutes). If the URL expires before the upload completes, the client can request a new one. This limits the window of exposure if a URL is leaked. The URL is scoped to a specific S3 key (object path) and HTTP method (PUT), so it cannot be reused to download or delete objects.
 
 **Upload Flow:**
 1. Client sends `POST /presigned_url` with video metadata to the Video Service.
@@ -229,27 +277,36 @@ For storing video data, upload directly to a **blob store like S3** via a **pres
 3. Client uploads the video binary **directly to S3** using the presigned URL.
 4. S3 emits an event notification upon upload completion.
 
+> **S3 Event Notifications:** When an object is created in S3, it can trigger events to **SNS**, **SQS**, **Lambda**, or **EventBridge**. For our system, the `s3:ObjectCreated:CompleteMultipartUpload` event signals that the full video file is ready for post-processing. This decouples the upload path from the processing path.
+
 #### What Do We Store for Video Data?
+
+Finally, when it comes to storing video, it's worthwhile to consider **what** we'll be storing. Understanding this will inform what deep dives we'll need to do later to clarify how we'll process videos to enable our system to successfully service our functional and non-functional requirements. Let's look at some options.
 
 ##### ❌ Bad Solution: Store the Raw Video
 
 - Storing only the raw, original video format is problematic.
-- Different devices and browsers support different codecs and containers.
-- Users on slow connections can't stream high-resolution video.
+- Different devices and browsers support different **codecs and containers**. An iPhone may not support the same format as an Android device or a web browser.
+- Users on slow connections can't stream high-resolution video — there's no way to serve a lower-quality version.
 - No support for adaptive streaming.
+- A single large file means long download times and no ability to start playback quickly.
 
 ##### ✅ Good Solution: Store Different Video Formats
 
 - Transcode the original video into **multiple formats** (different codec + container combinations).
+- For example: H.264/MP4 for broad compatibility, VP9/WebM for Chrome, H.265/HEVC for newer Apple devices.
 - Supports a wider range of devices and resolutions.
-- Still has issues with large monolithic files for streaming.
+- Allows serving different quality levels (1080p, 720p, 480p) based on user's bandwidth.
+- Still has issues with **large monolithic files** for streaming — the client must download a significant portion before playback can begin.
 
 ##### ✅✅ Great Solution: Store Different Video Formats as Segments
 
-- Split each video format into **small segments** (a few seconds each).
+- Split each video format into **small segments** (a few seconds each, typically 2-10 seconds).
 - Store segments in S3.
 - Generate **manifest files** that index these segments.
 - Enables **adaptive bitrate streaming** — the client can switch between formats mid-playback based on network conditions.
+- If a user's bandwidth drops while watching in 1080p, the player can seamlessly switch to 720p or 480p for the **next segment** without interrupting playback.
+- This is exactly how services like YouTube, Netflix, and Twitch work in production.
 
 #### Diagram: Video Upload Flow
 
@@ -301,33 +358,43 @@ flowchart LR
 
 ### 2. Users Can Watch (Stream) Videos
 
-When a user wants to watch a video:
+Now that we're storing videos, users should be able to watch them. When initially watching a video, we can assume the system fetches the `VideoMetadata` from the video metadata DB.
 
-1. Client calls `GET /videos/{videoId}`.
-2. Video Service fetches `VideoMetadata` from the DB (which contains manifest URLs).
-3. Client uses the manifest URLs to stream the video.
+**API Evolution:** Since we'll be storing video content in S3 (not in our DB), we need to modify our `GET /videos/{videoId}` endpoint. Instead of returning the Video binary, it returns just the `VideoMetadata`, which contains the URL(s) necessary to watch the video (manifest file URLs).
+
+```
+GET /videos/{videoId}
+Response:
+{
+  VideoMetadata  (name, description, manifest URLs, etc.)
+}
+```
+
+Let's look at the options we have when it comes to enabling users to watch videos.
 
 #### ❌ Bad Solution: Download the Entire Video File
 
-- Forces users to wait for the entire video to download before watching.
-- Wastes bandwidth if the user only watches part of the video.
-- Poor experience on slow connections.
+- Forces users to wait for the entire video to download before watching — this could be **minutes or hours** for large files.
+- Wastes bandwidth if the user only watches part of the video (studies show most users don't finish videos).
+- Poor experience on slow connections — no playback until full download.
+- No way to adapt quality during playback.
 
 #### ✅ Good Solution: Download Segments Incrementally
 
 - Video is split into segments.
 - Client downloads and plays segments **sequentially**.
-- Users can start watching immediately as the first segments load.
-- Better experience, but doesn't adapt to network conditions.
+- Users can start watching immediately as the first segments load — much better time-to-first-frame.
+- Better experience, but doesn't adapt to network conditions. If the video was encoded in 1080p and the user is on a slow connection, they'll experience buffering.
 
 #### ✅✅ Great Solution: Adaptive Bitrate Streaming
 
-- Client uses the **primary manifest file** to discover available video formats.
-- Client monitors **network conditions** and **device capabilities**.
-- Client dynamically selects the **best format/bitrate** for each segment.
-- If bandwidth drops, the player switches to a **lower quality** format seamlessly.
-- If bandwidth improves, the player switches to a **higher quality** format.
+- Client uses the **primary manifest file** to discover all available video formats/qualities.
+- Client monitors **network conditions** and **device capabilities** in real-time.
+- Client dynamically selects the **best format/bitrate** for **each segment independently**.
+- If bandwidth drops, the player switches to a **lower quality** format seamlessly — no buffering.
+- If bandwidth improves, the player switches to a **higher quality** format — better experience.
 - The streaming client never needs to interact with the backend after getting the initial metadata — it streams directly from S3/CDN using manifest files.
+- This is the industry standard approach used by HLS (Apple) and DASH (open standard).
 
 **Streaming Flow:**
 1. `GET /videos/{videoId}` → returns `VideoMetadata` with manifest file URL(s).
@@ -338,45 +405,33 @@ When a user wants to watch a video:
 
 #### Diagram: Video Streaming / Watch Flow
 
+> **Note:** This initial diagram shows the basic watch flow without caching or CDN. We'll add a **distributed cache** and **CDN** later in the [Scaling deep dive](#3-scaling-to-high-traffic) to handle hot videos and geo-distributed users.
+
 ```mermaid
 sequenceDiagram
     participant C as Client (Video Player)
     participant AG as API Gateway / LB
     participant VS as Video Service
-    participant Cache as Video Metadata Cache<br/>(Redis / LRU)
     participant DB as Video Metadata DB<br/>(Cassandra)
-    participant CDN as CDN (Edge Servers)
     participant S3 as S3 (Blob Store)
 
     C->>AG: GET /videos/{videoId}
     AG->>VS: Forward request
-    VS->>Cache: Lookup VideoMetadata
-    alt Cache Hit
-        Cache-->>VS: VideoMetadata
-    else Cache Miss
-        VS->>DB: Query by videoId
-        DB-->>VS: VideoMetadata
-        VS->>Cache: Populate cache
-    end
+    VS->>DB: Query by videoId
+    DB-->>VS: VideoMetadata
     VS-->>C: VideoMetadata (manifest URLs)
 
-    C->>CDN: GET primary manifest file
-    alt CDN Cache Hit
-        CDN-->>C: Primary manifest
-    else CDN Cache Miss
-        CDN->>S3: Fetch primary manifest
-        S3-->>CDN: Primary manifest
-        CDN-->>C: Primary manifest
-    end
+    C->>S3: GET primary manifest file
+    S3-->>C: Primary manifest
 
     C->>C: Select media manifest<br/>(based on device & bandwidth)
-    C->>CDN: GET media manifest file
-    CDN-->>C: Media manifest (segment index)
+    C->>S3: GET media manifest file
+    S3-->>C: Media manifest (segment index)
 
     loop Adaptive Bitrate Streaming
         C->>C: Monitor network conditions
-        C->>CDN: GET video segment (best bitrate)
-        CDN-->>C: Video segment data
+        C->>S3: GET video segment (best bitrate)
+        S3-->>C: Video segment data
         C->>C: Play segment & adapt quality
     end
 ```
@@ -386,15 +441,13 @@ flowchart LR
     subgraph Metadata Retrieval
         Client -->|GET /videos/videoId| APIGateway[API Gateway &<br/>Load Balancer]
         APIGateway --> VideoService[Video Service]
-        VideoService -->|Check cache first| Cache[(Redis Cache<br/>LRU)]
-        VideoService -->|Fallback to DB| CassandraDB[(Cassandra<br/>Video Metadata DB)]
+        VideoService -->|Query by videoId| CassandraDB[(Cassandra<br/>Video Metadata DB)]
         VideoService -->|Return VideoMetadata<br/>with manifest URLs| Client
     end
 
     subgraph Adaptive Streaming
-        Client -->|Fetch manifests &<br/>segments| CDN[CDN<br/>Edge Servers]
-        CDN -->|Cache miss| S3[(S3<br/>Blob Store)]
-        CDN -->|Stream segments<br/>adaptive bitrate| Client
+        Client -->|Fetch manifests &<br/>segments| S3[(S3<br/>Blob Store)]
+        S3 -->|Stream segments<br/>adaptive bitrate| Client
     end
 ```
 
@@ -420,7 +473,8 @@ When a video is uploaded in its original format, it needs to be **post-processed
 | 1. **Split** | Split the original file into segments (using tools like `ffmpeg`). These segments will be transcoded and used to generate different video containers. |
 | 2. **Transcode** | Convert each segment from one encoding to another. Also process other aspects — audio, transcript generation, etc. |
 | 3. **Create Manifests** | Create manifest files referencing the different segments in different video formats. |
-| 4. **Mark Complete** | Mark the upload as "complete" in the metadata DB. |
+| 4. **Generate Thumbnails** | Extract representative frames at key timestamps. Generate multiple thumbnail sizes (small, medium, large) for different UI contexts (search results, player preview, homepage cards). |
+| 5. **Mark Complete** | Mark the upload as "complete" in the metadata DB. |
 
 > This design assumes we upload the original video in full first, before processing/splitting. Some video services start processing earlier if the client splits the video on upload into segments, enabling a "pipeline" where downstream work begins before the full upload completes.
 
@@ -859,3 +913,89 @@ flowchart LR
 8. **Caching** (LRU, distributed) solves the "hot video" problem for popular content metadata.
 9. **Chunks ≠ Segments** — chunks are for upload; segments are for streaming.
 10. The **read-to-write ratio is extreme** — design for reads, not writes.
+
+---
+
+## Interview Q&A — Frequently Asked Questions
+
+### Q: Why not upload videos through the application server?
+
+**A:** Video files can be 10s of GBs. Routing them through application servers would:
+- **Saturate server bandwidth** — a single large upload could consume all available network I/O.
+- **Block other requests** — the server would be occupied transferring bytes instead of handling business logic.
+- **Increase latency** — data travels Client → Server → S3 instead of Client → S3 directly.
+- **Increase cost** — you pay for the compute time to proxy the bytes plus the egress.
+
+Using **presigned URLs**, the client uploads directly to S3. The application server only handles lightweight metadata operations.
+
+### Q: How many presigned URLs are created per upload?
+
+**A:** For a standard upload, **one presigned URL** is returned per video. The client uses S3's multipart upload API with that single URL (or more specifically, the upload is initiated and S3 returns an `uploadId` used for all subsequent part uploads).
+
+For resumable uploads with chunk-level tracking, the client may request **one presigned URL per chunk**, or use a single multipart upload session. The choice depends on the granularity of resume tracking desired.
+
+### Q: Do chunks get merged into one video before splitting into segments?
+
+**A:** Yes. S3 **internally stitches** chunks together when `CompleteMultipartUpload` is called. The result is a single object in S3 containing the full original video. The video processing pipeline then downloads this full object, splits it into playable segments, transcodes them, and generates manifest files.
+
+### Q: Why Cassandra and not a relational DB like PostgreSQL?
+
+**A:** Key reasons:
+1. **Scale**: ~1M writes/day, ~365M records/year. Cassandra handles this with horizontal scaling; PostgreSQL would require complex sharding.
+2. **Availability over consistency**: YouTube prioritizes availability (AP in CAP theorem). Cassandra's leaderless, tunable consistency fits perfectly.
+3. **Access pattern**: We only do **point lookups** by `videoId` — no joins, no complex queries. This matches Cassandra's strength with partition key lookups.
+4. **No ACID needed**: We don't need transactions across rows (e.g., we're not coordinating seats like Ticketmaster).
+
+### Q: What happens if video processing fails midway?
+
+**A:** The workflow orchestrator (Temporal) provides **automatic retries with backoff** for individual tasks. If a transcode worker fails:
+1. Temporal detects the failure (heartbeat timeout or explicit error).
+2. The failed task is **rescheduled** to another worker.
+3. Since intermediate outputs (segments) are stored in S3, completed work is **not lost**.
+4. If the entire workflow fails after max retries, `VideoMetadata.status` remains `processing` and an alert is triggered.
+5. A **dead letter queue** can capture persistently failing videos for manual investigation.
+
+### Q: How does the CDN know which videos to cache?
+
+**A:** CDNs use a **pull-based** caching model:
+1. When a user requests a video segment from the CDN edge server, if it's a **cache miss**, the CDN fetches it from S3 (the origin).
+2. The CDN caches the segment locally for subsequent requests.
+3. **LRU or TTL-based eviction** removes less popular content.
+4. Newly uploaded or viral videos naturally get cached as requests come in.
+5. For anticipated viral content (e.g., a major creator's new upload), you could **pre-warm** the CDN by pushing content to edge servers proactively.
+
+### Q: What is the difference between chunks and segments?
+
+**A:**
+
+| | **Chunk** | **Segment** |
+|---|---|---|
+| **Purpose** | Upload reliability | Streaming playback |
+| **Created by** | Client (before upload) | Server (during post-processing) |
+| **Size** | ~5-10 MB (optimized for network transfer) | ~2-10 seconds of video (optimized for playback) |
+| **Format** | Raw binary data | Encoded in target codec/container |
+| **Lifetime** | Temporary (merged by S3 after upload) | Permanent (stored in S3, served via CDN) |
+
+### Q: How would you handle video deletion?
+
+**A:** Video deletion involves:
+1. **Soft delete** the `VideoMetadata` record (set `status: deleted`).
+2. **CDN invalidation** — issue a cache invalidation request for all related manifest and segment URLs.
+3. **Async S3 cleanup** — a background job deletes the actual segment files, manifest files, and original video from S3.
+4. The soft delete ensures the video is immediately inaccessible, while the actual storage cleanup happens asynchronously.
+
+### Q: What about content moderation?
+
+**A:** While out of scope for this design, in production:
+1. After upload, before marking `status: ready`, run the video through a **content moderation pipeline** (AI-based image/audio classification).
+2. Flag videos that violate policies → manual review queue.
+3. This adds a step to the DAG between transcoding and "mark complete."
+4. Could also run periodically on existing content based on new policy rules.
+
+### Q: How would you estimate storage requirements?
+
+**A:** Back-of-envelope:
+- **1M uploads/day**, average original video size: ~500 MB → **500 TB/day** raw uploads.
+- After transcoding to ~5 formats × segments → roughly **2-3x** the original size → **~1-1.5 PB/day** processed.
+- Over a year: **~365-550 PB** — this is why S3's virtually unlimited storage is essential.
+- With **S3 Intelligent-Tiering** or **Glacier** for older/less-accessed videos, storage costs can be significantly reduced.
