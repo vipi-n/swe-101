@@ -2187,6 +2187,63 @@ query {
 
 The complete end-to-end architecture of the distributed rate limiter:
 
+#### Diagram: Final Architecture (Mermaid)
+
+```mermaid
+flowchart TD
+    subgraph Admin Layer
+        AdminUI[Admin UI<br/>CRUD Rules] --> ZK[(ZooKeeper / etcd<br/>Rule Store)]
+    end
+
+    ZK -->|Watch / Push<br/>on change| GW1
+    ZK -->|Watch / Push<br/>on change| GW2
+    ZK -->|Watch / Push<br/>on change| GWN
+
+    subgraph Clients
+        C1[Client 1]
+        C2[Client 2]
+        CN[Client N]
+    end
+
+    C1 & C2 & CN --> LB[Load Balancer]
+
+    subgraph API Gateway Layer
+        LB --> GW1[API Gateway 1]
+        LB --> GW2[API Gateway 2]
+        LB --> GWN[API Gateway N]
+
+        GW1 & GW2 & GWN --> |"1. Receive Request<br/>2. Extract Client ID<br/>3. Match Rules from Memory<br/>4. EVALSHA Lua Script"| RedisCluster
+    end
+
+    subgraph Redis Cluster Layer
+        RedisCluster[Redis Cluster Router<br/>CRC16 mod 16384]
+        RedisCluster --> S1["Shard 1 Primary<br/>Slots 0-5460<br/>+ Replica"]
+        RedisCluster --> S2["Shard 2 Primary<br/>Slots 5461-10922<br/>+ Replica"]
+        RedisCluster --> S3["Shard 3 Primary<br/>Slots 10923-16383<br/>+ Replica"]
+    end
+
+    GW1 & GW2 & GWN -->|Allowed| Backend
+    GW1 & GW2 & GWN -.->|Rejected: HTTP 429| C1 & C2 & CN
+
+    subgraph Backend Services
+        Backend[Backend Router]
+        Backend --> AuthSvc[Auth Service]
+        Backend --> SearchSvc[Search Service]
+        Backend --> UserSvc[User Service]
+        Backend --> OrderSvc[Order Service]
+    end
+
+    subgraph Monitoring
+        Prometheus[Prometheus<br/>Metrics] --> Grafana[Grafana<br/>Dashboards]
+        Grafana --> PagerDuty[PagerDuty<br/>Alerts]
+        ELK[ELK / Loki<br/>Logs & Audit]
+    end
+
+    GW1 & GW2 & GWN -.-> Prometheus
+    GW1 & GW2 & GWN -.-> ELK
+    RedisCluster -.-> Prometheus
+```
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │                                        DISTRIBUTED RATE LIMITER — FINAL ARCHITECTURE                          │
