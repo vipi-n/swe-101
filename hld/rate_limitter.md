@@ -814,7 +814,7 @@ flowchart TD
     C --> D
 
     D --> E[Calculate elapsed time<br/>elapsed = now - last_refill]
-    E --> F[Refill tokens<br/>new_tokens = min\(max,<br/>tokens + elapsed × rate\)]
+    E --> F["Refill tokens<br/>new_tokens = min(max,<br/>tokens + elapsed x rate)"]
     F --> G{new_tokens >= 1?}
 
     G -->|Yes| H[Consume 1 token<br/>tokens = tokens - 1]
