@@ -1299,7 +1299,7 @@ flowchart TD
         GW3[Gateway N]
     end
 
-    GW1 & GW2 & GW3 -->|EVALSHA| Router[Redis Cluster Router<br/>CRC16\(key\) mod 16384]
+    GW1 & GW2 & GW3 -->|EVALSHA| Router["Redis Cluster Router<br/>CRC16(key) mod 16384"]
 
     subgraph Redis Cluster - 16384 Hash Slots
         Router -->|Slots 0-5460| S1[Shard 1 Primary<br/>+ Replica]
@@ -2025,12 +2025,12 @@ Rate limiting returns 429 immediately. Throttling might queue requests and proce
 sequenceDiagram
     participant Client
     participant GW as API Gateway
-    participant Mem as Local Memory<br/>(Rules Cache)
-    participant Redis as Redis Cluster<br/>(Shard B)
+    participant Mem as Local Memory - Rules Cache
+    participant Redis as Redis Cluster - Shard B
     participant Backend as Backend Service
 
     Note over Client, Backend: ✅ Happy Path - Request ALLOWED
-    Client->>GW: POST /api/tweets<br/>Authorization: Bearer <JWT>
+    Client->>GW: POST /api/tweets<br/>Authorization: Bearer JWT
     GW->>GW: Extract client_id from JWT<br/>→ user:alice123
     GW->>Mem: Lookup matching rules
     Mem-->>GW: rule_default (1000/hr)<br/>rule_tweets (300/3hr)
@@ -2043,7 +2043,7 @@ sequenceDiagram
     GW-->>Client: 201 Created<br/>X-RateLimit-Remaining: 212<br/>X-RateLimit-Reset: 1641006000
 
     Note over Client, Backend: ❌ Unhappy Path - Request REJECTED
-    Client->>GW: POST /api/tweets<br/>Authorization: Bearer <JWT>
+    Client->>GW: POST /api/tweets<br/>Authorization: Bearer JWT
     GW->>GW: Extract client_id
     GW->>Mem: Lookup rules
     GW->>Redis: EVALSHA lua_sha<br/>key=bucket:alice:rule_tweets
