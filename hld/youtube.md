@@ -733,6 +733,26 @@ flowchart TD
 
 ## Final Architecture Summary
 
+#### Diagram: Final Architecture (Mermaid)
+
+```mermaid
+flowchart TD
+    Client[Client] --> APIGW[API Gateway]
+
+    APIGW --> VS[Video Service]
+    VS --> MetaDB[(Cassandra)]
+    VS --> Cache[(Redis Cache)]
+
+    Client -->|Presigned URL| S3[(S3 Blob Store)]
+
+    S3 -->|Event| VPS[Video Processing<br/>via Temporal]
+    VPS -->|Segments + Manifests| S3
+    VPS -->|Update status| MetaDB
+
+    S3 --> CDN[CDN Edge]
+    Client -->|Adaptive Bitrate<br/>Streaming| CDN
+```
+
 ### System Components
 
 ```
