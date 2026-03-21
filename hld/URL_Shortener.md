@@ -1103,7 +1103,7 @@ flowchart TD
 
     CacheCheck -->|HIT<br/>sub-ms| Return1[✅ Return 302 redirect]
 
-    CacheCheck -->|MISS| DBQuery[Query PostgreSQL<br/>O\(log n\) via B-Tree index]
+    CacheCheck -->|MISS| DBQuery["Query PostgreSQL<br/>O(log n) via B-Tree index"]
 
     DBQuery --> Found{Row found?}
     Found -->|No| Return404[404 Not Found]
@@ -1722,24 +1722,24 @@ flowchart TD
     DNS --> AP[AP-South Region]
 
     subgraph US-East Region
-        US --> US_RS[Read Service \(N\)]
-        US --> US_WS[Write Service \(2-3\)]
+        US --> US_RS["Read Service (N)"]
+        US --> US_WS["Write Service (2-3)"]
         US_WS --> US_Redis_Counter["Redis Counter<br/>Range: 0 - 1B"]
         US_RS --> US_Redis_Cache[(Redis Cache)]
         US_RS & US_WS --> US_DB[(PostgreSQL)]
     end
 
     subgraph EU-West Region
-        EU --> EU_RS[Read Service \(N\)]
-        EU --> EU_WS[Write Service \(2-3\)]
+        EU --> EU_RS["Read Service (N)"]
+        EU --> EU_WS["Write Service (2-3)"]
         EU_WS --> EU_Redis_Counter["Redis Counter<br/>Range: 1B - 2B"]
         EU_RS --> EU_Redis_Cache[(Redis Cache)]
         EU_RS & EU_WS --> EU_DB[(PostgreSQL)]
     end
 
     subgraph AP-South Region
-        AP --> AP_RS[Read Service \(N\)]
-        AP --> AP_WS[Write Service \(2-3\)]
+        AP --> AP_RS["Read Service (N)"]
+        AP --> AP_WS["Write Service (2-3)"]
         AP_WS --> AP_Redis_Counter["Redis Counter<br/>Range: 2B - 3B"]
         AP_RS --> AP_Redis_Cache[(Redis Cache)]
         AP_RS & AP_WS --> AP_DB[(PostgreSQL)]
