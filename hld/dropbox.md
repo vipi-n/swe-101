@@ -100,7 +100,7 @@ Start with a broad overview of the primary entities. At this stage you don't nee
 > In an actual interview, a short list like this is sufficient. Talk through the entities with your interviewer to ensure alignment.
 
 ```mermaid
-%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
 erDiagram
     USER {
         string userId PK
@@ -208,7 +208,7 @@ Our metadata is loosely structured, with few relations, and the main query patte
 - **Problems:** Single point of failure, storage limits, no redundancy, no scalability.
 
 ```mermaid
-%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
 sequenceDiagram
     participant C as Client
     participant S as File Server
@@ -229,7 +229,7 @@ sequenceDiagram
 - **Problem:** The file is uploaded **twice** — once from client → server, then server → S3. Doubles bandwidth and latency.
 
 ```mermaid
-%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
 sequenceDiagram
     participant C as Client
     participant FS as File Service
@@ -253,7 +253,7 @@ sequenceDiagram
 - S3 sends a notification on completed upload so the backend can update metadata.
 
 ```mermaid
-%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
 sequenceDiagram
     participant C as Client
     participant GW as API Gateway & LB
@@ -302,7 +302,7 @@ sequenceDiagram
 - Users download from the **nearest CDN edge location** rather than from the S3 region directly.
 
 ```mermaid
-%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
 sequenceDiagram
     participant C as Client (Downloader)
     participant GW as API Gateway & LB
@@ -364,7 +364,7 @@ Implementation is similar to Google Drive — enter the email of the user you wa
 - Enforce permissions: when a user tries to download, check the share table.
 
 ```mermaid
-%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
 sequenceDiagram
     participant A as User A (Owner)
     participant GW as API Gateway & LB
@@ -427,7 +427,7 @@ Each client maintains a **single WebSocket (or SSE) connection** to the server �
 This ensures **near-instant sync** with **eventual consistency** even if the WebSocket connection is temporarily interrupted.
 
 ```mermaid
-%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
 sequenceDiagram
     participant D1 as Device 1 (Uploader)
     participant GW as API Gateway & LB
@@ -479,7 +479,7 @@ The complete system with all functional requirements satisfied:
 #### Full Architecture Diagram
 
 ```mermaid
-%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
 graph TB
     subgraph Clients
         UP["Uploader<br/>(Desktop / Mobile / Web)"]
@@ -523,7 +523,7 @@ graph TB
 #### Data Model Summary
 
 ```mermaid
-%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
 classDiagram
     class FileMetadata {
         +String fileId PK
@@ -663,7 +663,7 @@ You cannot naively rely on file names (two users could upload files with the sam
 Throughout this process, the client tracks progress and updates the UI.
 
 ```mermaid
-%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
 sequenceDiagram
     participant C as Client
     participant GW as API Gateway & LB
@@ -743,7 +743,7 @@ The client doesn't need to know anything about the original chunk boundaries.
 - This is how systems like Dropbox actually achieve efficient delta sync in practice.
 
 ```mermaid
-%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
 graph LR
     subgraph "Fixed-Size Chunking - BAD"
         direction LR
@@ -760,7 +760,7 @@ graph LR
 > ⬆️ Fixed-size: One small edit shifts all boundaries → ALL subsequent chunks change.
 
 ```mermaid
-%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
 graph LR
     subgraph "Content-Defined Chunking - GOOD (Rabin Fingerprint)"
         direction LR
@@ -805,7 +805,7 @@ The client should implement logic to decide whether to compress based on **file 
 > **Important:** Always **compress before you encrypt**. Encryption introduces randomness that makes compression ineffective. Compressing first achieves a much higher compression ratio.
 
 ```mermaid
-%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
 graph LR
     subgraph "Client Upload Pipeline"
         direction LR
@@ -868,7 +868,7 @@ When a user requests a download link, generate a **signed URL** valid for a shor
 | **3. Validation** | When the CDN receives the request, it verifies the signature using the corresponding **public key** (registered with CloudFront), checks the expiration and restrictions. If valid → serve content. If not → deny access. |
 
 ```mermaid
-%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
 sequenceDiagram
     participant C as Authorized Client
     participant GW as API Gateway & LB
@@ -903,7 +903,7 @@ sequenceDiagram
 #### Security Layers Overview
 
 ```mermaid
-%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
 graph TB
     subgraph "Security Layers"
         direction TB
