@@ -100,6 +100,7 @@ Start with a broad overview of the primary entities. At this stage you don't nee
 > In an actual interview, a short list like this is sufficient. Talk through the entities with your interviewer to ensure alignment.
 
 ```mermaid
+%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
 erDiagram
     USER {
         string userId PK
@@ -207,6 +208,7 @@ Our metadata is loosely structured, with few relations, and the main query patte
 - **Problems:** Single point of failure, storage limits, no redundancy, no scalability.
 
 ```mermaid
+%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
 sequenceDiagram
     participant C as Client
     participant S as File Server
@@ -227,6 +229,7 @@ sequenceDiagram
 - **Problem:** The file is uploaded **twice** — once from client → server, then server → S3. Doubles bandwidth and latency.
 
 ```mermaid
+%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
 sequenceDiagram
     participant C as Client
     participant FS as File Service
@@ -250,6 +253,7 @@ sequenceDiagram
 - S3 sends a notification on completed upload so the backend can update metadata.
 
 ```mermaid
+%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
 sequenceDiagram
     participant C as Client
     participant GW as API Gateway & LB
@@ -298,6 +302,7 @@ sequenceDiagram
 - Users download from the **nearest CDN edge location** rather than from the S3 region directly.
 
 ```mermaid
+%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
 sequenceDiagram
     participant C as Client (Downloader)
     participant GW as API Gateway & LB
@@ -359,6 +364,7 @@ Implementation is similar to Google Drive — enter the email of the user you wa
 - Enforce permissions: when a user tries to download, check the share table.
 
 ```mermaid
+%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
 sequenceDiagram
     participant A as User A (Owner)
     participant GW as API Gateway & LB
@@ -421,6 +427,7 @@ Each client maintains a **single WebSocket (or SSE) connection** to the server �
 This ensures **near-instant sync** with **eventual consistency** even if the WebSocket connection is temporarily interrupted.
 
 ```mermaid
+%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
 sequenceDiagram
     participant D1 as Device 1 (Uploader)
     participant GW as API Gateway & LB
@@ -432,25 +439,21 @@ sequenceDiagram
 
     Note over D1: Local file change detected<br/>(FSEvents / FileSystemWatcher)
 
-    rect rgb(220, 240, 255)
-        Note over D1,S3: Local → Remote Sync
-        D1->>GW: POST /files (initiate upload)
-        GW->>FS: Generate presigned URL
-        FS-->>D1: Presigned URL
-        D1->>S3: Upload changed file directly
-        S3->>FS: S3 Event Notification
-        FS->>DB: Update metadata (new version)
-    end
+    Note over D1,S3: Local → Remote Sync
+    D1->>GW: POST /files (initiate upload)
+    GW->>FS: Generate presigned URL
+    FS-->>D1: Presigned URL
+    D1->>S3: Upload changed file directly
+    S3->>FS: S3 Event Notification
+    FS->>DB: Update metadata (new version)
 
-    rect rgb(255, 240, 220)
-        Note over WS,D2: Remote → Local Sync
-        FS->>WS: Notify change event
-        WS->>D2: Push change notification via WebSocket
-        D2->>GW: GET /files/{fileId} (request download)
-        GW->>FS: Generate CDN signed URL
-        FS-->>D2: CDN signed URL
-        D2->>D2: Download & update local copy
-    end
+    Note over WS,D2: Remote → Local Sync
+    FS->>WS: Notify change event
+    WS->>D2: Push change notification via WebSocket
+    D2->>GW: GET /files/{fileId} (request download)
+    GW->>FS: Generate CDN signed URL
+    FS-->>D2: CDN signed URL
+    D2->>D2: Download & update local copy
 
     Note over D2: Periodic polling as safety net<br/>GET /files/changes?since={ts}
 ```
@@ -476,28 +479,29 @@ The complete system with all functional requirements satisfied:
 #### Full Architecture Diagram
 
 ```mermaid
+%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
 graph TB
     subgraph Clients
-        UP["🖥️ Uploader<br/>(Desktop / Mobile / Web)"]
-        DN["🖥️ Downloader<br/>(Desktop / Mobile / Web)"]
+        UP["Uploader<br/>(Desktop / Mobile / Web)"]
+        DN["Downloader<br/>(Desktop / Mobile / Web)"]
     end
 
     subgraph Gateway Layer
-        LB["⚖️ API Gateway & Load Balancer<br/>• Routing<br/>• Authentication<br/>• Rate Limiting<br/>• SSL Termination"]
+        LB["API Gateway & Load Balancer<br/>Routing | Authentication | Rate Limiting | SSL"]
     end
 
     subgraph Backend Services
-        FS["📋 File Service<br/>• Presigned URL generation<br/>• Metadata CRUD<br/>• Permission checks"]
-        WS["🔌 WebSocket Server<br/>• Real-time change notifications"]
+        FS["File Service<br/>Presigned URL generation | Metadata CRUD | Permission checks"]
+        WS["WebSocket Server<br/>Real-time change notifications"]
     end
 
     subgraph Data Stores
-        DB[("🗃️ File Metadata DB<br/>(DynamoDB / PostgreSQL)<br/>• FileMetadata table<br/>• SharedFiles table")]
+        DB[("File Metadata DB<br/>(DynamoDB / PostgreSQL)<br/>FileMetadata table | SharedFiles table")]
     end
 
     subgraph Storage & Delivery
-        S3[("☁️ S3 Blob Storage<br/>• Actual file storage<br/>• 11 nines durability")]
-        CDN["🌐 CDN (CloudFront)<br/>• Edge caching<br/>• Signed URL validation"]
+        S3[("S3 Blob Storage<br/>Actual file storage | 11 nines durability")]
+        CDN["CDN - CloudFront<br/>Edge caching | Signed URL validation"]
     end
 
     UP -->|"1. Request presigned URL"| LB
@@ -514,20 +518,12 @@ graph TB
     FS -->|"8. Generate CDN signed URL"| DN
     CDN -->|"Fetch on cache miss"| S3
     DN ==>|"9. Download from edge"| CDN
-
-    style UP fill:#4CAF50,color:#fff
-    style DN fill:#2196F3,color:#fff
-    style S3 fill:#FF9800,color:#fff
-    style CDN fill:#9C27B0,color:#fff
-    style FS fill:#607D8B,color:#fff
-    style DB fill:#795548,color:#fff
-    style LB fill:#F44336,color:#fff
-    style WS fill:#009688,color:#fff
 ```
 
 #### Data Model Summary
 
 ```mermaid
+%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
 classDiagram
     class FileMetadata {
         +String fileId PK
@@ -667,6 +663,7 @@ You cannot naively rely on file names (two users could upload files with the sam
 Throughout this process, the client tracks progress and updates the UI.
 
 ```mermaid
+%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
 sequenceDiagram
     participant C as Client
     participant GW as API Gateway & LB
@@ -746,41 +743,35 @@ The client doesn't need to know anything about the original chunk boundaries.
 - This is how systems like Dropbox actually achieve efficient delta sync in practice.
 
 ```mermaid
+%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
 graph LR
-    subgraph "Fixed-Size Chunking ❌"
+    subgraph "Fixed-Size Chunking - BAD"
         direction LR
         F1["Chunk 1<br/>hash: abc"] --> F2["Chunk 2<br/>hash: def"]
         F2 --> F3["Chunk 3<br/>hash: ghi"]
         F3 --> F4["Chunk 4<br/>hash: jkl"]
 
-        F1b["Chunk 1<br/>hash: abc"] --> F2b["Chunk 2<br/>⚠️ hash: XYZ"]
-        F2b --> F3b["Chunk 3<br/>⚠️ hash: MNO"]
-        F3b --> F4b["Chunk 4<br/>⚠️ hash: PQR"]
+        F1b["Chunk 1<br/>hash: abc"] --> F2b["Chunk 2<br/>CHANGED hash: XYZ"]
+        F2b --> F3b["Chunk 3<br/>CHANGED hash: MNO"]
+        F3b --> F4b["Chunk 4<br/>CHANGED hash: PQR"]
     end
-
-    style F2b fill:#ff6b6b,color:#fff
-    style F3b fill:#ff6b6b,color:#fff
-    style F4b fill:#ff6b6b,color:#fff
 ```
 
 > ⬆️ Fixed-size: One small edit shifts all boundaries → ALL subsequent chunks change.
 
 ```mermaid
+%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
 graph LR
-    subgraph "Content-Defined Chunking ✅ (Rabin Fingerprint)"
+    subgraph "Content-Defined Chunking - GOOD (Rabin Fingerprint)"
         direction LR
         C1["Chunk 1<br/>hash: abc"] --> C2["Chunk 2<br/>hash: def"]
         C2 --> C3["Chunk 3<br/>hash: ghi"]
         C3 --> C4["Chunk 4<br/>hash: jkl"]
 
-        C1b["Chunk 1<br/>hash: abc"] --> C2b["Chunk 2<br/>⚠️ hash: XYZ"]
-        C2b --> C3b["Chunk 3<br/>hash: ghi ✅"]
-        C3b --> C4b["Chunk 4<br/>hash: jkl ✅"]
+        C1b["Chunk 1<br/>hash: abc"] --> C2b["Chunk 2<br/>CHANGED hash: XYZ"]
+        C2b --> C3b["Chunk 3<br/>hash: ghi SAME"]
+        C3b --> C4b["Chunk 4<br/>hash: jkl SAME"]
     end
-
-    style C2b fill:#ff6b6b,color:#fff
-    style C3b fill:#4CAF50,color:#fff
-    style C4b fill:#4CAF50,color:#fff
 ```
 
 > ⬆️ CDC: Boundaries based on content → only the **affected chunk** changes, rest stay identical.
@@ -814,30 +805,26 @@ The client should implement logic to decide whether to compress based on **file 
 > **Important:** Always **compress before you encrypt**. Encryption introduces randomness that makes compression ineffective. Compressing first achieves a much higher compression ratio.
 
 ```mermaid
+%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
 graph LR
     subgraph "Client Upload Pipeline"
         direction LR
-        A["📄 Original File"] --> B{"Compressible?<br/>(text, code, etc.)"}
-        B -->|Yes| C["🗜️ Compress<br/>(Zstandard)"]
+        A["Original File"] --> B{"Compressible?<br/>(text, code, etc.)"}
+        B -->|Yes| C["Compress<br/>(Zstandard)"]
         B -->|No| D["Skip Compression<br/>(images, video)"]
-        C --> E["🔒 Encrypt<br/>(if needed)"]
+        C --> E["Encrypt<br/>(if needed)"]
         D --> E
-        E --> F["✂️ Chunk<br/>(5-10 MB via CDC)"]
-        F --> G["#️⃣ Fingerprint<br/>(SHA-256 per chunk)"]
-        G --> H["☁️ Upload to S3<br/>(presigned URLs)"]
+        E --> F["Chunk<br/>(5-10 MB via CDC)"]
+        F --> G["Fingerprint<br/>(SHA-256 per chunk)"]
+        G --> H["Upload to S3<br/>(presigned URLs)"]
     end
 
     subgraph "Client Download Pipeline"
         direction LR
-        I["☁️ Download<br/>from CDN"] --> J["🔓 Decrypt<br/>(if encrypted)"]
-        J --> K["📂 Decompress<br/>(if compressed)"]
-        K --> L["📄 Original File"]
+        I["Download<br/>from CDN"] --> J["Decrypt<br/>(if encrypted)"]
+        J --> K["Decompress<br/>(if compressed)"]
+        K --> L["Original File"]
     end
-
-    style C fill:#4CAF50,color:#fff
-    style E fill:#FF9800,color:#fff
-    style F fill:#2196F3,color:#fff
-    style G fill:#9C27B0,color:#fff
 ```
 
 ---
@@ -881,6 +868,7 @@ When a user requests a download link, generate a **signed URL** valid for a shor
 | **3. Validation** | When the CDN receives the request, it verifies the signature using the corresponding **public key** (registered with CloudFront), checks the expiration and restrictions. If valid → serve content. If not → deny access. |
 
 ```mermaid
+%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
 sequenceDiagram
     participant C as Authorized Client
     participant GW as API Gateway & LB
@@ -915,8 +903,9 @@ sequenceDiagram
 #### Security Layers Overview
 
 ```mermaid
+%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '18px'}}}%%
 graph TB
-    subgraph "🔐 Security Layers"
+    subgraph "Security Layers"
         direction TB
         L1["Layer 1: Encryption in Transit<br/>HTTPS / TLS"]
         L2["Layer 2: Authentication<br/>JWT / Session Token in Headers"]
@@ -926,12 +915,6 @@ graph TB
 
         L1 --> L2 --> L3 --> L4 --> L5
     end
-
-    style L1 fill:#4CAF50,color:#fff
-    style L2 fill:#2196F3,color:#fff
-    style L3 fill:#FF9800,color:#fff
-    style L4 fill:#9C27B0,color:#fff
-    style L5 fill:#F44336,color:#fff
 ```
 
 ---
