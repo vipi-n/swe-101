@@ -9,15 +9,15 @@
 6. [Multithreading & Concurrency](#multithreading--concurrency)
 7. [Java 8 Features](#java-8-features)
 8. [JVM & Memory Management](#jvm--memory-management)
-9. [Design Patterns](#design-patterns)
-10. [SOLID Principles](#solid-principles)
-11. [Coding Questions](#coding-questions)
+9. [Advanced Java (Senior-Level)](#advanced-java-senior-level)
 
 ---
 
 ## Core Java Basics
 
 ### Q1: What are the main features of Java?
+
+Java is a high-level, class-based, object-oriented programming language that was developed by **James Gosling** at **Sun Microsystems** in 1995 (now owned by Oracle). It was designed with the philosophy of **"Write Once, Run Anywhere" (WORA)**, meaning compiled Java code can run on any platform that has a Java Virtual Machine (JVM), regardless of the underlying hardware or operating system.
 
 | Feature | Description |
 |---------|-------------|
@@ -28,6 +28,22 @@
 | **Multithreaded** | Built-in support for concurrent programming |
 | **Secure** | No pointers, bytecode verification, security manager |
 | **Robust** | Strong type checking, exception handling |
+
+**Detailed Explanation of Each Feature:**
+
+1. **Platform Independent (WORA):** Java source code is compiled into **bytecode** (`.class` files) by the Java compiler (`javac`). This bytecode is not specific to any processor or operating system — it runs on the **JVM**, which is available for every major platform (Windows, macOS, Linux). So you write your code once, and it runs anywhere a JVM exists.
+
+2. **Object-Oriented:** Java follows the OOP paradigm where everything revolves around **objects** and **classes**. The four pillars — Encapsulation, Inheritance, Polymorphism, and Abstraction — are core to Java's design. The only exceptions are the 8 primitive types (`int`, `boolean`, etc.) which are not objects for performance reasons.
+
+3. **Strongly Typed:** Every variable in Java must be declared with a specific data type before use. The compiler enforces type safety at compile time, catching type mismatches early. For example, you cannot assign a `String` to an `int` variable without explicit conversion. This reduces runtime errors significantly.
+
+4. **Automatic Memory Management:** Java uses a **Garbage Collector (GC)** that automatically reclaims memory occupied by objects that are no longer referenced. Developers don't need to manually allocate and deallocate memory (unlike C/C++ where you use `malloc`/`free` or `new`/`delete`). This prevents common bugs like memory leaks and dangling pointers.
+
+5. **Multithreaded:** Java has built-in support for **multithreading** through the `Thread` class and `Runnable` interface. Multiple threads can run concurrently within a single program, allowing efficient use of CPU resources. Java also provides synchronization mechanisms (`synchronized`, `Lock`, `volatile`) to handle shared data safely between threads.
+
+6. **Secure:** Java provides multiple layers of security: (a) No explicit pointer manipulation, preventing unauthorized memory access; (b) **Bytecode verification** by the JVM before execution ensures the code doesn't violate access rules; (c) The **Security Manager** can restrict what code can do (file access, network access, etc.); (d) Java's **ClassLoader** loads classes in a sandboxed manner.
+
+7. **Robust:** Java is designed to be reliable. It has **strong compile-time type checking** that catches errors before runtime. Its **exception handling mechanism** (try-catch-finally) forces developers to handle error conditions explicitly. Java also eliminates error-prone features like pointers and operator overloading that exist in C++.
 
 ---
 
@@ -145,22 +161,12 @@ Java (Platform Independent):
 
 ---
 
-### Q4: What are primitive data types in Java?
-
-| Type | Size | Default | Range |
-|------|------|---------|-------|
-| `byte` | 1 byte | 0 | -128 to 127 |
-| `short` | 2 bytes | 0 | -32,768 to 32,767 |
-| `int` | 4 bytes | 0 | -2³¹ to 2³¹-1 |
-| `long` | 8 bytes | 0L | -2⁶³ to 2⁶³-1 |
-| `float` | 4 bytes | 0.0f | ±3.4 × 10³⁸ |
-| `double` | 8 bytes | 0.0d | ±1.7 × 10³⁰⁸ |
-| `char` | 2 bytes | '\u0000' | 0 to 65,535 |
-| `boolean` | 1 bit | false | true/false |
-
----
-
 ### Q5: What is the difference between == and equals()?
+
+This is one of the most common sources of bugs for Java beginners. The `==` operator and the `equals()` method serve fundamentally different purposes:
+
+- **`==` (Reference Equality):** Compares whether two references point to the **exact same object in memory** (same memory address). For primitives, it compares the actual values since primitives don't have references.
+- **`equals()` (Content Equality):** Compares whether two objects are **logically equivalent** based on their content/state. The default implementation in `Object` class uses `==` (reference comparison), but classes like `String`, `Integer`, etc. override it to compare actual content.
 
 ```java
 String s1 = new String("Hello");
@@ -186,6 +192,12 @@ System.out.println(s3.equals(s4)); // true (same content)
 ---
 
 ### Q5: What is the difference between final, finally, and finalize?
+
+These three keywords look similar but serve completely different purposes in Java:
+
+- **`final`** is a **modifier/keyword** used to declare constants, prevent method overriding, and prevent class inheritance. Once something is declared `final`, it cannot be changed.
+- **`finally`** is a **block** associated with try-catch that **always executes** regardless of whether an exception occurred or not. It is used for cleanup operations like closing database connections, file streams, or releasing resources.
+- **`finalize`** is a **method** in the `Object` class that the Garbage Collector calls just before destroying an object to perform cleanup. It was **deprecated in Java 9** because it is unpredictable (you can't control when or even if it runs) and has been replaced by `try-with-resources` and `Cleaner` API.
 
 ```java
 // final - constant/immutable
@@ -218,39 +230,11 @@ protected void finalize() throws Throwable {
 
 ---
 
-### Q6: What is the difference between static and instance variables?
-
-```java
-public class Counter {
-    static int count = 0;      // Shared by all instances
-    int instanceId;            // Unique per instance
-
-    public Counter() {
-        count++;               // Increments for all
-        instanceId = count;    // Unique to this instance
-    }
-}
-
-Counter c1 = new Counter();  // count=1, c1.instanceId=1
-Counter c2 = new Counter();  // count=2, c2.instanceId=2
-Counter c3 = new Counter();  // count=3, c3.instanceId=3
-
-System.out.println(Counter.count);  // 3 (shared)
-System.out.println(c1.instanceId);  // 1 (unique)
-```
-
-| Static | Instance |
-|--------|----------|
-| One copy per class | One copy per object |
-| Access via `ClassName.var` | Access via `object.var` |
-| Created at class loading | Created at object creation |
-| Shared among all instances | Unique to each instance |
-
----
-
 ### Q7: Can we override static methods?
 
-**No.** Static methods belong to the class, not instances. They are **hidden**, not overridden.
+**No, static methods cannot be overridden** in Java. This is because method overriding is based on **runtime polymorphism** (dynamic dispatch), where the JVM decides which method to call based on the actual object type at runtime. Static methods, however, belong to the **class** (not the object) and are resolved at **compile time** based on the reference type.
+
+When a subclass defines a static method with the same signature as a static method in the parent class, it is called **method hiding** (not overriding). The method that gets called depends on the **reference type** (compile-time type), not the actual object type (runtime type). This is fundamentally different from overriding where the actual object type determines the method.
 
 ```java
 class Parent {
@@ -275,75 +259,6 @@ class Child extends Parent {
 Parent p = new Child();
 p.staticMethod();    // "Parent static" - resolved at compile time
 p.instanceMethod();  // "Child instance" - resolved at runtime
-```
-
----
-
-### Q8: What is autoboxing and unboxing?
-
-```java
-// Autoboxing: primitive → wrapper (automatic)
-int primitive = 10;
-Integer wrapper = primitive;     // Autoboxing
-Integer wrapper2 = Integer.valueOf(primitive);  // Explicit
-
-// Unboxing: wrapper → primitive (automatic)
-Integer wrapper3 = 20;
-int primitive2 = wrapper3;       // Unboxing
-int primitive3 = wrapper3.intValue();  // Explicit
-
-// Caution: NullPointerException with unboxing
-Integer nullWrapper = null;
-int value = nullWrapper;  // NullPointerException!
-```
-
----
-
-### Q9: What is the difference between break and continue?
-
-```java
-// break - exits the loop entirely
-for (int i = 1; i <= 5; i++) {
-    if (i == 3) break;
-    System.out.print(i + " ");
-}
-// Output: 1 2
-
-// continue - skips current iteration
-for (int i = 1; i <= 5; i++) {
-    if (i == 3) continue;
-    System.out.print(i + " ");
-}
-// Output: 1 2 4 5
-```
-
----
-
-### Q10: What is a wrapper class? Why do we need them?
-
-**Wrapper classes** convert primitives to objects.
-
-| Primitive | Wrapper |
-|-----------|---------|
-| `int` | `Integer` |
-| `double` | `Double` |
-| `boolean` | `Boolean` |
-| `char` | `Character` |
-
-**Why needed:**
-```java
-// 1. Collections only work with objects
-List<Integer> list = new ArrayList<>();  // Can't use int
-list.add(10);  // Autoboxing
-
-// 2. Utility methods
-int max = Integer.MAX_VALUE;
-int parsed = Integer.parseInt("123");
-String binary = Integer.toBinaryString(10);
-
-// 3. Nullable values
-Integer age = null;  // Can be null
-int age2 = null;     // Compile error!
 ```
 
 ---
@@ -957,6 +872,16 @@ private final LocalDate enrollmentDate;  // Java 8+ java.time package
 
 ### Q11: What are the 4 pillars of OOP?
 
+**Object-Oriented Programming (OOP)** is a programming paradigm that organizes software design around **objects** (which contain data and behavior) rather than functions and logic. The four fundamental principles ("pillars") of OOP work together to create code that is modular, reusable, maintainable, and scalable.
+
+1. **Encapsulation** — The practice of **bundling data (fields) and the methods that operate on that data into a single unit (class)**, while restricting direct access to the internal state. It protects the object's integrity by hiding its internal implementation and exposing only what is necessary through public methods (getters/setters). Think of it as a capsule that protects what's inside.
+
+2. **Inheritance** — A mechanism where a **new class (child/subclass) acquires the properties and behaviors of an existing class (parent/superclass)**. It promotes code reuse — common functionality is written once in the parent class, and child classes inherit it automatically. Child classes can also add new behaviors or modify inherited ones. Java uses the `extends` keyword for class inheritance.
+
+3. **Polymorphism** — The ability of an object to **take on many forms**. The same method name can behave differently depending on the object that invokes it. There are two types: **compile-time polymorphism** (method overloading — same method name with different parameters in the same class) and **runtime polymorphism** (method overriding — child class provides its own implementation of a parent method, and the JVM decides which version to call at runtime based on the actual object type).
+
+4. **Abstraction** — The concept of **hiding complex implementation details and showing only the essential features** to the user. It lets you focus on **what** an object does rather than **how** it does it. In Java, abstraction is achieved through **abstract classes** (partial abstraction) and **interfaces** (full abstraction). For example, when you drive a car, you use the steering wheel and pedals (abstraction) without knowing how the engine and transmission work internally.
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    4 PILLARS OF OOP                          │
@@ -991,7 +916,9 @@ private final LocalDate enrollmentDate;  // Java 8+ java.time package
 
 ### Q12: Encapsulation - What and Why?
 
-**Encapsulation** = Data hiding + Bundling data with methods
+**Encapsulation** is the OOP principle of **wrapping data (variables) and the code that acts on that data (methods) together as a single unit (class), while hiding the internal state from the outside world**. It achieves this through **access modifiers** (`private`, `protected`, `public`) — typically making fields `private` so they cannot be accessed directly, and providing `public` getter/setter methods as controlled access points.
+
+Encapsulation is often described as **"data hiding"** because the internal representation of an object is hidden from the outside. The object controls how its data is read or modified, which allows it to enforce **validation rules** and maintain a **consistent internal state**. Without encapsulation, any external code could set an object's fields to invalid values (like a negative bank balance), leading to bugs and unpredictable behavior.
 
 ```java
 // ❌ Without encapsulation
@@ -1024,17 +951,22 @@ class Account {
 }
 ```
 
-**Benefits:**
-- Control over data (validation)
-- Hide implementation details
-- Easy to change internals
-- Prevents invalid states
+**Benefits of Encapsulation:**
+- **Control over data (validation)** — Setters can validate input before modifying fields (e.g., ensuring amount > 0 before a deposit)
+- **Hide implementation details** — You can change how data is stored internally without affecting external code that uses the class
+- **Easy to change internals** — If you switch from an `ArrayList` to a `LinkedList` internally, no client code needs to change
+- **Prevents invalid states** — By controlling access, you ensure the object is always in a valid, consistent state
 
 ---
 
 ### Q13: What is Inheritance? Types of inheritance?
 
-**Inheritance** = Acquiring properties and behaviors from a parent class.
+**Inheritance** is an OOP mechanism where a **child class (subclass) inherits fields and methods from a parent class (superclass)**, establishing an **"IS-A" relationship**. For example, a `Dog` IS-A `Animal`. The child class gets all the non-private members of the parent class automatically, and can:
+1. **Use inherited methods and fields** as-is
+2. **Add new methods and fields** specific to the child
+3. **Override inherited methods** to provide specialized behavior
+
+Inheritance promotes **code reusability** — instead of duplicating common code across related classes, you write it once in the parent and all children inherit it. Java uses the `extends` keyword for class inheritance and `implements` for interface inheritance. **Java does NOT support multiple inheritance of classes** (a class can extend only one class) to avoid the diamond problem, but it supports multiple inheritance of interfaces.
 
 ```java
 // Parent class
@@ -1083,7 +1015,11 @@ class Duck implements Flyable, Swimmable {
 
 ### Q14: What is Polymorphism? Types?
 
-**Polymorphism** = "Many forms" - Same method, different behavior
+**Polymorphism** (from Greek: "poly" = many, "morph" = form) is the ability of an object or method to **take on multiple forms**. It allows you to write code that works with **parent type references** but executes the behavior of the **actual child type** at runtime. This is one of the most powerful features of OOP because it enables flexible, extensible code — you can add new subclasses without modifying existing code that uses the parent type.
+
+There are two types of polymorphism:
+- **Compile-time (Static) Polymorphism**: Resolved during compilation. Achieved through **method overloading** — multiple methods with the same name but different parameter lists in the same class. The compiler determines which method to call based on the arguments.
+- **Runtime (Dynamic) Polymorphism**: Resolved during execution. Achieved through **method overriding** — a child class provides its own implementation of a method defined in the parent class. The JVM determines which method to call based on the **actual object type**, not the reference type. This is also called **dynamic method dispatch**.
 
 #### Compile-time Polymorphism (Method Overloading)
 
@@ -1131,7 +1067,13 @@ a2.sound();  // "Meow" - resolved at runtime
 
 ### Q15: What is Abstraction? Abstract class vs Interface?
 
-**Abstraction** = Hiding complexity, showing only essential features
+**Abstraction** is the OOP principle of **hiding complex implementation details and exposing only the essential features** that are relevant to the user. It separates the **"what"** (what the object does) from the **"how"** (how it does it). For example, when you call `list.sort()`, you don't need to know whether it uses merge sort or quicksort internally — you only care about the result (a sorted list).
+
+In Java, abstraction is achieved through two mechanisms:
+
+1. **Abstract Classes** — Declared with the `abstract` keyword. They can have both **abstract methods** (without body — to be implemented by subclasses) and **concrete methods** (with body — shared implementation). They are used when related classes share common code but differ in some behaviors. A class can extend only **one** abstract class. Abstract classes represent **partial abstraction** because they can contain both abstract and concrete methods.
+
+2. **Interfaces** — Declared with the `interface` keyword. Before Java 8, they could only have abstract methods, representing **full abstraction**. Since Java 8, they can also have `default` methods (with implementation) and `static` methods. A class can implement **multiple** interfaces, which is Java's way of achieving multiple inheritance. Interfaces represent a **"CAN-DO" capability** — for example, a class implementing `Serializable` CAN be serialized.
 
 ```java
 // Abstract class
@@ -1170,6 +1112,12 @@ interface Drivable {
 
 ### Q16: What is method overloading vs overriding?
 
+**Method Overloading** and **Method Overriding** are both ways to achieve polymorphism, but they work very differently:
+
+**Method Overloading (Compile-time Polymorphism):** Having **multiple methods with the same name but different parameter lists** (different number, type, or order of parameters) **within the same class** (or between parent and child). The compiler decides which method to invoke based on the method signature at compile time. The return type alone is NOT sufficient to distinguish overloaded methods.
+
+**Method Overriding (Runtime Polymorphism):** When a child class provides its **own specific implementation** of a method that is already defined in the parent class, with the **same method signature** (same name, same parameters, same or covariant return type). The JVM decides which version to call at runtime based on the actual object type. The `@Override` annotation is optional but highly recommended — it tells the compiler to verify that you're actually overriding a parent method, catching typos and signature mismatches at compile time.
+
 ```java
 class Parent {
     // Original method
@@ -1206,6 +1154,14 @@ class Child extends Parent {
 
 ### Q17: Can we override private or static methods?
 
+**No, neither `private` nor `static` methods can be overridden in Java.** Here's why:
+
+- **`private` methods** are **not visible** to subclasses at all. Since the child class doesn't know the method exists, it cannot override it. If a child class defines a method with the same name, it is a **completely new method** — not an override. There is no polymorphic behavior.
+
+- **`static` methods** belong to the **class**, not to any particular instance. Method overriding relies on **runtime polymorphism** (dynamic dispatch based on the object type), but static methods are resolved at **compile time** based on the reference type. If a child class defines a static method with the same signature, it is called **method hiding** — the version called depends on the reference type, not the actual object type.
+
+- **`final` methods** are explicitly marked to **prevent overriding**. If you try to override a `final` method, the compiler will throw an error. This is used when a class author wants to ensure that a specific behavior cannot be changed by subclasses (for security or correctness reasons).
+
 ```java
 class Parent {
     private void privateMethod() { }  // Not visible to child
@@ -1231,7 +1187,7 @@ class Child extends Parent {
 
 ### Q18: What is the diamond problem? How does Java solve it?
 
-**Diamond Problem**: Ambiguity when a class inherits from two classes that have same method.
+**The Diamond Problem** is a classic ambiguity issue that arises in languages that support **multiple inheritance of classes**. The name comes from the diamond shape of the class hierarchy diagram. The problem occurs when class `D` inherits from both `B` and `C`, and both `B` and `C` inherit from `A`. If `B` and `C` both override a method from `A`, class `D` has an ambiguity — **which version of the method should it inherit?** The compiler cannot decide.
 
 ```
        A
@@ -1241,9 +1197,11 @@ class Child extends Parent {
        D     <- Which method to call if B and C override A's method?
 ```
 
-**Java's solution:**
-1. **No multiple inheritance of classes** - `extends` only one class
-2. **Interfaces with default methods** - must override to resolve
+**Java solves the diamond problem in two ways:**
+
+1. **No multiple inheritance of classes** — Java allows a class to `extends` only **one** class, completely preventing the class-level diamond problem. This was a deliberate design choice by Java's creators.
+
+2. **For interfaces with default methods (Java 8+)** — If a class implements two interfaces that have the same default method, the compiler **forces the class to override that method** and explicitly choose which version to use (or provide its own implementation). The `InterfaceName.super.methodName()` syntax lets you call a specific interface's default implementation.
 
 ```java
 interface A {
@@ -1462,6 +1420,14 @@ COMPOSITION = "Composed" (parts are created together, can't separate)
 ---
 
 ### Q20: What is the difference between this and super?
+
+**`this`** and **`super`** are both reference keywords in Java, but they refer to different objects:
+
+- **`this`** refers to the **current object** (the instance on which the method is being called). It is used to: (1) resolve ambiguity when a method parameter has the same name as an instance variable (shadowing), (2) call another constructor in the same class using `this()`, (3) pass the current object as an argument to another method, and (4) return the current object for method chaining.
+
+- **`super`** refers to the **parent class** of the current object. It is used to: (1) access parent class fields or methods that are hidden or overridden by the child class, (2) call the parent class constructor using `super()` (which must be the **first statement** in the child constructor — if not explicitly called, Java inserts `super()` implicitly), and (3) invoke a specific parent method from an overridden method.
+
+Both `this` and `super` cannot be used in **static contexts** because static methods don't belong to any specific instance.
 
 ```java
 class Parent {
@@ -5248,2376 +5214,856 @@ phantom.get();  // Always returns null
 | Phantom | After finalization | Resource cleanup |
 
 ---
+## Advanced Java (Senior-Level)
 
-## Design Patterns
+### Q81: What is Java Memory Model (JMM)?
 
-Design patterns are **proven solutions to common software design problems**. They represent best practices evolved over time by experienced developers. Understanding design patterns helps you write more maintainable, flexible, and scalable code.
+The **Java Memory Model (JMM)** defines how threads interact through memory and what behaviors are allowed in concurrent execution. It specifies when changes made by one thread become **visible** to other threads. Understanding JMM is critical for writing correct concurrent code.
+
+**Key Concepts:**
+
+1. **Main Memory vs Working Memory (CPU Cache):** Each thread has its own **working memory** (CPU cache) where it keeps copies of variables. The main memory (heap) is shared. Without proper synchronization, a thread may read a **stale value** from its cache instead of the latest value in main memory.
+
+2. **Happens-Before Relationship:** JMM defines a set of rules called **happens-before** that guarantee visibility. If action A happens-before action B, then A's results are visible to B.
+
+3. **Reordering:** The JVM and CPU can **reorder instructions** for performance optimization, as long as it doesn't violate happens-before rules. This can cause surprising behavior in multithreaded code.
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│                    DESIGN PATTERNS CATEGORIES                          │
-├────────────────────────────────────────────────────────────────────────┤
-│  CREATIONAL (Object Creation)                                          │
-│  ├── Singleton   - Ensures only one instance exists                    │
-│  ├── Factory     - Creates objects without specifying exact class      │
-│  ├── Builder     - Constructs complex objects step by step             │
-│  ├── Prototype   - Creates new objects by copying existing ones        │
-│  └── Abstract Factory - Creates families of related objects            │
-├────────────────────────────────────────────────────────────────────────┤
-│  STRUCTURAL (Object Composition)                                       │
-│  ├── Adapter     - Makes incompatible interfaces work together         │
-│  ├── Decorator   - Adds behavior to objects dynamically                │
-│  ├── Facade      - Provides simplified interface to complex system     │
-│  ├── Proxy       - Controls access to another object                   │
-│  └── Composite   - Treats individual objects and compositions alike    │
-├────────────────────────────────────────────────────────────────────────┤
-│  BEHAVIORAL (Object Communication)                                     │
-│  ├── Observer    - Notifies dependents of state changes                │
-│  ├── Strategy    - Defines family of interchangeable algorithms        │
-│  ├── Command     - Encapsulates request as an object                   │
-│  ├── Template    - Defines skeleton of algorithm in base class         │
-│  └── State       - Alters behavior when internal state changes         │
-└────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                    JAVA MEMORY MODEL                         │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│   Thread 1              Thread 2              Thread 3      │
+│   ┌──────────┐          ┌──────────┐          ┌──────────┐  │
+│   │ Working  │          │ Working  │          │ Working  │  │
+│   │ Memory   │          │ Memory   │          │ Memory   │  │
+│   │ (Cache)  │          │ (Cache)  │          │ (Cache)  │  │
+│   └────┬─────┘          └────┬─────┘          └────┬─────┘  │
+│        │                     │                     │        │
+│        ▼                     ▼                     ▼        │
+│   ┌──────────────────────────────────────────────────────┐  │
+│   │                   MAIN MEMORY (Heap)                 │  │
+│   │            Shared variables live here                │  │
+│   └──────────────────────────────────────────────────────┘  │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Happens-Before Rules:**
+
+| Rule | Description |
+|------|-------------|
+| **Program Order** | Within a thread, each action happens-before the next |
+| **Monitor Lock** | An unlock happens-before every subsequent lock on the same monitor |
+| **Volatile** | A write to a volatile field happens-before every subsequent read of that field |
+| **Thread Start** | `thread.start()` happens-before any action in the started thread |
+| **Thread Join** | All actions in a thread happen-before `join()` returns |
+| **Transitivity** | If A happens-before B, and B happens-before C, then A happens-before C |
+
+```java
+// Without volatile — Thread 2 may never see flag = true (cached stale value)
+class BrokenVisibility {
+    boolean flag = false;  // ❌ Not volatile
+    
+    void writer() { flag = true; }
+    void reader() {
+        while (!flag) { }  // May loop forever!
+    }
+}
+
+// With volatile — JMM guarantees visibility
+class CorrectVisibility {
+    volatile boolean flag = false;  // ✅ Volatile
+    
+    void writer() { flag = true; }  // Flushes to main memory
+    void reader() {
+        while (!flag) { }  // Reads from main memory
+    }
+}
 ```
 
 ---
 
-### Q61: What is Singleton Pattern?
+### Q82: What is Type Erasure in Generics?
 
-**Definition:** The Singleton Pattern ensures that a class has **only one instance** and provides a **global point of access** to that instance throughout the application.
+**Type erasure** is how Java implements generics. The compiler **removes (erases) all generic type information at compile time** and replaces type parameters with their bounds (or `Object` if unbounded). This was done to maintain **backward compatibility** with pre-generics Java code (Java < 5).
 
-#### 🎯 Problem It Solves
+**Consequences of Type Erasure:**
 
-Sometimes you need exactly one instance of a class to coordinate actions across the system:
-- **Database Connection Pool** - One pool managing all connections
-- **Configuration Manager** - One source of truth for app settings
-- **Logger** - One logging mechanism for entire application
-- **Cache Manager** - One cache shared across application
-- **Thread Pool** - One pool managing worker threads
-
-Without Singleton, you might accidentally create multiple instances, leading to:
-- Inconsistent state across the application
-- Resource wastage (multiple DB connections)
-- Conflicting configurations
-
-#### 📊 When to Use Each Approach
-
-| Approach | Thread-Safe | Lazy | Serialization-Safe | Best For |
-|----------|-------------|------|-------------------|----------|
-| Eager | ✅ Yes | ❌ No | ❌ No | Always needed, small footprint |
-| Double-Checked Locking | ✅ Yes | ✅ Yes | ❌ No | Rarely used, expensive creation |
-| Bill Pugh (Holder) | ✅ Yes | ✅ Yes | ❌ No | Most cases (recommended) |
-| Enum | ✅ Yes | ❌ No | ✅ Yes | Need serialization safety |
-
-#### 💻 Implementation Approaches
+1. **No generic type info at runtime** — You cannot do `if (list instanceof List<String>)` because at runtime, it's just `List`.
+2. **Cannot create generic arrays** — `new T[]` or `new List<String>[10]` is illegal.
+3. **Cannot instantiate type parameters** — `new T()` is illegal; the runtime doesn't know what `T` is.
+4. **Bridge methods** — The compiler generates synthetic bridge methods to preserve polymorphism after erasure.
 
 ```java
-// 1. Eager Initialization
-// ✅ Simple, thread-safe
-// ❌ Instance created even if never used (memory waste if heavy object)
-// 📍 Use when: Singleton is always needed and creation is lightweight
-public class Singleton {
-    private static final Singleton INSTANCE = new Singleton();
-    private Singleton() { }
-    public static Singleton getInstance() { return INSTANCE; }
+// What you write:
+public class Box<T> {
+    private T value;
+    public void set(T value) { this.value = value; }
+    public T get() { return value; }
 }
 
-// 2. Lazy Initialization (Thread-safe with double-checked locking)
-// ✅ Creates instance only when needed (saves memory)
-// ✅ Thread-safe with volatile + synchronized
-// ❌ More complex code, slight performance overhead
-// 📍 Use when: Heavy object that may never be used
-public class Singleton {
-    private static volatile Singleton instance;  // volatile prevents instruction reordering
-    private Singleton() { }
-    
-    public static Singleton getInstance() {
-        if (instance == null) {                    // First check (no locking)
-            synchronized (Singleton.class) {        // Lock only when null
-                if (instance == null) {             // Second check (with lock)
-                    instance = new Singleton();
-                }
-            }
-        }
-        return instance;
-    }
+// What the compiler generates (after erasure):
+public class Box {
+    private Object value;
+    public void set(Object value) { this.value = value; }
+    public Object get() { return value; }
 }
 
-// 3. Bill Pugh / Holder Pattern (⭐ BEST APPROACH)
-// ✅ Lazy loading (Holder class loaded only when getInstance() called)
-// ✅ Thread-safe (class loading is thread-safe by JVM)
-// ✅ No synchronization overhead
-// 📍 Use when: Default choice for most Singleton needs
-public class Singleton {
-    private Singleton() { }
-    
-    // Inner static class - not loaded until referenced
-    private static class Holder {
-        private static final Singleton INSTANCE = new Singleton();
-    }
-    
-    public static Singleton getInstance() {
-        return Holder.INSTANCE;  // Holder class loaded here
-    }
-}
-
-// 4. Enum Singleton (⭐ SAFEST APPROACH)
-// ✅ Thread-safe, serialization-safe, reflection-safe
-// ✅ JVM guarantees single instance
-// ❌ Cannot extend other classes
-// 📍 Use when: Need serialization safety or maximum protection
-public enum Singleton {
-    INSTANCE;
-    
-    private String config;
-    
-    public void configure(String config) { this.config = config; }
-    public String getConfig() { return config; }
-    public void doSomething() { System.out.println("Working with: " + config); }
-}
-
-// Usage: Singleton.INSTANCE.doSomething();
-```
-
-#### 🔓 How Singleton Can Be Broken & Protection
-
-**1. Reflection Attack:**
-```java
-// Breaking via Reflection
-Constructor<Singleton> constructor = Singleton.class.getDeclaredConstructor();
-constructor.setAccessible(true);  // Bypass private
-Singleton instance2 = constructor.newInstance();  // New instance! 💥
-
-// ✅ PROTECTION: Throw exception in constructor
-private Singleton() {
-    if (instance != null) {
-        throw new RuntimeException("Use getInstance() - Reflection not allowed!");
-    }
-}
-```
-
-**2. Serialization Attack:**
-```java
-// Breaking via Serialization
-ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream("singleton.ser"));
-oos.writeObject(instance);
-
-ObjectInputStream ois = new ObjectInputStream(new FileInputStream("singleton.ser"));
-Singleton instance2 = (Singleton) ois.readObject();  // New instance! 💥
-
-// ✅ PROTECTION: Add readResolve() method
-protected Object readResolve() {
-    return instance;  // Return existing instance, not new one
-}
-```
-
-**3. Cloning Attack:**
-```java
-// Breaking via Cloning
-Singleton instance2 = (Singleton) instance.clone();  // New instance! 💥
-
-// ✅ PROTECTION: Override clone() to throw exception
-@Override
-protected Object clone() throws CloneNotSupportedException {
-    throw new CloneNotSupportedException("Cloning not allowed!");
-}
-```
-
-#### ✅ Fully Protected Singleton (All Attacks Covered)
-
-```java
-class Singleton implements Serializable {
-    
-    private static volatile Singleton instance = null;
-
-    // Protection from Reflection
-    private Singleton() {
-        if (instance != null) {
-            throw new RuntimeException("Use getInstance()!");
-        }
-    }
-
-    // Double-checked locking
-    public static Singleton getInstance() {
-        if (instance == null) {                    // First check (no lock)
-            synchronized (Singleton.class) {
-                if (instance == null) {            // Second check (with lock)
-                    instance = new Singleton();
-                }
-            }
-        }
-        return instance;
-    }
-
-    // Protection from Serialization
-    protected Object readResolve() {
-        return instance;
-    }
-
-    // Protection from Cloning
+// Bridge method example:
+class NumberBox extends Box<Integer> {
     @Override
-    protected Object clone() throws CloneNotSupportedException {
-        throw new CloneNotSupportedException("Cloning not allowed!");
+    public void set(Integer value) { super.set(value); }
+    
+    // Compiler generates bridge method:
+    // public void set(Object value) { set((Integer) value); }
+}
+```
+
+**PECS Principle (Producer Extends, Consumer Super):**
+
+```java
+// Producer — reads items FROM the collection → use extends
+public void printAll(List<? extends Number> list) {
+    for (Number n : list) {  // Can read as Number
+        System.out.println(n);
+    }
+    // list.add(1);  // ❌ Can't add — compiler doesn't know exact type
+}
+
+// Consumer — adds items INTO the collection → use super
+public void addNumbers(List<? super Integer> list) {
+    list.add(1);   // ✅ Can add Integer
+    list.add(2);
+    // Integer n = list.get(0);  // ❌ Can't read as Integer — only Object
+}
+
+// Mnemonic: PECS
+// List<? extends T> → for READING (producing values)
+// List<? super T>   → for WRITING (consuming values)
+```
+
+| Wildcard | Read | Write | Use Case |
+|----------|------|-------|----------|
+| `<? extends T>` | As `T` | ❌ Can't | Producing/reading values |
+| `<? super T>` | As `Object` only | `T` or subtypes | Consuming/writing values |
+| `<?>` | As `Object` only | ❌ Can't | Don't care about type |
+
+---
+
+### Q83: What is ClassLoader Hierarchy?
+
+The **ClassLoader** is responsible for **dynamically loading Java classes into the JVM at runtime**. Classes are loaded lazily — only when they are first referenced. Java uses a **delegation model** where each classloader delegates to its parent before trying to load the class itself.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  CLASSLOADER HIERARCHY                        │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│   Bootstrap ClassLoader (C/C++)                              │
+│   │  Loads: java.lang.*, java.util.* (core Java classes)    │
+│   │  Path: $JAVA_HOME/lib/rt.jar (Java 8) or jrt:/modules  │
+│   │                                                         │
+│   ▼                                                         │
+│   Extension/Platform ClassLoader (Java)                      │
+│   │  Loads: $JAVA_HOME/lib/ext (Java 8) or java.* modules  │
+│   │                                                         │
+│   ▼                                                         │
+│   Application/System ClassLoader (Java)                      │
+│   │  Loads: classpath (-cp), CLASSPATH env variable          │
+│   │                                                         │
+│   ▼                                                         │
+│   Custom ClassLoaders                                        │
+│      Loads: From network, database, encrypted files, etc.   │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Delegation Model (Parent-First):**
+
+```
+Class loading request for "com.example.MyClass"
+
+1. Application CL → "Do I have it cached?" → No → Delegate to parent
+2. Extension CL   → "Do I have it cached?" → No → Delegate to parent
+3. Bootstrap CL   → "Can I find it?"       → No → Return to child
+4. Extension CL   → "Can I find it?"       → No → Return to child
+5. Application CL → "Can I find it?"       → Yes! → Load and return
+
+If nobody finds it → ClassNotFoundException
+```
+
+**Why Custom ClassLoaders?**
+- **Hot reloading** — Load updated classes without restarting (app servers like Tomcat)
+- **Isolation** — Different modules can use different versions of the same library
+- **Encryption** — Load classes from encrypted sources
+- **Remote loading** — Load classes over the network
+
+```java
+// Custom ClassLoader example
+public class EncryptedClassLoader extends ClassLoader {
+    @Override
+    protected Class<?> findClass(String name) throws ClassNotFoundException {
+        byte[] classBytes = decryptAndLoadClassBytes(name);
+        return defineClass(name, classBytes, 0, classBytes.length);
     }
 }
 ```
 
-#### 🏆 Enum Singleton - Best Solution (Auto-Protected)
+---
 
-Enum is the **BEST** way - automatically protected from ALL attacks:
+### Q84: What are Java Records, Sealed Classes, and Pattern Matching? (Java 14-21)
+
+#### Records (Java 16)
+
+**Records** are a special kind of class that acts as a **transparent carrier for immutable data**. The compiler automatically generates `equals()`, `hashCode()`, `toString()`, a canonical constructor, and accessor methods. They replace verbose POJOs/DTOs.
 
 ```java
-public enum DatabaseConnection {
-    INSTANCE;
+// Before Records — lots of boilerplate
+public class Point {
+    private final int x;
+    private final int y;
+    public Point(int x, int y) { this.x = x; this.y = y; }
+    public int getX() { return x; }
+    public int getY() { return y; }
+    @Override public boolean equals(Object o) { /* ... */ }
+    @Override public int hashCode() { return Objects.hash(x, y); }
+    @Override public String toString() { return "Point[x=" + x + ", y=" + y + "]"; }
+}
+
+// With Records — one line!
+public record Point(int x, int y) { }
+
+// Usage is the same
+Point p = new Point(1, 2);
+p.x();           // 1 (accessor — NOT getX())
+p.toString();    // "Point[x=1, y=2]"
+
+// You can add custom validation
+public record Age(int value) {
+    public Age {  // Compact constructor
+        if (value < 0 || value > 150) throw new IllegalArgumentException("Invalid age");
+    }
+}
+```
+
+#### Sealed Classes (Java 17)
+
+**Sealed classes** restrict which other classes or interfaces may extend or implement them. This gives you **exhaustive control** over the class hierarchy, enabling the compiler to verify that all subtypes are handled (especially useful with pattern matching).
+
+```java
+// Only Circle, Rectangle, and Triangle can extend Shape
+public sealed class Shape permits Circle, Rectangle, Triangle { }
+
+public final class Circle extends Shape {       // final — can't be extended further
+    double radius;
+}
+public sealed class Rectangle extends Shape     // sealed — further restricted
+    permits Square { }                          
+public non-sealed class Triangle extends Shape { } // non-sealed — open for extension
+
+public final class Square extends Rectangle { }
+
+// Compiler knows ALL possible subtypes → exhaustive switch
+double area(Shape shape) {
+    return switch (shape) {
+        case Circle c    -> Math.PI * c.radius * c.radius;
+        case Rectangle r -> r.width * r.height;
+        case Triangle t  -> 0.5 * t.base * t.height;
+        // No default needed! Compiler knows it's exhaustive
+    };
+}
+```
+
+#### Pattern Matching (Java 16-21)
+
+```java
+// Pattern matching for instanceof (Java 16)
+// Before:
+if (obj instanceof String) {
+    String s = (String) obj;
+    System.out.println(s.length());
+}
+// After:
+if (obj instanceof String s) {
+    System.out.println(s.length());  // s already cast
+}
+
+// Pattern matching for switch (Java 21)
+static String describe(Object obj) {
+    return switch (obj) {
+        case Integer i when i > 0 -> "Positive integer: " + i;
+        case Integer i            -> "Non-positive integer: " + i;
+        case String s             -> "String of length " + s.length();
+        case null                 -> "null";
+        default                   -> "Unknown: " + obj;
+    };
+}
+```
+
+---
+
+### Q85: What are Virtual Threads? (Java 21)
+
+**Virtual threads** (Project Loom) are **lightweight threads** managed by the JVM rather than the OS. Traditional platform threads are expensive (each maps to an OS thread, ~1MB stack), limiting scalability to thousands. Virtual threads are cheap (~few KB) and can scale to **millions** of concurrent tasks.
+
+**Why Virtual Threads?**
+
+In traditional Java servers, each request gets its own thread. At ~10K concurrent requests, you run out of OS threads. The workaround was **reactive/async programming** (WebFlux, CompletableFuture), which is complex and hard to debug. Virtual threads let you write **simple synchronous code** that scales like async code.
+
+```java
+// Traditional Platform Thread — heavy, OS-managed
+Thread platformThread = new Thread(() -> {
+    System.out.println("Platform thread: " + Thread.currentThread());
+});
+
+// Virtual Thread — lightweight, JVM-managed (Java 21)
+Thread virtualThread = Thread.ofVirtual().start(() -> {
+    System.out.println("Virtual thread: " + Thread.currentThread());
+});
+
+// Creating millions of virtual threads — impossible with platform threads!
+try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+    for (int i = 0; i < 1_000_000; i++) {
+        executor.submit(() -> {
+            // Each task gets its own virtual thread
+            Thread.sleep(Duration.ofSeconds(1));
+            return "Done";
+        });
+    }
+}  // Waits for all tasks to complete
+```
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│              PLATFORM vs VIRTUAL THREADS                     │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Platform Threads:                                          │
+│  ┌─────────┐ ┌─────────┐ ┌─────────┐                       │
+│  │Thread-1 │ │Thread-2 │ │Thread-3 │  ← Few thousand max   │
+│  │ (~1MB)  │ │ (~1MB)  │ │ (~1MB)  │                       │
+│  └────┬────┘ └────┬────┘ └────┬────┘                       │
+│       │           │           │       1:1 mapping           │
+│  ┌────┴────┐ ┌────┴────┐ ┌────┴────┐                       │
+│  │OS Thread│ │OS Thread│ │OS Thread│                       │
+│  └─────────┘ └─────────┘ └─────────┘                       │
+│                                                             │
+│  Virtual Threads:                                           │
+│  ┌───┐┌───┐┌───┐┌───┐┌───┐┌───┐┌───┐┌───┐  ← Millions!   │
+│  │VT1││VT2││VT3││VT4││VT5││VT6││VT7││VT8│  (~few KB each)│
+│  └─┬─┘└─┬─┘└─┬─┘└─┬─┘└─┬─┘└─┬─┘└─┬─┘└─┬─┘               │
+│    │     │     │     └──┐  └──┐  │  │     │                │
+│  ┌─┴─────┴─┐ ┌─┴────────┴─┐ ┌┴──┴───┴─┐                   │
+│  │Carrier 1│ │ Carrier 2  │ │Carrier 3│  ← Few OS threads  │
+│  │(OS Thrd)│ │ (OS Thrd)  │ │(OS Thrd)│    (ForkJoinPool)  │
+│  └─────────┘ └────────────┘ └─────────┘                    │
+│                                                             │
+│  VTs are mounted/unmounted on carrier threads               │
+│  When a VT blocks (I/O), it unmounts → carrier runs another│
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Key Rules:**
+- Don't pool virtual threads (they're cheap — create and discard)
+- Avoid `synchronized` blocks with I/O inside (pins the carrier thread) — use `ReentrantLock` instead
+- Virtual threads are best for **I/O-bound** tasks, not CPU-bound
+- `ThreadLocal` works but can be expensive with millions of threads — prefer `ScopedValue` (Preview)
+
+| | Platform Thread | Virtual Thread |
+|---|---|---|
+| **Managed by** | OS | JVM |
+| **Memory** | ~1MB stack | ~few KB |
+| **Max count** | ~thousands | ~millions |
+| **Blocking I/O** | Wastes OS thread | Unmounts, frees carrier |
+| **Best for** | CPU-bound | I/O-bound |
+| **Pooling** | Yes (ExecutorService) | No (create per task) |
+
+---
+
+### Q86: What is the difference between Shallow Copy vs Deep Copy?
+
+**Shallow Copy** copies the object's field values as-is. If a field is a reference to another object, only the **reference is copied** (not the referenced object). Both the original and copy share the same nested objects.
+
+**Deep Copy** copies the object AND **recursively copies all objects it references**, creating completely independent copies. Changes to the copy have zero effect on the original.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                 SHALLOW vs DEEP COPY                         │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  SHALLOW COPY:                                              │
+│  Original          Copy                                     │
+│  ┌──────────┐     ┌──────────┐                              │
+│  │ name="A" │     │ name="A" │  ← Separate primitive/String │
+│  │ addr ────┼──┐  │ addr ────┼──┐                           │
+│  └──────────┘  │  └──────────┘  │                           │
+│                └──►┌──────────┐◄┘  SAME object!             │
+│                    │ city="NY"│                              │
+│                    └──────────┘                              │
+│                                                             │
+│  DEEP COPY:                                                 │
+│  Original          Copy                                     │
+│  ┌──────────┐     ┌──────────┐                              │
+│  │ name="A" │     │ name="A" │                              │
+│  │ addr ────┼──┐  │ addr ────┼──┐                           │
+│  └──────────┘  │  └──────────┘  │                           │
+│       ┌────────┘       ┌────────┘                           │
+│       ▼                ▼                                    │
+│  ┌──────────┐     ┌──────────┐  DIFFERENT objects!          │
+│  │ city="NY"│     │ city="NY"│                              │
+│  └──────────┘     └──────────┘                              │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+```java
+// Shallow copy — using clone() (default behavior)
+class Employee implements Cloneable {
+    String name;
+    Address address;  // Mutable object
     
-    private Connection connection;
+    @Override
+    protected Employee clone() throws CloneNotSupportedException {
+        return (Employee) super.clone();  // Shallow — address is shared!
+    }
+}
+
+// Deep copy — manually copy nested objects
+class Employee implements Cloneable {
+    String name;
+    Address address;
     
-    // Constructor (called once when INSTANCE is first accessed)
-    DatabaseConnection() {
+    @Override
+    protected Employee clone() throws CloneNotSupportedException {
+        Employee copy = (Employee) super.clone();
+        copy.address = new Address(this.address.city, this.address.state);  // Deep
+        return copy;
+    }
+}
+
+// Deep copy via serialization (quick but slow)
+public static <T extends Serializable> T deepCopy(T obj) {
+    ByteArrayOutputStream bos = new ByteArrayOutputStream();
+    new ObjectOutputStream(bos).writeObject(obj);
+    ByteArrayInputStream bis = new ByteArrayInputStream(bos.toByteArray());
+    return (T) new ObjectInputStream(bis).readObject();
+}
+
+// Deep copy via copy constructor (preferred)
+class Employee {
+    String name;
+    Address address;
+    
+    public Employee(Employee other) {
+        this.name = other.name;
+        this.address = new Address(other.address);  // Address also has copy constructor
+    }
+}
+```
+
+---
+
+### Q87: What is Reflection API? When to use it?
+
+**Reflection** allows Java code to **inspect and manipulate classes, methods, fields, and constructors at runtime**, even private ones. It's the backbone of frameworks like Spring (dependency injection), Hibernate (ORM mapping), JUnit (test discovery), and Jackson (JSON serialization).
+
+**Use Cases:**
+- Frameworks that instantiate classes by name (Spring bean creation)
+- Serialization/deserialization (Jackson, Gson)
+- Testing private methods
+- Building dynamic proxies (AOP)
+- Annotation processing at runtime
+
+```java
+// Get class info at runtime
+Class<?> clazz = Class.forName("com.example.Employee");
+
+// Create instance without knowing class at compile time
+Object obj = clazz.getDeclaredConstructor().newInstance();
+
+// Access private fields
+Field field = clazz.getDeclaredField("salary");
+field.setAccessible(true);  // Bypass private access
+double salary = (double) field.get(obj);
+field.set(obj, 100000.0);
+
+// Invoke methods dynamically
+Method method = clazz.getDeclaredMethod("calculateBonus", double.class);
+method.setAccessible(true);
+Object result = method.invoke(obj, 0.1);
+
+// Read annotations
+if (clazz.isAnnotationPresent(Entity.class)) {
+    Entity entity = clazz.getAnnotation(Entity.class);
+    System.out.println("Table: " + entity.table());
+}
+
+// Get all methods, fields, constructors
+Method[] methods = clazz.getDeclaredMethods();
+Field[] fields = clazz.getDeclaredFields();
+Constructor<?>[] constructors = clazz.getDeclaredConstructors();
+```
+
+**Performance Impact:**
+- Reflection is **10-100x slower** than direct method calls
+- It bypasses compile-time type checking (errors appear at runtime)
+- Frameworks mitigate this by **caching** reflection metadata at startup
+
+| Pros | Cons |
+|------|------|
+| Runtime flexibility | Slow performance |
+| Framework foundation | No compile-time safety |
+| Access private members | Security risks |
+| Dynamic class loading | Complex/hard to debug |
+
+---
+
+### Q88: What is the Java `Serializable` interface? What is `serialVersionUID`?
+
+**Serialization** is the process of converting an object's state into a **byte stream** (to save to file, send over network, etc.). **Deserialization** is the reverse. A class must implement the `java.io.Serializable` marker interface to be serializable.
+
+**`serialVersionUID`** is a version number associated with each serializable class. During deserialization, the JVM checks if the `serialVersionUID` of the loaded class matches the serialized object's UID. If they don't match, it throws `InvalidClassException`. If you don't declare it explicitly, Java auto-generates one based on the class structure — which means **any class change** (adding a field, renaming a method) changes the UID and breaks backward compatibility.
+
+```java
+public class Employee implements Serializable {
+    private static final long serialVersionUID = 1L;  // ✅ Always declare explicitly
+    
+    private String name;
+    private transient String password;  // transient → NOT serialized
+    private int age;
+    
+    // static fields are NOT serialized (belong to class, not object)
+    private static String company = "Acme";
+}
+
+// Serialize
+try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream("emp.ser"))) {
+    oos.writeObject(employee);
+}
+
+// Deserialize
+try (ObjectInputStream ois = new ObjectInputStream(new FileInputStream("emp.ser"))) {
+    Employee emp = (Employee) ois.readObject();
+    // emp.password will be null (transient)
+}
+```
+
+**Key Points:**
+- `transient` fields are **not serialized** (use for sensitive data like passwords, derived fields)
+- `static` fields are **not serialized** (they belong to the class, not the instance)
+- If parent class is NOT Serializable, its fields won't be serialized and its **no-arg constructor** will be called during deserialization
+- For custom serialization, implement `writeObject()` and `readObject()` methods
+- Modern alternatives: **JSON** (Jackson/Gson) or **Protocol Buffers** are preferred over Java serialization (which has security vulnerabilities)
+
+---
+
+### Q89: What are common Functional Interfaces? Write Custom Ones.
+
+A **Functional Interface** has exactly **one abstract method** (SAM — Single Abstract Method). It can have multiple `default` and `static` methods. The `@FunctionalInterface` annotation is optional but recommended — it causes a compile error if the interface has more than one abstract method.
+
+**Built-in Functional Interfaces (java.util.function):**
+
+| Interface | Method | Signature | Use Case |
+|-----------|--------|-----------|----------|
+| `Function<T,R>` | `apply` | `T → R` | Transform input to output |
+| `Predicate<T>` | `test` | `T → boolean` | Filter/test condition |
+| `Consumer<T>` | `accept` | `T → void` | Perform action (side effect) |
+| `Supplier<T>` | `get` | `() → T` | Produce/provide value |
+| `BiFunction<T,U,R>` | `apply` | `(T, U) → R` | Two inputs, one output |
+| `UnaryOperator<T>` | `apply` | `T → T` | Same type in/out |
+| `BinaryOperator<T>` | `apply` | `(T, T) → T` | Two same type in, same out |
+
+**Custom Functional Interfaces for Real-World Use:**
+
+```java
+// Retry logic as a functional interface
+@FunctionalInterface
+interface RetryableAction<T> {
+    T execute() throws Exception;
+}
+
+// Generic retry utility
+public static <T> T withRetry(RetryableAction<T> action, int maxRetries) {
+    for (int attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            connection = DriverManager.getConnection(
-                "jdbc:mysql://localhost:3306/mydb", "user", "password"
-            );
-            System.out.println("Database connected!");
-        } catch (SQLException e) {
-            e.printStackTrace();
+            return action.execute();
+        } catch (Exception e) {
+            if (attempt == maxRetries) throw new RuntimeException("Failed after " + maxRetries + " retries", e);
+            Thread.sleep(1000 * attempt);  // Exponential backoff
         }
     }
-    
-    public Connection getConnection() {
-        return connection;
-    }
-}
-
-// Usage - anywhere in your app
-Connection conn = DatabaseConnection.INSTANCE.getConnection();
-```
-
-```java
-// Another Example: Logger
-public enum Logger {
-    INSTANCE;
-    
-    public void log(String message) {
-        System.out.println("[LOG] " + LocalDateTime.now() + ": " + message);
-    }
-    
-    public void error(String message) {
-        System.err.println("[ERROR] " + LocalDateTime.now() + ": " + message);
-    }
+    throw new IllegalStateException("Unreachable");
 }
 
 // Usage
-Logger.INSTANCE.log("Application started");
-Logger.INSTANCE.error("Something went wrong!");
-```
+String result = withRetry(() -> httpClient.get("https://api.example.com/data"), 3);
 
-| Attack | Regular Singleton | Enum Singleton |
-|--------|------------------|----------------|
-| **Reflection** | ❌ Vulnerable | ✅ Protected (JVM blocks) |
-| **Serialization** | ❌ Vulnerable | ✅ Protected (built-in) |
-| **Cloning** | ❌ Vulnerable | ✅ Protected (no clone) |
-| **Thread Safety** | ❌ Need volatile/sync | ✅ Built-in |
-
-> **💡 Tip:** Enum Singleton is recommended by **Joshua Bloch (Effective Java)** as the best Singleton implementation!
-
-#### 🌍 Real-World Examples in Java
-
-```java
-// Java Runtime - only one runtime per JVM
-Runtime runtime = Runtime.getRuntime();
-
-// Logger - typically one logger per class/application
-Logger logger = Logger.getLogger("MyApp");
-
-// Desktop - only one desktop environment
-Desktop desktop = Desktop.getDesktop();
-```
-
-#### ⚠️ Common Interview Questions
-
-1. **How to break Singleton?**
-   - Reflection: Can call private constructor
-   - Serialization: Creates new instance on deserialization
-   - Cloning: Can create copy via clone()
-   
-2. **How to prevent breaking?**
-   - Use Enum Singleton (protects against all)
-   - Throw exception in constructor if instance exists
-   - Implement `readResolve()` for serialization
-
----
-
-### Q62: What is Factory Pattern?
-
-**Definition:** The Factory Pattern provides an interface for creating objects in a superclass, but allows subclasses to alter the type of objects that will be created. It **encapsulates object creation logic** and provides a single point for object instantiation.
-
-#### 🎯 Problem It Solves
-
-Without Factory Pattern:
-```java
-// ❌ BAD - Client code is tightly coupled to concrete classes
-if (type.equals("circle")) {
-    shape = new Circle();
-} else if (type.equals("rectangle")) {
-    shape = new Rectangle();
-} else if (type.equals("triangle")) {
-    shape = new Triangle();
-}
-// Adding new shape requires modifying this code everywhere!
-```
-
-With Factory Pattern:
-```java
-// ✅ GOOD - Client code doesn't know about concrete classes
-Shape shape = ShapeFactory.createShape("circle");
-// Adding new shape only requires modifying factory!
-```
-
-#### 📊 Types of Factory Patterns
-
-| Type | Description | Use Case |
-|------|-------------|----------|
-| **Simple Factory** | Single factory class with creation method | Basic object creation |
-| **Factory Method** | Abstract method in base class, subclasses implement | When subclasses decide which class to instantiate |
-| **Abstract Factory** | Creates families of related objects | Multiple related products (e.g., UI themes) |
-
-#### 💻 Implementation
-
-```java
-// =============================================
-// SIMPLE FACTORY PATTERN
-// =============================================
-
-// Product interface - defines what all shapes must do
-interface Shape {
-    void draw();
-    double getArea();
-}
-
-// Concrete products - specific implementations
-class Circle implements Shape {
-    private double radius;
+// Validator functional interface
+@FunctionalInterface
+interface Validator<T> {
+    ValidationResult validate(T t);
     
-    public Circle(double radius) { this.radius = radius; }
-    public void draw() { System.out.println("Drawing Circle with radius: " + radius); }
-    public double getArea() { return Math.PI * radius * radius; }
-}
-
-class Rectangle implements Shape {
-    private double width, height;
-    
-    public Rectangle(double width, double height) {
-        this.width = width;
-        this.height = height;
-    }
-    public void draw() { System.out.println("Drawing Rectangle: " + width + "x" + height); }
-    public double getArea() { return width * height; }
-}
-
-class Triangle implements Shape {
-    private double base, height;
-    
-    public Triangle(double base, double height) {
-        this.base = base;
-        this.height = height;
-    }
-    public void draw() { System.out.println("Drawing Triangle"); }
-    public double getArea() { return 0.5 * base * height; }
-}
-
-// Factory - centralizes object creation logic
-class ShapeFactory {
-    
-    // Simple factory method
-    public static Shape createShape(String type) {
-        return switch (type.toLowerCase()) {
-            case "circle" -> new Circle(1.0);
-            case "rectangle" -> new Rectangle(1.0, 1.0);
-            case "triangle" -> new Triangle(1.0, 1.0);
-            default -> throw new IllegalArgumentException("Unknown shape: " + type);
+    default Validator<T> and(Validator<T> other) {
+        return t -> {
+            ValidationResult result = this.validate(t);
+            return result.isValid() ? other.validate(t) : result;
         };
     }
-    
-    // Factory method with parameters
-    public static Shape createCircle(double radius) {
-        return new Circle(radius);
-    }
-    
-    public static Shape createRectangle(double width, double height) {
-        return new Rectangle(width, height);
-    }
 }
 
-// Usage - client doesn't know about Circle, Rectangle classes
-Shape shape = ShapeFactory.createShape("circle");
-shape.draw();  // Drawing Circle with radius: 1.0
-```
-
-#### 🌍 Real-World Examples
-
-```java
-// Java Calendar - factory method
-Calendar calendar = Calendar.getInstance();  // Returns GregorianCalendar
-
-// Java NumberFormat - factory methods
-NumberFormat nf = NumberFormat.getCurrencyInstance();
-NumberFormat pf = NumberFormat.getPercentInstance();
-
-// Java Executors - factory for thread pools
-ExecutorService executor = Executors.newFixedThreadPool(10);
-ExecutorService cached = Executors.newCachedThreadPool();
-
-// JDBC Connection
-Connection conn = DriverManager.getConnection(url);  // Returns MySQL/PostgreSQL connection
-```
-
-#### ✅ Advantages & ❌ Disadvantages
-
-| Advantages | Disadvantages |
-|------------|---------------|
-| Loose coupling - client doesn't know concrete classes | Can lead to many factory classes |
-| Single Responsibility - creation logic in one place | Adds complexity for simple cases |
-| Open/Closed - add new products without changing client | Subclasses may need to implement factories |
-| Easier testing - can mock factory | May hide what object is actually created |
-
----
-
-### Q63: What is Builder Pattern?
-
-**Definition:** The Builder Pattern separates the construction of a complex object from its representation, allowing the same construction process to create different representations. It provides a **step-by-step approach** to building objects with many optional parameters.
-
-#### 🎯 Problem It Solves
-
-**The Telescoping Constructor Anti-Pattern:**
-```java
-// ❌ BAD - Multiple constructors for different combinations
-public class User {
-    public User(String name) { ... }
-    public User(String name, String email) { ... }
-    public User(String name, String email, int age) { ... }
-    public User(String name, String email, int age, String phone) { ... }
-    public User(String name, String email, int age, String phone, String address) { ... }
-    // 🤯 Explosion of constructors! Hard to read, easy to make mistakes
-}
-
-// Confusing - which parameter is which?
-User user = new User("John", "john@email.com", 30, null, "NYC");
-```
-
-**With Builder Pattern:**
-```java
-// ✅ GOOD - Clear, readable, self-documenting
-User user = new User.Builder("John", "john@email.com")
-    .age(30)
-    .address("NYC")
-    .build();
-```
-
-#### 📊 When to Use Builder Pattern
-
-| Scenario | Use Builder? |
-|----------|--------------|
-| Object has 4+ parameters | ✅ Yes |
-| Many optional parameters | ✅ Yes |
-| Object should be immutable after creation | ✅ Yes |
-| Need validation before object creation | ✅ Yes |
-| Same construction process, different representations | ✅ Yes |
-| Simple object with 2-3 required params | ❌ Overkill |
-
-#### 💻 Implementation
-
-```java
-public class User {
-    // All fields are final - immutable object
-    private final String name;          // Required
-    private final String email;         // Required
-    private final int age;              // Optional
-    private final String phone;         // Optional
-    private final String address;       // Optional
-    private final List<String> roles;   // Optional
-
-    // Private constructor - only Builder can create User
-    private User(Builder builder) {
-        this.name = builder.name;
-        this.email = builder.email;
-        this.age = builder.age;
-        this.phone = builder.phone;
-        this.address = builder.address;
-        this.roles = builder.roles;
-    }
-
-    // Only getters, no setters - immutability
-    public String getName() { return name; }
-    public String getEmail() { return email; }
-    public int getAge() { return age; }
-    public String getPhone() { return phone; }
-    public String getAddress() { return address; }
-    public List<String> getRoles() { return Collections.unmodifiableList(roles); }
-
-    // Static inner Builder class
-    public static class Builder {
-        // Required parameters
-        private final String name;
-        private final String email;
-        
-        // Optional parameters with default values
-        private int age = 0;
-        private String phone = "";
-        private String address = "";
-        private List<String> roles = new ArrayList<>();
-
-        // Constructor with required parameters only
-        public Builder(String name, String email) {
-            if (name == null || name.isEmpty()) {
-                throw new IllegalArgumentException("Name is required");
-            }
-            if (email == null || !email.contains("@")) {
-                throw new IllegalArgumentException("Valid email is required");
-            }
-            this.name = name;
-            this.email = email;
-        }
-
-        // Fluent setters - return 'this' for chaining
-        public Builder age(int age) {
-            if (age < 0 || age > 150) {
-                throw new IllegalArgumentException("Invalid age");
-            }
-            this.age = age;
-            return this;
-        }
-
-        public Builder phone(String phone) {
-            this.phone = phone;
-            return this;
-        }
-
-        public Builder address(String address) {
-            this.address = address;
-            return this;
-        }
-
-        public Builder addRole(String role) {
-            this.roles.add(role);
-            return this;
-        }
-
-        // Build method - creates the final immutable object
-        public User build() {
-            // Final validation can happen here
-            return new User(this);
-        }
-    }
-    
-    @Override
-    public String toString() {
-        return "User{name='" + name + "', email='" + email + "', age=" + age + "}";
-    }
-}
-
-// =============================================
-// USAGE EXAMPLES
-// =============================================
-
-// Minimal - only required fields
-User user1 = new User.Builder("John", "john@email.com")
-    .build();
-
-// With some optional fields
-User user2 = new User.Builder("Jane", "jane@email.com")
-    .age(28)
-    .phone("123-456-7890")
-    .build();
-
-// Full featured with method chaining
-User user3 = new User.Builder("Bob", "bob@email.com")
-    .age(35)
-    .phone("555-123-4567")
-    .address("123 Main St, NYC")
-    .addRole("ADMIN")
-    .addRole("USER")
-    .build();
-
-System.out.println(user3);  // User{name='Bob', email='bob@email.com', age=35}
-```
-
-#### 🌍 Real-World Examples in Java
-
-```java
-// StringBuilder - most common builder
-StringBuilder sb = new StringBuilder()
-    .append("Hello")
-    .append(" ")
-    .append("World")
-    .append("!");
-String result = sb.toString();
-
-// Stream.Builder
-Stream.Builder<String> streamBuilder = Stream.builder();
-streamBuilder.add("a").add("b").add("c");
-Stream<String> stream = streamBuilder.build();
-
-// Locale.Builder (Java 7+)
-Locale locale = new Locale.Builder()
-    .setLanguage("en")
-    .setRegion("US")
-    .build();
-
-// HttpRequest.Builder (Java 11+)
-HttpRequest request = HttpRequest.newBuilder()
-    .uri(URI.create("https://api.example.com"))
-    .header("Content-Type", "application/json")
-    .timeout(Duration.ofSeconds(10))
-    .POST(HttpRequest.BodyPublishers.ofString("{}"))
-    .build();
-```
-
-#### ✅ Advantages & ❌ Disadvantages
-
-| Advantages | Disadvantages |
-|------------|---------------|
-| Readable, self-documenting code | More code to write |
-| Immutable objects | Requires inner class |
-| Validation before construction | Slight runtime overhead |
-| Fluent API with method chaining | |
-| Can create different representations | |
-
----
-
-### Q64: What is Observer Pattern?
-
-**Definition:** The Observer Pattern defines a **one-to-many dependency** between objects so that when one object (Subject/Publisher) changes state, all its dependents (Observers/Subscribers) are **notified and updated automatically**. Also known as **Publish-Subscribe (Pub-Sub)** pattern.
-
-#### 🎯 Problem It Solves
-
-**Without Observer Pattern:**
-```java
-// ❌ BAD - Tight coupling, manual notification
-class NewsAgency {
-    private CNN cnn;
-    private BBC bbc;
-    private Reuters reuters;
-    
-    void publishNews(String news) {
-        cnn.receive(news);      // Must know about CNN
-        bbc.receive(news);      // Must know about BBC
-        reuters.receive(news);  // Must know about Reuters
-        // Adding new channel = modifying this class!
-    }
-}
-```
-
-**With Observer Pattern:**
-```java
-// ✅ GOOD - Loose coupling, automatic notification
-class NewsAgency {
-    private List<Observer> observers;
-    
-    void publishNews(String news) {
-        observers.forEach(o -> o.update(news));  // Doesn't know who observers are
-        // Adding new channel = just add to list, no code changes!
-    }
-}
-```
-
-#### 📊 Key Components
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        OBSERVER PATTERN STRUCTURE                       │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│    ┌───────────────────┐         notifies        ┌──────────────────┐  │
-│    │      Subject      │ ─────────────────────── │     Observer     │  │
-│    │    (Publisher)    │                         │   (Subscriber)   │  │
-│    ├───────────────────┤                         ├──────────────────┤  │
-│    │ + attach(observer)│                         │ + update(data)   │  │
-│    │ + detach(observer)│                         └────────┬─────────┘  │
-│    │ + notify()        │                                  │            │
-│    └─────────┬─────────┘                                  │            │
-│              │                                            │            │
-│              │ implements                                 │ implements │
-│              ▼                                            ▼            │
-│    ┌───────────────────┐                         ┌──────────────────┐  │
-│    │  ConcreteSubject  │                         │ConcreteObserver  │  │
-│    │   (NewsAgency)    │                         │  (NewsChannel)   │  │
-│    ├───────────────────┤                         ├──────────────────┤  │
-│    │ - state           │                         │ - subject        │  │
-│    │ + getState()      │                         │ + update(data)   │  │
-│    │ + setState()      │                         └──────────────────┘  │
-│    └───────────────────┘                                               │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-#### 💻 Implementation
-
-```java
-import java.util.ArrayList;
-import java.util.List;
-
-// =============================================
-// OBSERVER INTERFACE
-// =============================================
-interface Observer {
-    void update(String message);
-}
-
-// =============================================
-// SUBJECT INTERFACE
-// =============================================
-interface Subject {
-    void addObserver(Observer observer);
-    void removeObserver(Observer observer);
-    void notifyObservers();
-}
-
-// =============================================
-// CONCRETE SUBJECT (Publisher)
-// =============================================
-class NewsAgency implements Subject {
-    private List<Observer> observers = new ArrayList<>();
-    private String latestNews;
-
-    @Override
-    public void addObserver(Observer observer) {
-        observers.add(observer);
-        System.out.println("New subscriber added. Total: " + observers.size());
-    }
-
-    @Override
-    public void removeObserver(Observer observer) {
-        observers.remove(observer);
-        System.out.println("Subscriber removed. Total: " + observers.size());
-    }
-
-    @Override
-    public void notifyObservers() {
-        System.out.println("Broadcasting to " + observers.size() + " subscribers...");
-        for (Observer observer : observers) {
-            observer.update(latestNews);
-        }
-    }
-
-    // When news changes, all observers are notified
-    public void publishNews(String news) {
-        this.latestNews = news;
-        System.out.println("\n📰 BREAKING: " + news);
-        notifyObservers();
-    }
-}
-
-// =============================================
-// CONCRETE OBSERVERS (Subscribers)
-// =============================================
-class NewsChannel implements Observer {
-    private String channelName;
-    private String lastReceivedNews;
-
-    public NewsChannel(String name) {
-        this.channelName = name;
-    }
-
-    @Override
-    public void update(String news) {
-        this.lastReceivedNews = news;
-        displayNews();
-    }
-
-    private void displayNews() {
-        System.out.println("  📺 " + channelName + " reporting: " + lastReceivedNews);
-    }
-}
-
-class MobileApp implements Observer {
-    private String appName;
-
-    public MobileApp(String name) {
-        this.appName = name;
-    }
-
-    @Override
-    public void update(String news) {
-        sendPushNotification(news);
-    }
-
-    private void sendPushNotification(String news) {
-        System.out.println("  📱 " + appName + " push notification: " + news);
-    }
-}
-
-// =============================================
-// USAGE
-// =============================================
-public class ObserverDemo {
-    public static void main(String[] args) {
-        // Create the subject (publisher)
-        NewsAgency agency = new NewsAgency();
-        
-        // Create observers (subscribers)
-        Observer cnn = new NewsChannel("CNN");
-        Observer bbc = new NewsChannel("BBC");
-        Observer app = new MobileApp("NewsApp");
-        
-        // Subscribe
-        agency.addObserver(cnn);
-        agency.addObserver(bbc);
-        agency.addObserver(app);
-        
-        // Publish news - all observers notified automatically
-        agency.publishNews("Java 21 Released!");
-        
-        // Unsubscribe BBC
-        agency.removeObserver(bbc);
-        
-        // Publish again - only CNN and app notified
-        agency.publishNews("Spring Boot 3.2 is here!");
-    }
-}
-
-/* OUTPUT:
-New subscriber added. Total: 1
-New subscriber added. Total: 2
-New subscriber added. Total: 3
-
-📰 BREAKING: Java 21 Released!
-Broadcasting to 3 subscribers...
-  📺 CNN reporting: Java 21 Released!
-  📺 BBC reporting: Java 21 Released!
-  📱 NewsApp push notification: Java 21 Released!
-  
-Subscriber removed. Total: 2
-
-📰 BREAKING: Spring Boot 3.2 is here!
-Broadcasting to 2 subscribers...
-  📺 CNN reporting: Spring Boot 3.2 is here!
-  📱 NewsApp push notification: Spring Boot 3.2 is here!
-*/
-```
-
-#### 🌍 Real-World Examples
-
-| Example | Subject | Observers |
-|---------|---------|-----------|
-| **YouTube** | Channel | Subscribers |
-| **Twitter/X** | Account | Followers |
-| **Stock Market** | Stock Price | Trading Apps |
-| **Event Listeners** | Button | Click Handlers |
-| **MVC Pattern** | Model | Views |
-| **Message Queues** | Queue | Consumers |
-
-```java
-// Java Built-in Observer (deprecated in Java 9, but good to know)
-// java.util.Observable (Subject)
-// java.util.Observer (Observer)
-
-// Modern alternatives:
-// 1. PropertyChangeListener (JavaBeans)
-bean.addPropertyChangeListener(e -> System.out.println("Changed: " + e.getNewValue()));
-
-// 2. Reactive Streams (Project Reactor, RxJava)
-Flux.just(1, 2, 3).subscribe(System.out::println);
-
-// 3. Java Flow API (Java 9+)
-// Publisher, Subscriber, Subscription interfaces
-```
-
-#### ✅ Advantages & ❌ Disadvantages
-
-| Advantages | Disadvantages |
-|------------|---------------|
-| Loose coupling between subject and observers | Observers notified in random order |
-| Open/Closed - add observers without changing subject | Memory leaks if observers not removed |
-| Runtime registration/deregistration | Unexpected updates if not careful |
-| Supports broadcast communication | Can cause cascade of updates |
-
----
-
-### Q65: What is Strategy Pattern?
-
-**Definition:** The Strategy Pattern defines a family of algorithms, encapsulates each one, and makes them **interchangeable at runtime**. It lets the algorithm vary independently from clients that use it. Think of it as **pluggable behaviors**.
-
-#### 🎯 Problem It Solves
-
-**Without Strategy Pattern:**
-```java
-// ❌ BAD - Hardcoded algorithm, violates Open/Closed Principle
-class ShoppingCart {
-    void checkout(String paymentType, double amount) {
-        if (paymentType.equals("creditCard")) {
-            // Credit card logic
-            System.out.println("Processing credit card...");
-        } else if (paymentType.equals("paypal")) {
-            // PayPal logic
-            System.out.println("Processing PayPal...");
-        } else if (paymentType.equals("crypto")) {
-            // Crypto logic - need to add new else-if!
-            System.out.println("Processing crypto...");
-        }
-        // Adding new payment = modifying this method!
-        // Violates Open/Closed Principle
-    }
-}
-```
-
-**With Strategy Pattern:**
-```java
-// ✅ GOOD - Pluggable strategies, follows Open/Closed Principle
-class ShoppingCart {
-    private PaymentStrategy strategy;
-    
-    void setPaymentStrategy(PaymentStrategy strategy) {
-        this.strategy = strategy;
-    }
-    
-    void checkout(double amount) {
-        strategy.pay(amount);
-    }
-}
-// Adding new payment = just create new class, no changes to ShoppingCart!
-```
-
-#### 📊 Strategy Pattern Structure
-
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                        STRATEGY PATTERN STRUCTURE                        │
-├──────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│    ┌─────────────────────┐                                               │
-│    │       Context       │ ────────────────── uses ──────────────────┐   │
-│    │   (ShoppingCart)    │                                           │   │
-│    ├─────────────────────┤                                           ▼   │
-│    │ - strategy          │                               ┌───────────────┐│
-│    │ + setStrategy()     │                               │   Strategy    ││
-│    │ + executeStrategy() │                               │  (interface)  ││
-│    └─────────────────────┘                               ├───────────────┤│
-│                                                          │ + execute()   ││
-│                                                          └───────┬───────┘│
-│                                                                  │        │
-│                    ┌─────────────────────┬───────────────────────┤        │
-│                    │                     │                       │        │
-│                    ▼                     ▼                       ▼        │
-│          ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐  │
-│          │ ConcreteStrategy│   │ ConcreteStrategy│   │ ConcreteStrategy│  │
-│          │   (CreditCard)  │   │    (PayPal)     │   │    (Crypto)     │  │
-│          ├─────────────────┤   ├─────────────────┤   ├─────────────────┤  │
-│          │ + execute()     │   │ + execute()     │   │ + execute()     │  │
-│          └─────────────────┘   └─────────────────┘   └─────────────────┘  │
-│                                                                          │
-└──────────────────────────────────────────────────────────────────────────┘
-```
-
-#### 💻 Implementation
-
-```java
-// =============================================
-// STRATEGY INTERFACE
-// =============================================
-interface PaymentStrategy {
-    void pay(double amount);
-    String getPaymentMethod();
-}
-
-// =============================================
-// CONCRETE STRATEGIES
-// =============================================
-class CreditCardPayment implements PaymentStrategy {
-    private String cardNumber;
-    private String cardHolder;
-    
-    public CreditCardPayment(String cardNumber, String cardHolder) {
-        this.cardNumber = cardNumber;
-        this.cardHolder = cardHolder;
-    }
-    
-    @Override
-    public void pay(double amount) {
-        String maskedCard = "**** **** **** " + cardNumber.substring(cardNumber.length() - 4);
-        System.out.println("💳 Paid $" + amount + " using Credit Card");
-        System.out.println("   Card: " + maskedCard + " | Holder: " + cardHolder);
-    }
-    
-    @Override
-    public String getPaymentMethod() { return "Credit Card"; }
-}
-
-class PayPalPayment implements PaymentStrategy {
-    private String email;
-    
-    public PayPalPayment(String email) {
-        this.email = email;
-    }
-    
-    @Override
-    public void pay(double amount) {
-        System.out.println("📧 Paid $" + amount + " using PayPal");
-        System.out.println("   Account: " + email);
-    }
-    
-    @Override
-    public String getPaymentMethod() { return "PayPal"; }
-}
-
-class CryptoPayment implements PaymentStrategy {
-    private String walletAddress;
-    private String cryptoType;
-    
-    public CryptoPayment(String walletAddress, String cryptoType) {
-        this.walletAddress = walletAddress;
-        this.cryptoType = cryptoType;
-    }
-    
-    @Override
-    public void pay(double amount) {
-        System.out.println("🪙 Paid $" + amount + " using " + cryptoType);
-        System.out.println("   Wallet: " + walletAddress.substring(0, 8) + "...");
-    }
-    
-    @Override
-    public String getPaymentMethod() { return cryptoType; }
-}
-
-// =============================================
-// CONTEXT CLASS
-// =============================================
-class ShoppingCart {
-    private List<String> items = new ArrayList<>();
-    private PaymentStrategy paymentStrategy;
-
-    public void addItem(String item, double price) {
-        items.add(item + " ($" + price + ")");
-    }
-
-    // Strategy can be changed at runtime!
-    public void setPaymentStrategy(PaymentStrategy strategy) {
-        this.paymentStrategy = strategy;
-        System.out.println("Payment method set to: " + strategy.getPaymentMethod());
-    }
-
-    public void checkout(double amount) {
-        if (paymentStrategy == null) {
-            throw new IllegalStateException("Please select a payment method!");
-        }
-        System.out.println("\n🛒 Cart: " + items);
-        paymentStrategy.pay(amount);
-        System.out.println("✅ Order complete!\n");
-    }
-}
-
-// =============================================
-// USAGE - RUNTIME STRATEGY SWITCHING
-// =============================================
-public class StrategyDemo {
-    public static void main(String[] args) {
-        ShoppingCart cart = new ShoppingCart();
-        cart.addItem("Laptop", 999.99);
-        cart.addItem("Mouse", 29.99);
-        
-        // User selects Credit Card
-        cart.setPaymentStrategy(new CreditCardPayment("1234567890123456", "John Doe"));
-        cart.checkout(1029.98);
-        
-        // Same cart, different payment method - strategy changed at runtime!
-        cart.setPaymentStrategy(new PayPalPayment("john@email.com"));
-        cart.checkout(1029.98);
-        
-        // User changes to Crypto
-        cart.setPaymentStrategy(new CryptoPayment("0x1234abcd5678efgh", "Bitcoin"));
-        cart.checkout(1029.98);
-    }
-}
-
-/* OUTPUT:
-Payment method set to: Credit Card
-
-🛒 Cart: [Laptop ($999.99), Mouse ($29.99)]
-💳 Paid $1029.98 using Credit Card
-   Card: **** **** **** 3456 | Holder: John Doe
-✅ Order complete!
-
-Payment method set to: PayPal
-
-🛒 Cart: [Laptop ($999.99), Mouse ($29.99)]
-📧 Paid $1029.98 using PayPal
-   Account: john@email.com
-✅ Order complete!
-
-Payment method set to: Bitcoin
-
-🛒 Cart: [Laptop ($999.99), Mouse ($29.99)]
-🪙 Paid $1029.98 using Bitcoin
-   Wallet: 0x1234ab...
-✅ Order complete!
-*/
-```
-
-#### 🌍 Real-World Examples
-
-| Example | Context | Strategies |
-|---------|---------|------------|
-| **Sorting** | Collections.sort() | Comparator implementations |
-| **Compression** | File Compressor | ZIP, RAR, GZIP algorithms |
-| **Validation** | Form Validator | Email, Phone, Credit Card validators |
-| **Navigation** | Google Maps | Driving, Walking, Cycling routes |
-| **Authentication** | Login Service | OAuth, JWT, Basic Auth |
-| **Discount** | E-commerce | Percentage, Fixed, Seasonal discounts |
-
-```java
-// Java's built-in Strategy Pattern examples:
-
-// 1. Comparator - sorting strategy
-List<String> names = Arrays.asList("Charlie", "Alice", "Bob");
-Collections.sort(names, String::compareToIgnoreCase);  // Strategy: case-insensitive
-Collections.sort(names, Comparator.reverseOrder());    // Strategy: reverse order
-
-// 2. Layout Managers in Swing - layout strategy
-panel.setLayout(new FlowLayout());    // Strategy: flow layout
-panel.setLayout(new BorderLayout());  // Strategy: border layout
-panel.setLayout(new GridLayout(2,2)); // Strategy: grid layout
-
-// 3. Thread Pool Rejection Policies
-ThreadPoolExecutor executor = new ThreadPoolExecutor(
-    10, 10, 0L, TimeUnit.MILLISECONDS,
-    new LinkedBlockingQueue<>(100),
-    new ThreadPoolExecutor.CallerRunsPolicy()  // Strategy: caller runs
-);
-// Other strategies: AbortPolicy, DiscardPolicy, DiscardOldestPolicy
-```
-
-#### ✅ Advantages & ❌ Disadvantages
-
-| Advantages | Disadvantages |
-|------------|---------------|
-| Open/Closed - add strategies without changing context | Client must know about strategies |
-| Eliminates conditional statements | Increases number of classes |
-| Runtime algorithm switching | Communication overhead between context and strategy |
-| Easy to test strategies in isolation | May be overkill for simple cases |
-| Promotes composition over inheritance | |
-
-#### 🆚 Strategy vs State Pattern
-
-| Aspect | Strategy | State |
-|--------|----------|-------|
-| **Purpose** | Swap algorithms | Change behavior based on state |
-| **Client** | Usually sets strategy | Usually doesn't know about states |
-| **Transitions** | External (client decides) | Internal (state decides next state) |
-| **Awareness** | Strategies don't know about each other | States may know about other states |
-
----
-
-## SOLID Principles
-
-SOLID is an acronym for **five design principles** that help developers create more maintainable, flexible, and scalable software. These principles were introduced by Robert C. Martin (Uncle Bob) and are fundamental to object-oriented design.
-
-### Q66: What are SOLID principles?
-
-**Why SOLID Matters:**
-- **Maintainability** - Code is easier to understand and modify
-- **Flexibility** - Easy to extend without breaking existing code
-- **Testability** - Components can be tested in isolation
-- **Reusability** - Components can be reused across projects
-- **Reduces Technical Debt** - Less refactoring needed over time
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           SOLID PRINCIPLES                                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  S - Single Responsibility Principle (SRP)                                  │
-│      "A class should have only ONE reason to change"                        │
-│      • One class = One job                                                  │
-│      • Easier to maintain, test, and understand                             │
-│                                                                             │
-│  O - Open/Closed Principle (OCP)                                            │
-│      "Open for EXTENSION, closed for MODIFICATION"                          │
-│      • Add new features without changing existing code                      │
-│      • Use interfaces and polymorphism                                      │
-│                                                                             │
-│  L - Liskov Substitution Principle (LSP)                                    │
-│      "Subtypes must be SUBSTITUTABLE for their base types"                  │
-│      • Child class should work anywhere parent works                        │
-│      • Don't break inherited behavior                                       │
-│                                                                             │
-│  I - Interface Segregation Principle (ISP)                                  │
-│      "Many SPECIFIC interfaces > One GENERAL interface"                     │
-│      • Don't force classes to implement unused methods                      │
-│      • Split fat interfaces into smaller ones                               │
-│                                                                             │
-│  D - Dependency Inversion Principle (DIP)                                   │
-│      "Depend on ABSTRACTIONS, not concretions"                              │
-│      • High-level modules shouldn't depend on low-level modules             │
-│      • Both should depend on interfaces                                     │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+// Composable validators
+Validator<User> nameNotEmpty = u -> u.getName().isEmpty() 
+    ? ValidationResult.invalid("Name is required") 
+    : ValidationResult.valid();
+
+Validator<User> ageValid = u -> u.getAge() < 0 || u.getAge() > 150
+    ? ValidationResult.invalid("Invalid age") 
+    : ValidationResult.valid();
+
+Validator<User> userValidator = nameNotEmpty.and(ageValid);
+ValidationResult result = userValidator.validate(user);
 ```
 
 ---
 
-### Q67: Single Responsibility Principle (SRP)?
+### Q90: What are common GC algorithms? How to tune GC?
 
-**Definition:** A class should have only **one reason to change**, meaning it should have only **one job** or responsibility.
+**Garbage Collection (GC)** automatically reclaims memory from objects that are no longer reachable. The heap is divided into generations based on object age.
 
-#### 🎯 Why It Matters
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    HEAP STRUCTURE                             │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Young Generation                Old Generation             │
+│  ┌─────────┬─────┬─────┐       ┌──────────────────────┐    │
+│  │  Eden   │ S0  │ S1  │       │     Tenured          │    │
+│  │(new obj)│     │     │       │  (long-lived objects) │    │
+│  └─────────┴─────┴─────┘       └──────────────────────┘    │
+│  Minor GC (frequent, fast)       Major GC (infrequent, slow)│
+│                                                             │
+│  Object lifecycle:                                          │
+│  Eden → S0 ↔ S1 (age++) → Old Gen (after threshold)        │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
 
-When a class has multiple responsibilities:
-- Changes to one responsibility may break another
-- Harder to understand what the class does
-- Difficult to test in isolation
-- More reasons for bugs
+**GC Algorithms:**
 
-#### 📊 How to Identify SRP Violation
+| GC | JVM Flag | Best For | Behavior |
+|----|----------|----------|----------|
+| **Serial GC** | `-XX:+UseSerialGC` | Small apps, single-core | Single-threaded, stop-the-world |
+| **Parallel GC** | `-XX:+UseParallelGC` | Throughput-intensive (batch) | Multi-threaded, stop-the-world |
+| **G1 GC** (default Java 9+) | `-XX:+UseG1GC` | General purpose, large heaps | Region-based, predictable pause |
+| **ZGC** | `-XX:+UseZGC` | Ultra-low latency (<10ms) | Concurrent, scalable to TB heaps |
+| **Shenandoah** | `-XX:+UseShenandoahGC` | Low latency | Concurrent compaction |
 
-Ask yourself: "What does this class do?"
-- If the answer contains "AND", it might violate SRP
-- ❌ "This class manages users AND sends emails AND generates reports"
-- ✅ "This class manages user data"
+**Common Tuning Flags:**
 
-#### 💻 Implementation
+```bash
+# Heap size
+-Xms2g -Xmx4g                          # Min/max heap size
+
+# GC selection
+-XX:+UseG1GC                            # Use G1
+
+# G1 tuning
+-XX:MaxGCPauseMillis=200                # Target max pause time
+-XX:G1HeapRegionSize=16m                # Region size (1-32MB)
+
+# GC logging (Java 9+)
+-Xlog:gc*:file=gc.log:time,uptime,level
+
+# Metaspace
+-XX:MaxMetaspaceSize=256m               # Limit class metadata space
+```
+
+**Interview Tips:**
+- For **throughput** (batch jobs): Parallel GC
+- For **low latency** (web services): G1 or ZGC
+- For **ultra-low latency** (<1ms): ZGC
+- Always measure with **GC logs** before tuning — premature optimization is harmful
+
+---
+
+### Q91: What are common causes of memory leaks in Java?
+
+Despite having a garbage collector, Java **can** have memory leaks — situations where objects are no longer needed but still referenced, preventing GC from reclaiming them.
+
+**Common Causes:**
 
 ```java
-// ❌ BAD - Multiple responsibilities (3 reasons to change)
+// 1. Static collections that grow forever
+class Cache {
+    private static final Map<String, Object> cache = new HashMap<>();  // ❌ Never cleaned
+    
+    public static void add(String key, Object value) {
+        cache.put(key, value);  // Grows forever!
+    }
+    // Fix: Use WeakHashMap, LRU cache (LinkedHashMap), or Caffeine cache
+}
+
+// 2. Unclosed resources
+void readFile() {
+    InputStream is = new FileInputStream("data.txt");  // ❌ Never closed
+    // Fix: Use try-with-resources
+}
+
+// 3. Non-static inner class holding reference to outer class
+class Outer {
+    byte[] largeData = new byte[10_000_000];  // 10MB
+    
+    class Inner {  // ❌ Implicitly holds reference to Outer
+        void doSomething() { }
+    }
+    // Fix: Use static inner class if you don't need outer reference
+}
+
+// 4. Listeners/callbacks not deregistered
+button.addActionListener(event -> handleClick());  // ❌ Never removed
+// Fix: Remove listeners when no longer needed
+
+// 5. ThreadLocal not cleaned up (especially in thread pools)
+private static final ThreadLocal<ExpensiveObject> local = new ThreadLocal<>();
+void process() {
+    local.set(new ExpensiveObject());
+    // ... do work ...
+    // ❌ Never called local.remove() — thread returns to pool with reference!
+    // Fix: Always call local.remove() in finally block
+}
+
+// 6. Substring in older Java (pre Java 7u6)
+// String.substring() shared the original char[] — holding reference to large string
+// Fixed in Java 7u6 — substring now creates new char[]
+```
+
+**Detection Tools:**
+- **VisualVM / JConsole** — monitor heap usage in real-time
+- **Eclipse MAT** — analyze heap dumps for leak suspects
+- **jmap** — `jmap -dump:format=b,file=heap.hprof <pid>` to capture heap dump
+- **jstat** — `jstat -gc <pid>` to monitor GC activity
+- **-XX:+HeapDumpOnOutOfMemoryError** — auto-dump on OOM
+
+---
+
+### Q92: Explain `equals()` and `hashCode()` Contract
+
+The **contract** between `equals()` and `hashCode()` is one of the most critical invariants in Java, especially when using hash-based collections (`HashMap`, `HashSet`).
+
+**The Contract:**
+1. If `a.equals(b)` is `true`, then `a.hashCode() == b.hashCode()` **MUST** be true
+2. If `a.hashCode() == b.hashCode()`, `a.equals(b)` **MAY OR MAY NOT** be true (hash collision)
+3. If `a.equals(b)` is `false`, `hashCode()` is not required to differ (but should for performance)
+
+**Why This Matters:**
+
+```
+HashMap.put(key, value):
+1. hashCode() → determines BUCKET index
+2. equals()   → finds exact entry WITHIN the bucket
+
+If you override equals() but NOT hashCode():
+- Two equal objects may land in DIFFERENT buckets
+- HashMap can't find the object even though it "equals" the key!
+```
+
+```java
+// ❌ BROKEN — overrides equals() but not hashCode()
 class Employee {
-    // Responsibility 1: Business logic
-    void calculateSalary() { 
-        // If salary rules change, this class changes
-    }
-    
-    // Responsibility 2: Persistence
-    void saveToDatabase() { 
-        // If database changes, this class changes
-    }
-    
-    // Responsibility 3: Reporting
-    void generateReport() { 
-        // If report format changes, this class changes
-    }
-}
-// Problem: Changes to database, reports, OR salary rules affect this class!
-
-// ✅ GOOD - Single responsibility each (1 reason to change per class)
-class Employee {
+    private int id;
     private String name;
-    private double baseSalary;
-    
-    // Getters and setters - just data, no behavior
-    public String getName() { return name; }
-    public double getBaseSalary() { return baseSalary; }
-}
-
-class SalaryCalculator {
-    // Only reason to change: salary calculation rules change
-    double calculate(Employee emp) {
-        return emp.getBaseSalary() * 1.1;  // 10% bonus
-    }
-}
-
-class EmployeeRepository {
-    // Only reason to change: database access changes
-    void save(Employee emp) {
-        // Save to database
-    }
-    
-    Employee findById(Long id) {
-        // Load from database
-        return null;
-    }
-}
-
-class ReportGenerator {
-    // Only reason to change: report format changes
-    String generate(Employee emp) {
-        return "Report for: " + emp.getName();
-    }
-}
-```
-
-#### 🌍 Real-World Example
-
-```java
-// ❌ BAD - Controller doing too much
-@RestController
-class UserController {
-    void registerUser(UserDTO dto) {
-        // Validation
-        if (dto.getEmail() == null) throw new Exception();
-        
-        // Password hashing
-        String hashed = BCrypt.hash(dto.getPassword());
-        
-        // Save to DB
-        jdbcTemplate.update("INSERT INTO users...");
-        
-        // Send welcome email
-        sendEmail(dto.getEmail(), "Welcome!");
-    }
-}
-
-// ✅ GOOD - Separated responsibilities
-@RestController
-class UserController {
-    @Autowired private UserValidator validator;
-    @Autowired private UserService service;
-    
-    void registerUser(UserDTO dto) {
-        validator.validate(dto);
-        service.register(dto);
-    }
-}
-
-@Service
-class UserService {
-    @Autowired private PasswordEncoder encoder;
-    @Autowired private UserRepository repo;
-    @Autowired private EmailService emailService;
-    
-    void register(UserDTO dto) {
-        User user = new User(dto.getEmail(), encoder.encode(dto.getPassword()));
-        repo.save(user);
-        emailService.sendWelcome(user.getEmail());
-    }
-}
-```
-
----
-
-### Q68: Open/Closed Principle (OCP)?
-
-**Definition:** Software entities (classes, modules, functions) should be **open for extension** but **closed for modification**. You should be able to add new functionality without changing existing code.
-
-#### 🎯 Why It Matters
-
-When you modify existing code:
-- You might introduce bugs in working code
-- You need to retest everything
-- You violate the trust of code that depends on it
-
-When you extend (add new classes):
-- Existing code remains untouched
-- Only new code needs testing
-- Lower risk of regressions
-
-#### 💻 Implementation
-
-```java
-// ❌ BAD - Modifying existing code for every new shape
-class AreaCalculator {
-    double calculate(Object shape) {
-        if (shape instanceof Circle) {
-            Circle c = (Circle) shape;
-            return Math.PI * c.radius * c.radius;
-        } else if (shape instanceof Rectangle) {
-            Rectangle r = (Rectangle) shape;
-            return r.width * r.height;
-        } else if (shape instanceof Triangle) {
-            // New shape = modify this method!
-            Triangle t = (Triangle) shape;
-            return 0.5 * t.base * t.height;
-        }
-        // Every new shape requires modification here!
-        return 0;
-    }
-}
-
-// ✅ GOOD - Open for extension, closed for modification
-interface Shape {
-    double area();  // Each shape calculates its own area
-}
-
-class Circle implements Shape {
-    double radius;
-    
-    public Circle(double radius) { this.radius = radius; }
     
     @Override
-    public double area() { 
-        return Math.PI * radius * radius; 
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof Employee e)) return false;
+        return id == e.id && Objects.equals(name, e.name);
     }
+    // hashCode() NOT overridden — uses default Object.hashCode() (memory address)
 }
 
-class Rectangle implements Shape {
-    double width, height;
+Map<Employee, String> map = new HashMap<>();
+Employee e1 = new Employee(1, "John");
+Employee e2 = new Employee(1, "John");
+map.put(e1, "Engineer");
+map.get(e2);  // null! ❌ e1.equals(e2) is true, but different hashCode → different bucket
+
+// ✅ CORRECT — override BOTH
+class Employee {
+    private int id;
+    private String name;
     
-    public Rectangle(double width, double height) {
-        this.width = width;
-        this.height = height;
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof Employee e)) return false;
+        return id == e.id && Objects.equals(name, e.name);
     }
     
     @Override
-    public double area() { 
-        return width * height; 
+    public int hashCode() {
+        return Objects.hash(id, name);  // Same fields as equals()
     }
 }
+```
 
-// Adding new shape - NO modification to existing code!
-class Triangle implements Shape {
-    double base, height;
-    
-    public Triangle(double base, double height) {
-        this.base = base;
-        this.height = height;
-    }
+**Best Practices:**
+- Always override both or neither
+- Use the **same fields** in both methods
+- Use `Objects.hash()` and `Objects.equals()` for clean implementations
+- Or use Lombok `@EqualsAndHashCode` or Java Records (auto-generated)
+
+---
+
+### Q93: What is the difference between `Comparable` and `Comparator`?
+
+Both are used for **sorting objects**, but they serve different purposes:
+
+- **`Comparable<T>`** — Defines the **natural ordering** of objects. The class itself implements `Comparable` and overrides `compareTo()`. There can be only **one** natural ordering per class. Example: `String` implements `Comparable` → alphabetical order.
+
+- **`Comparator<T>`** — Defines **custom/external ordering**. A separate class (or lambda) implements `Comparator` and overrides `compare()`. You can have **multiple** comparators for different sorting strategies. Example: Sort employees by name, by salary, by age — each is a separate `Comparator`.
+
+```java
+// Comparable — natural ordering (single, built into the class)
+class Employee implements Comparable<Employee> {
+    String name;
+    double salary;
+    int age;
     
     @Override
-    public double area() { 
-        return 0.5 * base * height; 
+    public int compareTo(Employee other) {
+        return Double.compare(this.salary, other.salary);  // Natural order: by salary
     }
 }
 
-class Pentagon implements Shape {
-    double side;
-    
-    @Override
-    public double area() { 
-        return 0.25 * Math.sqrt(5 * (5 + 2 * Math.sqrt(5))) * side * side;
-    }
-}
+Collections.sort(employees);  // Uses compareTo() — sorts by salary
 
-// Calculator never needs to change!
-class AreaCalculator {
-    double calculate(Shape shape) {
-        return shape.area();  // Works for ANY shape
-    }
-    
-    double calculateTotal(List<Shape> shapes) {
-        return shapes.stream()
-            .mapToDouble(Shape::area)
-            .sum();
-    }
-}
+// Comparator — external ordering (multiple strategies)
+Comparator<Employee> byName = Comparator.comparing(Employee::getName);
+Comparator<Employee> bySalaryDesc = Comparator.comparingDouble(Employee::getSalary).reversed();
+Comparator<Employee> byAgeThenName = Comparator.comparingInt(Employee::getAge)
+                                               .thenComparing(Employee::getName);
+
+employees.sort(byName);          // Sort by name
+employees.sort(bySalaryDesc);    // Sort by salary descending
+employees.sort(byAgeThenName);   // Sort by age, then name
+
+// Null-safe comparators
+Comparator<Employee> byNameNullSafe = Comparator.comparing(
+    Employee::getName, Comparator.nullsLast(Comparator.naturalOrder())
+);
 ```
 
-#### 🌍 Real-World Example: Discount System
-
-```java
-// ❌ BAD - if-else chain for discounts
-class DiscountCalculator {
-    double calculate(Order order, String discountType) {
-        if (discountType.equals("SUMMER")) {
-            return order.getTotal() * 0.20;  // 20% off
-        } else if (discountType.equals("LOYALTY")) {
-            return order.getTotal() * 0.15;  // 15% off
-        } else if (discountType.equals("FIRSTORDER")) {
-            return order.getTotal() * 0.10;  // 10% off
-        }
-        // New discount = modify this method!
-        return 0;
-    }
-}
-
-// ✅ GOOD - Strategy pattern for OCP
-interface DiscountStrategy {
-    double calculate(Order order);
-}
-
-class SummerDiscount implements DiscountStrategy {
-    public double calculate(Order order) { return order.getTotal() * 0.20; }
-}
-
-class LoyaltyDiscount implements DiscountStrategy {
-    public double calculate(Order order) { return order.getTotal() * 0.15; }
-}
-
-class FirstOrderDiscount implements DiscountStrategy {
-    public double calculate(Order order) { return order.getTotal() * 0.10; }
-}
-
-// Adding new discount - no modification needed!
-class BlackFridayDiscount implements DiscountStrategy {
-    public double calculate(Order order) { return order.getTotal() * 0.50; }
-}
-```
-
----
-
-### Q69: Liskov Substitution Principle (LSP)?
-
-**Definition:** Objects of a superclass should be replaceable with objects of its subclasses **without breaking the application**. If S is a subtype of T, then objects of type T can be replaced with objects of type S without altering the correctness of the program.
-
-#### 🎯 Why It Matters
-
-LSP ensures that inheritance is used correctly:
-- Subclasses should extend behavior, not change it
-- Client code shouldn't need to know which subclass it's using
-- Prevents unexpected behavior from polymorphism
-
-#### 📊 Signs of LSP Violation
-
-- Subclass throws exceptions for methods parent doesn't
-- Subclass has empty or no-op implementations
-- Client code checks object type with `instanceof`
-- Subclass weakens postconditions or strengthens preconditions
-
-#### 💻 The Classic Rectangle-Square Problem
-
-```java
-// ❌ BAD - Square violates LSP when substituted for Rectangle
-class Rectangle {
-    protected int width;
-    protected int height;
-    
-    public void setWidth(int w) { this.width = w; }
-    public void setHeight(int h) { this.height = h; }
-    public int getWidth() { return width; }
-    public int getHeight() { return height; }
-    public int area() { return width * height; }
-}
-
-// Mathematically, Square IS-A Rectangle, but...
-class Square extends Rectangle {
-    // Square must maintain equal sides, so we override setters
-    @Override
-    public void setWidth(int w) { 
-        this.width = w; 
-        this.height = w;  // Keep it square!
-    }
-    
-    @Override
-    public void setHeight(int h) { 
-        this.width = h;  // Keep it square!
-        this.height = h; 
-    }
-}
-
-// Client code that works for Rectangle but BREAKS for Square
-void resize(Rectangle r) {
-    r.setWidth(5);
-    r.setHeight(10);
-    
-    // Expected area: 5 * 10 = 50
-    assert r.area() == 50;  // ❌ FAILS for Square! Area is 100
-}
-
-Rectangle rect = new Rectangle();
-resize(rect);  // ✅ Works, area = 50
-
-Rectangle square = new Square();  // Looks valid (polymorphism)
-resize(square);  // ❌ FAILS! Area = 100, not 50
-
-// ✅ GOOD - Proper design using composition or separate hierarchy
-interface Shape {
-    int area();
-}
-
-class Rectangle implements Shape {
-    private int width;
-    private int height;
-    
-    public Rectangle(int width, int height) {
-        this.width = width;
-        this.height = height;
-    }
-    
-    public int area() { return width * height; }
-}
-
-class Square implements Shape {
-    private int side;
-    
-    public Square(int side) {
-        this.side = side;
-    }
-    
-    public int area() { return side * side; }
-}
-
-// Now each shape is responsible for its own behavior
-// No unexpected behavior when substituting
-```
-
-#### 🌍 Real-World LSP Example
-
-```java
-// ❌ BAD - Penguin violates LSP
-class Bird {
-    void fly() {
-        System.out.println("Flying...");
-    }
-}
-
-class Penguin extends Bird {
-    @Override
-    void fly() {
-        throw new UnsupportedOperationException("Penguins can't fly!");
-        // Violates LSP - can't substitute Penguin for Bird!
-    }
-}
-
-// Client code breaks
-void makeBirdFly(Bird bird) {
-    bird.fly();  // ❌ Throws exception for Penguin!
-}
-
-// ✅ GOOD - Proper abstraction
-interface Bird {
-    void eat();
-    void move();
-}
-
-interface FlyingBird extends Bird {
-    void fly();
-}
-
-class Sparrow implements FlyingBird {
-    public void eat() { System.out.println("Eating seeds..."); }
-    public void move() { fly(); }
-    public void fly() { System.out.println("Flying..."); }
-}
-
-class Penguin implements Bird {
-    public void eat() { System.out.println("Eating fish..."); }
-    public void move() { System.out.println("Swimming..."); }  // Penguins swim!
-}
-
-// Now Penguin is not expected to fly
-void makeBirdMove(Bird bird) {
-    bird.move();  // ✅ Works for all birds
-}
-```
-
----
-
-### Q70: Interface Segregation Principle (ISP)?
-
-**Definition:** Clients should not be forced to depend on interfaces they don't use. It's better to have **many specific interfaces** than one general-purpose "fat" interface.
-
-#### 🎯 Why It Matters
-
-Fat interfaces cause:
-- Classes implementing methods they don't need (empty/throwing implementations)
-- Tight coupling between unrelated functionality
-- Difficult to maintain and understand
-- Changes to unused methods still require recompilation
-
-#### 💻 Implementation
-
-```java
-// ❌ BAD - Fat interface forces unnecessary implementations
-interface Worker {
-    void work();
-    void eat();
-    void sleep();
-}
-
-class Human implements Worker {
-    public void work() { System.out.println("Working..."); }
-    public void eat() { System.out.println("Eating lunch..."); }
-    public void sleep() { System.out.println("Sleeping..."); }
-}
-
-class Robot implements Worker {
-    public void work() { System.out.println("Working 24/7..."); }
-    
-    // ❌ Robots don't eat! Forced to implement anyway
-    public void eat() { 
-        throw new UnsupportedOperationException("Robots don't eat!");
-    }
-    
-    // ❌ Robots don't sleep! Forced to implement anyway
-    public void sleep() { 
-        throw new UnsupportedOperationException("Robots don't sleep!");
-    }
-}
-
-// ✅ GOOD - Segregated interfaces (each interface has ONE purpose)
-interface Workable {
-    void work();
-}
-
-interface Eatable {
-    void eat();
-}
-
-interface Sleepable {
-    void sleep();
-}
-
-// Human implements all three - makes sense!
-class Human implements Workable, Eatable, Sleepable {
-    public void work() { System.out.println("Working 9-5..."); }
-    public void eat() { System.out.println("Having lunch break..."); }
-    public void sleep() { System.out.println("Sleeping 8 hours..."); }
-}
-
-// Robot only implements what it needs - no unused methods!
-class Robot implements Workable {
-    public void work() { System.out.println("Working 24/7..."); }
-}
-
-// AI Assistant - works and can be "fed" data
-class AIAssistant implements Workable, Eatable {
-    public void work() { System.out.println("Processing queries..."); }
-    public void eat() { System.out.println("Consuming training data..."); }
-}
-```
-
-#### 🌍 Real-World ISP Example
-
-```java
-// ❌ BAD - Fat interface for all printers
-interface MultiFunctionDevice {
-    void print(Document doc);
-    void scan(Document doc);
-    void fax(Document doc);
-    void staple(Document doc);
-}
-
-// Basic printer forced to implement features it doesn't have
-class BasicPrinter implements MultiFunctionDevice {
-    public void print(Document doc) { /* OK */ }
-    public void scan(Document doc) { throw new UnsupportedOperationException(); }
-    public void fax(Document doc) { throw new UnsupportedOperationException(); }
-    public void staple(Document doc) { throw new UnsupportedOperationException(); }
-}
-
-// ✅ GOOD - Segregated printer interfaces
-interface Printer {
-    void print(Document doc);
-}
-
-interface Scanner {
-    void scan(Document doc);
-}
-
-interface Fax {
-    void fax(Document doc);
-}
-
-interface Stapler {
-    void staple(Document doc);
-}
-
-// Basic printer - just printing
-class BasicPrinter implements Printer {
-    public void print(Document doc) { System.out.println("Printing..."); }
-}
-
-// Office printer - printing, scanning, faxing
-class OfficePrinter implements Printer, Scanner, Fax {
-    public void print(Document doc) { System.out.println("Printing..."); }
-    public void scan(Document doc) { System.out.println("Scanning..."); }
-    public void fax(Document doc) { System.out.println("Faxing..."); }
-}
-
-// Enterprise printer - everything!
-class EnterprisePrinter implements Printer, Scanner, Fax, Stapler {
-    public void print(Document doc) { }
-    public void scan(Document doc) { }
-    public void fax(Document doc) { }
-    public void staple(Document doc) { }
-}
-```
-
-#### ✅ Benefits of ISP
-
-| Benefit | Description |
-|---------|-------------|
-| **Cohesion** | Interfaces are focused on single purpose |
-| **Flexibility** | Classes implement only what they need |
-| **Maintainability** | Changes to one interface don't affect unrelated classes |
-| **Testability** | Easier to mock small interfaces |
-
----
-
-### Q71: Dependency Inversion Principle (DIP)?
-
-**Definition:** High-level modules should not depend on low-level modules. Both should depend on **abstractions** (interfaces). Abstractions should not depend on details. Details should depend on abstractions.
-
-#### 🎯 Why It Matters
-
-Without DIP:
-- High-level business logic is tightly coupled to low-level details
-- Changing database, framework, or external service breaks business logic
-- Difficult to test (can't mock concrete classes easily)
-- Hard to swap implementations
-
-With DIP:
-- Business logic depends only on interfaces
-- Easy to switch implementations (MySQL → MongoDB, REST → gRPC)
-- Easy to test with mock objects
-- Follows "program to interface, not implementation"
-
-#### 📊 Understanding the "Inversion"
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    DEPENDENCY INVERSION                                  │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│   ❌ TRADITIONAL (without DIP)                                          │
-│   ┌────────────────┐                                                    │
-│   │  UserService   │  ──── depends on ────►  ┌─────────────────┐        │
-│   │  (High-level)  │                         │  MySQLDatabase  │        │
-│   └────────────────┘                         │  (Low-level)    │        │
-│                                              └─────────────────┘        │
-│   Problem: Can't switch to MongoDB without changing UserService!        │
-│                                                                         │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│   ✅ WITH DIP (Dependency Inversion)                                    │
-│                                                                         │
-│   ┌────────────────┐          ┌─────────────────┐                       │
-│   │  UserService   │ ──────── │    Database     │ ◄── Interface        │
-│   │  (High-level)  │ depends  │   (Abstraction) │     (Abstraction)    │
-│   └────────────────┘   on     └────────┬────────┘                       │
-│                                        │                                │
-│                          ┌─────────────┼─────────────┐                  │
-│                          ▼             ▼             ▼                  │
-│                   ┌──────────┐  ┌──────────┐  ┌──────────┐              │
-│                   │  MySQL   │  │ MongoDB  │  │  Redis   │              │
-│                   │  (impl)  │  │  (impl)  │  │  (impl)  │              │
-│                   └──────────┘  └──────────┘  └──────────┘              │
-│                                                                         │
-│   Both high-level (UserService) and low-level (MySQL/MongoDB)           │
-│   depend on the abstraction (Database interface)!                       │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-#### 💻 Implementation
-
-```java
-// ❌ BAD - High-level module depends on low-level module
-class MySQLDatabase {
-    void save(String data) { 
-        System.out.println("Saving to MySQL: " + data);
-    }
-    
-    String find(String id) {
-        return "Data from MySQL";
-    }
-}
-
-class UserService {
-    // Direct dependency on concrete class - tight coupling!
-    private MySQLDatabase database = new MySQLDatabase();
-    
-    void saveUser(String user) {
-        database.save(user);
-    }
-    
-    // Problems:
-    // 1. Can't switch to MongoDB without changing this class
-    // 2. Can't unit test without real MySQL database
-    // 3. Can't use different DB for testing/production
-}
-
-// ✅ GOOD - Both depend on abstraction (Dependency Inversion)
-
-// Step 1: Define abstraction (interface)
-interface Database {
-    void save(String data);
-    String find(String id);
-}
-
-// Step 2: Low-level modules implement the abstraction
-class MySQLDatabase implements Database {
-    @Override
-    public void save(String data) { 
-        System.out.println("MySQL: INSERT INTO users VALUES (" + data + ")");
-    }
-    
-    @Override
-    public String find(String id) {
-        System.out.println("MySQL: SELECT * FROM users WHERE id = " + id);
-        return "User from MySQL";
-    }
-}
-
-class MongoDB implements Database {
-    @Override
-    public void save(String data) {
-        System.out.println("MongoDB: db.users.insert({" + data + "})");
-    }
-    
-    @Override
-    public String find(String id) {
-        System.out.println("MongoDB: db.users.find({_id: " + id + "})");
-        return "User from MongoDB";
-    }
-}
-
-class InMemoryDatabase implements Database {  // Great for testing!
-    private Map<String, String> storage = new HashMap<>();
-    
-    @Override
-    public void save(String data) {
-        storage.put(UUID.randomUUID().toString(), data);
-    }
-    
-    @Override
-    public String find(String id) {
-        return storage.get(id);
-    }
-}
-
-// Step 3: High-level module depends on abstraction
-class UserService {
-    private final Database database;  // Depends on interface, not concrete class
-    
-    // Dependency Injection via constructor
-    public UserService(Database database) {
-        this.database = database;
-    }
-    
-    void saveUser(String user) {
-        database.save(user);
-    }
-    
-    String getUser(String id) {
-        return database.find(id);
-    }
-}
-
-// =============================================
-// USAGE - Easy to switch implementations!
-// =============================================
-
-// Production with MySQL
-UserService mysqlService = new UserService(new MySQLDatabase());
-mysqlService.saveUser("John");
-
-// Switch to MongoDB - just change the injected dependency!
-UserService mongoService = new UserService(new MongoDB());
-mongoService.saveUser("Jane");
-
-// Testing with in-memory database - no real DB needed!
-UserService testService = new UserService(new InMemoryDatabase());
-testService.saveUser("Test User");
-```
-
-#### 🌍 Real-World Example: Notification System
-
-```java
-// Interface (abstraction)
-interface NotificationSender {
-    void send(String to, String message);
-}
-
-// Multiple implementations
-class EmailSender implements NotificationSender {
-    public void send(String to, String message) {
-        System.out.println("📧 Email to " + to + ": " + message);
-    }
-}
-
-class SMSSender implements NotificationSender {
-    public void send(String to, String message) {
-        System.out.println("📱 SMS to " + to + ": " + message);
-    }
-}
-
-class PushNotificationSender implements NotificationSender {
-    public void send(String to, String message) {
-        System.out.println("🔔 Push to " + to + ": " + message);
-    }
-}
-
-// High-level service depends on abstraction
-class OrderService {
-    private final NotificationSender notificationSender;
-    
-    public OrderService(NotificationSender notificationSender) {
-        this.notificationSender = notificationSender;
-    }
-    
-    void placeOrder(Order order) {
-        // Business logic...
-        notificationSender.send(order.getCustomerContact(), "Order placed!");
-    }
-}
-
-// Spring Boot example - DI container handles injection
-@Service
-class OrderService {
-    @Autowired
-    private NotificationSender notificationSender;  // Spring injects implementation
-}
-```
-
-#### ✅ Benefits of DIP
-
-| Benefit | Description |
-|---------|-------------|
-| **Loose Coupling** | High-level not tied to low-level details |
-| **Testability** | Easy to mock dependencies |
-| **Flexibility** | Swap implementations without code changes |
-| **Maintainability** | Changes in low-level don't affect high-level |
-| **Reusability** | High-level logic can work with any implementation |
-
----
-
-## Coding Questions
-
-### Q72: Reverse Words in a String
-
-**Problem:** Given an input string `s`, reverse the order of the words. Words are separated by spaces. Handle leading/trailing spaces and multiple spaces between words.
-
-```
-Input:  "the sky is blue"
-Output: "blue is sky the"
-
-Input:  "  hello world  "
-Output: "world hello"
-
-Input:  "a good   example"
-Output: "example good a"
-```
-
-```java
-// Method 1: Using built-in methods (Most readable)
-// Time: O(n), Space: O(n)
-String reverseWords1(String s) {
-    // 1. Trim and split by one or more spaces
-    String[] words = s.trim().split("\\s+");
-    
-    // 2. Reverse the array
-    Collections.reverse(Arrays.asList(words));
-    
-    // 3. Join with single space
-    return String.join(" ", words);
-}
-
-// Method 2: Two-pointer approach (Interview favorite)
-// Time: O(n), Space: O(n)
-String reverseWords2(String s) {
-    StringBuilder result = new StringBuilder();
-    int n = s.length();
-    int i = n - 1;
-    
-    while (i >= 0) {
-        // Skip trailing spaces
-        while (i >= 0 && s.charAt(i) == ' ') {
-            i--;
-        }
-        
-        if (i < 0) break;
-        
-        // Find the start of the word
-        int end = i;
-        while (i >= 0 && s.charAt(i) != ' ') {
-            i--;
-        }
-        int start = i + 1;
-        
-        // Append word
-        if (result.length() > 0) {
-            result.append(" ");
-        }
-        result.append(s.substring(start, end + 1));
-    }
-    
-    return result.toString();
-}
-
-// Method 3: In-place with char array (Most optimal for space)
-// Time: O(n), Space: O(n) for char array
-String reverseWords3(String s) {
-    char[] chars = s.toCharArray();
-    int n = chars.length;
-    
-    // Step 1: Reverse entire string
-    reverse(chars, 0, n - 1);
-    
-    // Step 2: Reverse each word
-    reverseWords(chars, n);
-    
-    // Step 3: Clean up spaces
-    return cleanSpaces(chars, n);
-}
-
-private void reverse(char[] chars, int left, int right) {
-    while (left < right) {
-        char temp = chars[left];
-        chars[left++] = chars[right];
-        chars[right--] = temp;
-    }
-}
-
-private void reverseWords(char[] chars, int n) {
-    int i = 0, j = 0;
-    while (i < n) {
-        // Skip spaces
-        while (i < j || (i < n && chars[i] == ' ')) i++;
-        // Skip non-spaces
-        while (j < i || (j < n && chars[j] != ' ')) j++;
-        // Reverse the word
-        reverse(chars, i, j - 1);
-    }
-}
-
-private String cleanSpaces(char[] chars, int n) {
-    int i = 0, j = 0;
-    while (j < n) {
-        // Skip spaces
-        while (j < n && chars[j] == ' ') j++;
-        // Copy non-spaces
-        while (j < n && chars[j] != ' ') chars[i++] = chars[j++];
-        // Skip spaces
-        while (j < n && chars[j] == ' ') j++;
-        // Add single space between words
-        if (j < n) chars[i++] = ' ';
-    }
-    return new String(chars, 0, i);
-}
-
-// Method 4: Using Stream API (Java 8+)
-String reverseWords4(String s) {
-    return Arrays.stream(s.trim().split("\\s+"))
-        .reduce((a, b) -> b + " " + a)
-        .orElse("");
-}
-
-// Method 5: Using Deque (Stack approach)
-String reverseWords5(String s) {
-    Deque<String> deque = new ArrayDeque<>();
-    StringBuilder word = new StringBuilder();
-    
-    for (char c : s.toCharArray()) {
-        if (c != ' ') {
-            word.append(c);
-        } else if (word.length() > 0) {
-            deque.addFirst(word.toString());
-            word = new StringBuilder();
-        }
-    }
-    
-    // Don't forget the last word
-    if (word.length() > 0) {
-        deque.addFirst(word.toString());
-    }
-    
-    return String.join(" ", deque);
-}
-```
-
-| Method | Time | Space | Notes |
-|--------|------|-------|-------|
-| Built-in | O(n) | O(n) | Cleanest, uses regex |
-| Two-pointer | O(n) | O(n) | Good for interviews |
-| In-place reverse | O(n) | O(n) | Shows algorithm knowledge |
-| Stream API | O(n) | O(n) | Functional style |
-| Deque/Stack | O(n) | O(n) | Easy to understand |
-
----
-
-### Q73: Reverse a String (Characters)
-
-```java
-// Method 1: StringBuilder
-String reverse1(String str) {
-    return new StringBuilder(str).reverse().toString();
-}
-
-// Method 2: Char array
-String reverse2(String str) {
-    char[] chars = str.toCharArray();
-    int left = 0, right = chars.length - 1;
-    while (left < right) {
-        char temp = chars[left];
-        chars[left++] = chars[right];
-        chars[right--] = temp;
-    }
-    return new String(chars);
-}
-
-// Method 3: Stream
-String reverse3(String str) {
-    return new StringBuilder(str).reverse().toString();
-}
-```
-
----
-
-### Q74: Check if String is Palindrome
-
-```java
-boolean isPalindrome(String str) {
-    str = str.toLowerCase().replaceAll("[^a-z0-9]", "");
-    int left = 0, right = str.length() - 1;
-    while (left < right) {
-        if (str.charAt(left++) != str.charAt(right--)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-// Or using Stream
-boolean isPalindrome2(String str) {
-    String clean = str.toLowerCase().replaceAll("[^a-z0-9]", "");
-    return clean.equals(new StringBuilder(clean).reverse().toString());
-}
-```
-
----
-
-### Q74: Find Duplicates in Array
-
-```java
-// Method 1: Using Set
-List<Integer> findDuplicates(int[] arr) {
-    Set<Integer> seen = new HashSet<>();
-    Set<Integer> duplicates = new HashSet<>();
-    
-    for (int num : arr) {
-        if (!seen.add(num)) {
-            duplicates.add(num);
-        }
-    }
-    return new ArrayList<>(duplicates);
-}
-
-// Method 2: Using Stream
-List<Integer> findDuplicates2(int[] arr) {
-    return Arrays.stream(arr)
-        .boxed()
-        .collect(Collectors.groupingBy(Function.identity(), Collectors.counting()))
-        .entrySet().stream()
-        .filter(e -> e.getValue() > 1)
-        .map(Map.Entry::getKey)
-        .collect(Collectors.toList());
-}
-```
-
----
-
-### Q75: Find First Non-Repeated Character
-
-```java
-Character firstNonRepeated(String str) {
-    Map<Character, Long> charCount = str.chars()
-        .mapToObj(c -> (char) c)
-        .collect(Collectors.groupingBy(
-            Function.identity(),
-            LinkedHashMap::new,  // Preserve order!
-            Collectors.counting()
-        ));
-    
-    return charCount.entrySet().stream()
-        .filter(e -> e.getValue() == 1)
-        .map(Map.Entry::getKey)
-        .findFirst()
-        .orElse(null);
-}
-```
-
----
-
-### Q76: Two Sum Problem
-
-```java
-int[] twoSum(int[] nums, int target) {
-    Map<Integer, Integer> map = new HashMap<>();
-    
-    for (int i = 0; i < nums.length; i++) {
-        int complement = target - nums[i];
-        if (map.containsKey(complement)) {
-            return new int[] { map.get(complement), i };
-        }
-        map.put(nums[i], i);
-    }
-    return new int[] {};
-}
-```
-
----
-
-### Q77: FizzBuzz
-
-```java
-void fizzBuzz(int n) {
-    for (int i = 1; i <= n; i++) {
-        if (i % 15 == 0) System.out.println("FizzBuzz");
-        else if (i % 3 == 0) System.out.println("Fizz");
-        else if (i % 5 == 0) System.out.println("Buzz");
-        else System.out.println(i);
-    }
-}
-
-// Using Stream
-IntStream.rangeClosed(1, n)
-    .mapToObj(i -> i % 15 == 0 ? "FizzBuzz" : 
-                   i % 3 == 0 ? "Fizz" : 
-                   i % 5 == 0 ? "Buzz" : String.valueOf(i))
-    .forEach(System.out::println);
-```
-
----
-
-### Q78: Check Anagram
-
-```java
-boolean isAnagram(String s1, String s2) {
-    if (s1.length() != s2.length()) return false;
-    
-    char[] c1 = s1.toLowerCase().toCharArray();
-    char[] c2 = s2.toLowerCase().toCharArray();
-    Arrays.sort(c1);
-    Arrays.sort(c2);
-    return Arrays.equals(c1, c2);
-}
-
-// Using frequency map
-boolean isAnagram2(String s1, String s2) {
-    if (s1.length() != s2.length()) return false;
-    
-    int[] count = new int[26];
-    for (int i = 0; i < s1.length(); i++) {
-        count[s1.charAt(i) - 'a']++;
-        count[s2.charAt(i) - 'a']--;
-    }
-    return Arrays.stream(count).allMatch(c -> c == 0);
-}
-```
-
----
-
-### Q79: Fibonacci Sequence
-
-```java
-// Iterative
-int fibonacci(int n) {
-    if (n <= 1) return n;
-    int a = 0, b = 1;
-    for (int i = 2; i <= n; i++) {
-        int temp = a + b;
-        a = b;
-        b = temp;
-    }
-    return b;
-}
-
-// Using Stream
-Stream.iterate(new long[]{0, 1}, f -> new long[]{f[1], f[0] + f[1]})
-    .limit(n)
-    .map(f -> f[0])
-    .forEach(System.out::println);
-```
-
----
-
-### Q80: Check Prime Number
-
-```java
-boolean isPrime(int n) {
-    if (n < 2) return false;
-    if (n == 2) return true;
-    if (n % 2 == 0) return false;
-    
-    for (int i = 3; i <= Math.sqrt(n); i += 2) {
-        if (n % i == 0) return false;
-    }
-    return true;
-}
-
-// Using Stream
-boolean isPrime2(int n) {
-    return n > 1 && IntStream.rangeClosed(2, (int) Math.sqrt(n))
-        .noneMatch(i -> n % i == 0);
-}
-```
+| | `Comparable` | `Comparator` |
+|---|---|---|
+| **Package** | `java.lang` | `java.util` |
+| **Method** | `compareTo(T o)` | `compare(T o1, T o2)` |
+| **Implemented by** | The class itself | External class/lambda |
+| **Orderings** | One (natural) | Many (custom) |
+| **Modifies class?** | Yes | No |
+| **Usage** | `Collections.sort(list)` | `Collections.sort(list, comparator)` |
 
 ---
 
