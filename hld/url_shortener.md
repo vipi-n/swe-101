@@ -909,6 +909,17 @@ RETURNING short_code;
 | Speed | Fast (+ rare retry) | Very fast | Very fast |
 | **Recommended?** | ✅ Good | ✅ Great | ✅ Great |
 
+### 🏆 Best Approach: Counter + Base62 with Redis
+
+**Counter + Base62** is the best approach because:
+- **Zero collisions** — a monotonically increasing counter guarantees uniqueness by definition, no retries needed
+- **Simplest logic** — no hashing, no collision handling, no DB lookups during generation
+- **Fastest** — just increment a counter and Base62 encode it
+- **Scales horizontally** — use Redis `INCRBY` with **counter batching** (each Write Service grabs 1000 values at a time) to avoid per-request network calls
+- **Multi-region friendly** — allocate disjoint counter ranges per region (region A: 0–1B, region B: 1B–2B) so no cross-region coordination is needed
+
+The only trade-off is sequential/predictable codes, which is acceptable for most URL shorteners. If unpredictability is required, apply a fixed-width block cipher or hash on the counter value before Base62 encoding.
+
 ---
 
 ## Deep Dive 2: Making Redirects Fast
@@ -2100,4 +2111,4 @@ Base62 is the standard choice because every character is URL-safe without encodi
 
 ---
 
-*Reference: [Hello Interview — Bit.ly System Design](https://www.hellointerview.com/learn/system-design/problem-breakdowns/bitly)*
+
