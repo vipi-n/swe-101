@@ -208,6 +208,8 @@ isRequestAllowed(clientId, ruleId) -> {
 | `ruleId` | string | Identifier for the rate limiting rule to check against |
 | **Returns** | object | Whether request is allowed, remaining quota, and when the limit resets |
 
+> **Important:** This is an **internal API** used by the API Gateway — not a client-facing endpoint. The client never sends a `ruleId`. The gateway extracts the client identity from the request headers (JWT, API key, or IP), determines the request endpoint, and then **resolves the applicable `ruleId` internally** by matching against rules cached in its local memory (loaded from ZooKeeper/config DB). For example, a `POST /api/tweets` with a valid JWT is internally mapped to `clientId = "user:alice123"` and `ruleId = "rule_tweet_limit"` before calling this function.
+
 The returned data feeds directly into response headers:
 - `X-RateLimit-Remaining` ← `remaining`
 - `X-RateLimit-Reset` ← `resetTime`
