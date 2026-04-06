@@ -1781,6 +1781,72 @@ Common ways clients try to circumvent rate limits:
 
 This section traces a single request through the entire system from client to response.
 
+### Concise Flow Summary
+
+```
+User hits API (e.g., POST /api/tweets)
+        │
+        ▼
+┌─ API Gateway ──────────────────────────────────────────────────────────┐
+│                                                                        │
+│  Step 1: EXTRACT CLIENT IDENTITY (from request headers)                │
+│    • Parse JWT from Authorization header → get user_id + tier/plan     │
+│    • OR extract API key from X-API-Key header                          │
+│    • OR fall back to IP from X-Forwarded-For                           │
+│    • Result: clientId = "user:alice123", tier = "premium"              │
+│                                                                        │
+│  Step 2: MATCH APPLICABLE RULES (from gateway's local memory cache)    │
+│    • Rules are cached in-memory (loaded from ZooKeeper/config DB)      │
+│    • Match by: client type + tier + endpoint                           │
+│    • e.g., endpoint = /api/tweets + tier = premium                     │
+│      → rule_tweet_limit: max_tokens=500, refill_rate=0.046             │
+│    • NO database call — rules are already in gateway memory            │
+│                                                                        │
+│  Step 3: CALL REDIS with rule VALUES (not ruleId!)                     │
+│    • Redis key:  "bucket:user:alice123:rule_tweet_limit"               │
+│    • Lua args:   [max_tokens=500, refill_rate=0.046, current_time]     │
+│    • Redis does NOT know about rules — it just receives numbers        │
+│                                                                        │
+└────────────┬───────────────────────────────────────────────────────────┘
+             │  EVALSHA <lua_sha> 1 "bucket:user:alice123:rule_tweet_limit"
+             │                      500  0.046  1712400000
+             ▼
+┌─ Redis (Lua Script - executes atomically) ────────────────────────────┐
+│                                                                        │
+│  Step 4: READ current state → {tokens: 84.5, last_refill: 1712399900} │
+│  Step 5: CALCULATE refill → elapsed=100s × 0.046 = 4.6 new tokens     │
+│           new_tokens = min(500, 84.5 + 4.6) = 89.1                    │
+│  Step 6: DECIDE → 89.1 >= 1? YES → ALLOW, consume: 89.1 - 1 = 88.1   │
+│  Step 7: WRITE updated state → {tokens: 88.1, last_refill: 1712400000}│
+│  Step 8: RETURN → {allowed: 1, remaining: 88}                         │
+│                                                                        │
+└────────────┬───────────────────────────────────────────────────────────┘
+             │
+             ▼
+┌─ API Gateway (continued) ─────────────────────────────────────────────┐
+│                                                                        │
+│  Step 9: ENFORCE most restrictive rule (if multiple rules matched)     │
+│    • All rules passed? → Forward request to backend service            │
+│    • Any rule failed?  → Return HTTP 429 immediately (no backend call) │
+│                                                                        │
+└────────────┬───────────────────────────────────────────────────────────┘
+             │
+             ▼
+    ┌─────────────────┐        ┌──────────────────────────┐
+    │ Backend Service  │───────▶│ Response to Client        │
+    │ (Tweet Service)  │        │ HTTP 201 Created          │
+    └─────────────────┘        │ X-RateLimit-Remaining: 88 │
+                               │ X-RateLimit-Reset: ...    │
+                               └──────────────────────────┘
+```
+
+> **Key takeaways:**
+> - The **user's tier/plan comes from the JWT** (set by auth service at login) — no DB lookup needed
+> - **Rules live in gateway memory** (synced from ZooKeeper/config DB) — no DB call per request
+> - **Redis receives rule values (numbers)**, not a ruleId — Redis is a dumb data store
+> - **Lua script runs atomically inside Redis** — read + calculate + write in one operation
+> - The gateway only contacts Redis — **no other external call** is needed for rate limiting
+
 ### Happy Path (Request Allowed)
 
 ```
