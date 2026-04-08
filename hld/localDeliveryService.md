@@ -110,7 +110,7 @@ One important distinction for this problem is the difference between **Item** an
 > **Tip:** Start with the most concrete physical or business entities (items, users) and work up to more abstract entities (orders, carts). This ensures you don't miss important entities.
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'background': '#ffffff', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc'}}}%%
 erDiagram
     DISTRIBUTION_CENTER {
         string id PK
@@ -208,7 +208,7 @@ We need an internal service that takes `LAT` and `LONG` and returns a list of DC
 > This isn't perfectly satisfying the 1-hour drive-time requirement, but we'll refine it in the deep dive.
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc', 'noteBkgColor': '#fef9c3', 'noteTextColor': '#1e293b', 'actorTextColor': '#1e293b', 'actorBkg': '#e2e8f0', 'actorBorder': '#64748b', 'signalColor': '#1e293b', 'signalTextColor': '#1e293b'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'background': '#ffffff', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc', 'noteBkgColor': '#fef9c3', 'noteTextColor': '#1e293b', 'actorTextColor': '#1e293b', 'actorBkg': '#e2e8f0', 'actorBorder': '#64748b', 'signalColor': '#1e293b', 'signalTextColor': '#1e293b'}}}%%
 sequenceDiagram
     participant C as Client
     participant NS as Nearby Service
@@ -223,7 +223,7 @@ sequenceDiagram
 ```
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'background': '#ffffff', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc'}}}%%
 flowchart LR
     subgraph Nearby Service
         Input["Input Position<br/>(lat, long)"] -->|"1. Send location"| NS[Nearby Service]
@@ -244,7 +244,7 @@ Once we have nearby DCs, query the **Inventory** table and join with the **Item*
 > In many e-commerce systems, the "Catalog" is stored separately from inventory due to different consumers and workloads. We store them in the same database here for simplicity but would ideally separate them, add an Elasticsearch index for search, etc.
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc', 'noteBkgColor': '#fef9c3', 'noteTextColor': '#1e293b', 'actorTextColor': '#1e293b', 'actorBkg': '#e2e8f0', 'actorBorder': '#64748b', 'signalColor': '#1e293b', 'signalTextColor': '#1e293b'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'background': '#ffffff', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc', 'noteBkgColor': '#fef9c3', 'noteTextColor': '#1e293b', 'actorTextColor': '#1e293b', 'actorBkg': '#e2e8f0', 'actorBorder': '#64748b', 'signalColor': '#1e293b', 'signalTextColor': '#1e293b'}}}%%
 sequenceDiagram
     participant AS as Availability Service
     participant DB as Postgres DB
@@ -268,7 +268,7 @@ Putting it all together:
 5. Results are summed up and returned to the client.
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc', 'noteBkgColor': '#fef9c3', 'noteTextColor': '#1e293b', 'actorTextColor': '#1e293b', 'actorBkg': '#e2e8f0', 'actorBorder': '#64748b', 'signalColor': '#1e293b', 'signalTextColor': '#1e293b'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'background': '#ffffff', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc', 'noteBkgColor': '#fef9c3', 'noteTextColor': '#1e293b', 'actorTextColor': '#1e293b', 'actorBkg': '#e2e8f0', 'actorBorder': '#64748b', 'signalColor': '#1e293b', 'signalTextColor': '#1e293b'}}}%%
 sequenceDiagram
     participant C as Client
     participant GW as API Gateway
@@ -286,7 +286,7 @@ sequenceDiagram
 ```
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'background': '#ffffff', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc'}}}%%
 flowchart TB
     User["👤 User"] -->|"1. GET /v1/availability<br/>lat, long"| GW["API Gateway"]
     GW -->|"2. Forward request"| AS["Availability Service"]
@@ -342,7 +342,7 @@ When atomicity of transactions is a requirement, it's helpful to have data **col
 > **Downside:** If any item becomes unavailable, the **entire order fails**. We return a meaningful error, but this is preferable to succeeding with an incomplete order (e.g., a device without its battery).
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc', 'noteBkgColor': '#fef9c3', 'noteTextColor': '#1e293b', 'actorTextColor': '#1e293b', 'actorBkg': '#e2e8f0', 'actorBorder': '#64748b', 'signalColor': '#1e293b', 'signalTextColor': '#1e293b'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'background': '#ffffff', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc', 'noteBkgColor': '#fef9c3', 'noteTextColor': '#1e293b', 'actorTextColor': '#1e293b', 'actorBkg': '#e2e8f0', 'actorBorder': '#64748b', 'signalColor': '#1e293b', 'signalTextColor': '#1e293b'}}}%%
 sequenceDiagram
     participant C as Client
     participant GW as API Gateway
@@ -368,7 +368,7 @@ sequenceDiagram
 ```
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'background': '#ffffff', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc'}}}%%
 flowchart LR
     subgraph Order Path
         Client["👤 Client"] -->|"1. POST /v1/order"| GW["API Gateway"]
@@ -395,7 +395,7 @@ The complete high-level design with both availability and ordering:
 | **Postgres DB** | Single database for inventory and orders, partitioned by region. Read replicas for availability, leader for ordering. |
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'background': '#ffffff', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc'}}}%%
 flowchart TB
     User["👤 User"] -->|"1. Request"| GW["API Gateway"]
     
@@ -456,7 +456,7 @@ Use a **two-step approach**:
 3. **Cache results** — Cache the travel times between user zones and DCs. Travel times for a given zone don't change frequently (maybe refresh every few minutes).
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc', 'noteBkgColor': '#fef9c3', 'noteTextColor': '#1e293b', 'actorTextColor': '#1e293b', 'actorBkg': '#e2e8f0', 'actorBorder': '#64748b', 'signalColor': '#1e293b', 'signalTextColor': '#1e293b'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'background': '#ffffff', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc', 'noteBkgColor': '#fef9c3', 'noteTextColor': '#1e293b', 'actorTextColor': '#1e293b', 'actorBkg': '#e2e8f0', 'actorBorder': '#64748b', 'signalColor': '#1e293b', 'signalTextColor': '#1e293b'}}}%%
 sequenceDiagram
     participant AS as Availability Service
     participant NS as Nearby Service
@@ -482,7 +482,7 @@ sequenceDiagram
 ```
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'background': '#ffffff', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc'}}}%%
 flowchart TB
     subgraph Nearby Service - Two Step Approach
         Input["User Location<br/>(lat, long)"] -->|"1. Send location"| Step1["Step 1: Distance Pre-filter<br/>Haversine formula<br/>~50 mile radius"]
@@ -540,7 +540,7 @@ Add a **Redis cache** in front of the database for availability queries:
 > Inventory data is a great candidate for caching — it changes relatively infrequently compared to how often it's read, and slight staleness (within 1 minute) is acceptable for availability queries.
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc', 'noteBkgColor': '#fef9c3', 'noteTextColor': '#1e293b', 'actorTextColor': '#1e293b', 'actorBkg': '#e2e8f0', 'actorBorder': '#64748b', 'signalColor': '#1e293b', 'signalTextColor': '#1e293b'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'background': '#ffffff', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc', 'noteBkgColor': '#fef9c3', 'noteTextColor': '#1e293b', 'actorTextColor': '#1e293b', 'actorBkg': '#e2e8f0', 'actorBorder': '#64748b', 'signalColor': '#1e293b', 'signalTextColor': '#1e293b'}}}%%
 sequenceDiagram
     participant AS as Availability Service
     participant Redis as Redis Cache
@@ -577,7 +577,7 @@ For queries that miss the cache, optimize the database layer:
 | **Regional Partitioning** | Queries only scan relevant data. Reduces I/O and improves query speed. |
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'background': '#ffffff', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc'}}}%%
 flowchart TB
     User["👤 User"] -->|"1. Request"| GW["API Gateway"]
     GW -->|"2a. GET /v1/availability"| AS["Availability Service"]
@@ -605,7 +605,7 @@ flowchart TB
 The complete system with all optimizations:
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'background': '#ffffff', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc'}}}%%
 flowchart TB
     User["👤 User"] -->|"1. Request"| GW["API Gateway<br/>Rate Limiting #124; Auth #124; SSL"]
     
