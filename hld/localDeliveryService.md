@@ -110,7 +110,7 @@ One important distinction for this problem is the difference between **Item** an
 > **Tip:** Start with the most concrete physical or business entities (items, users) and work up to more abstract entities (orders, carts). This ensures you don't miss important entities.
 
 ```mermaid
-%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc'}}}%%
 erDiagram
     DISTRIBUTION_CENTER {
         string id PK
@@ -208,7 +208,7 @@ We need an internal service that takes `LAT` and `LONG` and returns a list of DC
 > This isn't perfectly satisfying the 1-hour drive-time requirement, but we'll refine it in the deep dive.
 
 ```mermaid
-%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc', 'noteBkgColor': '#fef9c3', 'noteTextColor': '#1e293b', 'actorTextColor': '#1e293b', 'actorBkg': '#e2e8f0', 'actorBorder': '#64748b', 'signalColor': '#1e293b', 'signalTextColor': '#1e293b'}}}%%
 sequenceDiagram
     participant C as Client
     participant NS as Nearby Service
@@ -223,12 +223,12 @@ sequenceDiagram
 ```
 
 ```mermaid
-%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc'}}}%%
 flowchart LR
     subgraph Nearby Service
-        Input["Input Position<br/>(lat, long)"] --> NS[Nearby Service]
-        NS --> DCTable[(DC Table<br/>DistributionCenter<br/>Id | Lat | Long)]
-        DCTable --> NearbyDCs["Nearby DCs"]
+        Input["Input Position<br/>(lat, long)"] -->|"1. Send location"| NS[Nearby Service]
+        NS -->|"2. Query DCs"| DCTable[(DC Table<br/>DistributionCenter<br/>Id #124; Lat #124; Long)]
+        DCTable -->|"3. Return nearby DCs"| NearbyDCs["Nearby DCs"]
     end
 ```
 
@@ -244,7 +244,7 @@ Once we have nearby DCs, query the **Inventory** table and join with the **Item*
 > In many e-commerce systems, the "Catalog" is stored separately from inventory due to different consumers and workloads. We store them in the same database here for simplicity but would ideally separate them, add an Elasticsearch index for search, etc.
 
 ```mermaid
-%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc', 'noteBkgColor': '#fef9c3', 'noteTextColor': '#1e293b', 'actorTextColor': '#1e293b', 'actorBkg': '#e2e8f0', 'actorBorder': '#64748b', 'signalColor': '#1e293b', 'signalTextColor': '#1e293b'}}}%%
 sequenceDiagram
     participant AS as Availability Service
     participant DB as Postgres DB
@@ -268,7 +268,7 @@ Putting it all together:
 5. Results are summed up and returned to the client.
 
 ```mermaid
-%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc', 'noteBkgColor': '#fef9c3', 'noteTextColor': '#1e293b', 'actorTextColor': '#1e293b', 'actorBkg': '#e2e8f0', 'actorBorder': '#64748b', 'signalColor': '#1e293b', 'signalTextColor': '#1e293b'}}}%%
 sequenceDiagram
     participant C as Client
     participant GW as API Gateway
@@ -286,24 +286,24 @@ sequenceDiagram
 ```
 
 ```mermaid
-%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc'}}}%%
 flowchart TB
-    User["👤 User"] -->|"GET /v1/availability<br/>lat, long"| GW["API Gateway"]
-    GW --> AS["Availability Service"]
-    AS -->|"getNearbyDCs(lat, long)"| NS["Nearby Service"]
-    NS -->|"Query"| DCTable[("DC Table<br/>DistributionCenter<br/>Id | Lat | Long")]
-    DCTable -->|"[DC1, DC2, DC3]"| NS
-    NS -->|"Nearby DCs"| AS
-    AS -->|"SELECT ... WHERE dc_id IN (...)"| DB[("Postgres DB")]
+    User["👤 User"] -->|"1. GET /v1/availability<br/>lat, long"| GW["API Gateway"]
+    GW -->|"2. Forward request"| AS["Availability Service"]
+    AS -->|"3. getNearbyDCs(lat, long)"| NS["Nearby Service"]
+    NS -->|"4. Query"| DCTable[("DC Table<br/>DistributionCenter<br/>Id #124; Lat #124; Long")]
+    DCTable -->|"5. [DC1, DC2, DC3]"| NS
+    NS -->|"6. Nearby DCs"| AS
+    AS -->|"7. SELECT ... WHERE dc_id IN (...)"| DB[("Postgres DB")]
     
     subgraph DB_Tables [Database Tables]
         DB
-        INV["Inventory<br/>ItemId | DCId | Quantity"]
-        ITEM["Item<br/>Id | Name | Description"]
+        INV["Inventory<br/>ItemId #124; DCId #124; Quantity"]
+        ITEM["Item<br/>Id #124; Name #124; Description"]
     end
     
-    DB -->|"Aggregated results"| AS
-    AS -->|"{items: [{name, qty}]}"| User
+    DB -->|"8. Aggregated results"| AS
+    AS -->|"9. {items: [{name, qty}]}"| User
 ```
 
 ---
@@ -342,7 +342,7 @@ When atomicity of transactions is a requirement, it's helpful to have data **col
 > **Downside:** If any item becomes unavailable, the **entire order fails**. We return a meaningful error, but this is preferable to succeeding with an incomplete order (e.g., a device without its battery).
 
 ```mermaid
-%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc', 'noteBkgColor': '#fef9c3', 'noteTextColor': '#1e293b', 'actorTextColor': '#1e293b', 'actorBkg': '#e2e8f0', 'actorBorder': '#64748b', 'signalColor': '#1e293b', 'signalTextColor': '#1e293b'}}}%%
 sequenceDiagram
     participant C as Client
     participant GW as API Gateway
@@ -368,13 +368,13 @@ sequenceDiagram
 ```
 
 ```mermaid
-%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc'}}}%%
 flowchart LR
     subgraph Order Path
-        Client["👤 Client"] -->|"POST /v1/order"| GW["API Gateway"]
-        GW --> OS["Orders Service"]
-        OS -->|"getNearbyDCs"| NS["Nearby Service"]
-        OS -->|"Atomic Transaction<br/>(Check + Reserve + Insert)"| Leader[("Postgres Leader<br/>Inventory + Orders")]
+        Client["👤 Client"] -->|"1. POST /v1/order"| GW["API Gateway"]
+        GW -->|"2. Forward"| OS["Orders Service"]
+        OS -->|"3. getNearbyDCs"| NS["Nearby Service"]
+        OS -->|"4. Atomic Transaction<br/>(Check + Reserve + Insert)"| Leader[("Postgres Leader<br/>Inventory + Orders")]
     end
 ```
 
@@ -395,30 +395,30 @@ The complete high-level design with both availability and ordering:
 | **Postgres DB** | Single database for inventory and orders, partitioned by region. Read replicas for availability, leader for ordering. |
 
 ```mermaid
-%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc'}}}%%
 flowchart TB
-    User["👤 User"] --> GW["API Gateway"]
+    User["👤 User"] -->|"1. Request"| GW["API Gateway"]
     
-    GW -->|"GET /v1/availability"| AS["Availability Service"]
-    GW -->|"POST /v1/order"| OS["Orders Service"]
+    GW -->|"2a. GET /v1/availability"| AS["Availability Service"]
+    GW -->|"2b. POST /v1/order"| OS["Orders Service"]
     
-    AS -->|"getNearbyDCs(lat, long)"| NS["Nearby Service"]
-    OS -->|"getNearbyDCs(lat, long)"| NS
+    AS -->|"3. getNearbyDCs(lat, long)"| NS["Nearby Service"]
+    OS -->|"3. getNearbyDCs(lat, long)"| NS
     
-    NS --> DCTable[("DC Table")]
+    NS -->|"4. Lookup"| DCTable[("DC Table")]
     
-    AS -->|"Read"| Replicas[("Postgres Read Replicas<br/>Partitioned by Region")]
-    OS -->|"Write Transaction"| Leader[("Postgres Leader<br/>Inventory + Orders")]
+    AS -->|"5. Read"| Replicas[("Postgres Read Replicas<br/>Partitioned by Region")]
+    OS -->|"5. Write Transaction"| Leader[("Postgres Leader<br/>Inventory + Orders")]
     
     Leader -->|"Replication"| Replicas
     
     subgraph Database Schema
         direction LR
-        DC["DistributionCenter<br/>Id | Lat | Long"]
-        Inv["Inventory<br/>ItemId | DCId | Quantity"]
-        Item["Item<br/>Id | Name | Description"]
-        Ord["Orders<br/>OrderId | UserId | Status"]
-        OrdItems["OrderItems<br/>OrderId | InventoryId | Qty"]
+        DC["DistributionCenter<br/>Id #124; Lat #124; Long"]
+        Inv["Inventory<br/>ItemId #124; DCId #124; Quantity"]
+        Item["Item<br/>Id #124; Name #124; Description"]
+        Ord["Orders<br/>OrderId #124; UserId #124; Status"]
+        OrdItems["OrderItems<br/>OrderId #124; InventoryId #124; Qty"]
     end
 ```
 
@@ -456,7 +456,7 @@ Use a **two-step approach**:
 3. **Cache results** — Cache the travel times between user zones and DCs. Travel times for a given zone don't change frequently (maybe refresh every few minutes).
 
 ```mermaid
-%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc', 'noteBkgColor': '#fef9c3', 'noteTextColor': '#1e293b', 'actorTextColor': '#1e293b', 'actorBkg': '#e2e8f0', 'actorBorder': '#64748b', 'signalColor': '#1e293b', 'signalTextColor': '#1e293b'}}}%%
 sequenceDiagram
     participant AS as Availability Service
     participant NS as Nearby Service
@@ -482,23 +482,23 @@ sequenceDiagram
 ```
 
 ```mermaid
-%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc'}}}%%
 flowchart TB
     subgraph Nearby Service - Two Step Approach
-        Input["User Location<br/>(lat, long)"] --> Step1["Step 1: Distance Pre-filter<br/>Haversine formula<br/>~50 mile radius"]
-        Step1 -->|"Candidate DCs<br/>(small set)"| Step2["Step 2: Travel Time Refinement<br/>External API call"]
-        Step2 -->|"DCs with actual<br/>drive times"| Filter["Filter ≤ 1 hour"]
-        Filter --> Result["Nearby DCs"]
+        Input["User Location<br/>(lat, long)"] -->|"1. Send location"| Step1["Step 1: Distance Pre-filter<br/>Haversine formula<br/>~50 mile radius"]
+        Step1 -->|"3. Candidate DCs<br/>(small set)"| Step2["Step 2: Travel Time Refinement<br/>External API call"]
+        Step2 -->|"5. DCs with actual<br/>drive times"| Filter["Filter ≤ 1 hour"]
+        Filter -->|"6. Return"| Result["Nearby DCs"]
     end
     
-    DCTable[("DC Table<br/>10k DCs")] --> Step1
-    TTS["🌐 Travel Time Service<br/>(Google Maps / Mapbox)"] --> Step2
+    DCTable[("DC Table<br/>10k DCs")] -->|"2. Query nearby"| Step1
+    TTS["🌐 Travel Time Service<br/>(Google Maps / Mapbox)"] -->|"4. Travel times"| Step2
     
     subgraph Caching Layer
         Cache[("In-Memory Cache<br/>Zone → DCs mapping<br/>TTL: ~5 min")]
     end
     
-    Filter -.->|"Cache results"| Cache
+    Filter -.->|"7. Cache results"| Cache
     Cache -.->|"Cache hit → skip Steps 1+2"| Result
 ```
 
@@ -540,7 +540,7 @@ Add a **Redis cache** in front of the database for availability queries:
 > Inventory data is a great candidate for caching — it changes relatively infrequently compared to how often it's read, and slight staleness (within 1 minute) is acceptable for availability queries.
 
 ```mermaid
-%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc', 'noteBkgColor': '#fef9c3', 'noteTextColor': '#1e293b', 'actorTextColor': '#1e293b', 'actorBkg': '#e2e8f0', 'actorBorder': '#64748b', 'signalColor': '#1e293b', 'signalTextColor': '#1e293b'}}}%%
 sequenceDiagram
     participant AS as Availability Service
     participant Redis as Redis Cache
@@ -577,25 +577,25 @@ For queries that miss the cache, optimize the database layer:
 | **Regional Partitioning** | Queries only scan relevant data. Reduces I/O and improves query speed. |
 
 ```mermaid
-%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc'}}}%%
 flowchart TB
-    User["👤 User"] --> GW["API Gateway"]
-    GW -->|"GET /v1/availability"| AS["Availability Service"]
+    User["👤 User"] -->|"1. Request"| GW["API Gateway"]
+    GW -->|"2a. GET /v1/availability"| AS["Availability Service"]
     
-    AS -->|"1. Check cache"| Redis[("Redis Cache<br/>TTL: ~1 min")]
-    AS -->|"2. Cache miss → query"| Replicas
+    AS -->|"3. Check cache"| Redis[("Redis Cache<br/>TTL: ~1 min")]
+    AS -->|"4. Cache miss → query"| Replicas
     
     subgraph Read Path
         Replicas[("Read Replicas<br/>Partitioned by Region")]
     end
     
     subgraph Write Path
-        OS["Orders Service"] -->|"Atomic tx"| Leader[("Postgres Leader")]
-        Leader -->|"Replication"| Replicas
-        OS -->|"Invalidate cache"| Redis
+        OS["Orders Service"] -->|"3. Atomic tx"| Leader[("Postgres Leader")]
+        Leader -->|"4. Replication"| Replicas
+        OS -->|"5. Invalidate cache"| Redis
     end
     
-    GW -->|"POST /v1/order"| OS
+    GW -->|"2b. POST /v1/order"| OS
 ```
 
 ---
@@ -605,35 +605,35 @@ flowchart TB
 The complete system with all optimizations:
 
 ```mermaid
-%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'primaryColor': '#e2e8f0', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#64748b', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f8fafc'}}}%%
 flowchart TB
-    User["👤 User"] --> GW["API Gateway<br/>Rate Limiting | Auth | SSL"]
+    User["👤 User"] -->|"1. Request"| GW["API Gateway<br/>Rate Limiting #124; Auth #124; SSL"]
     
-    GW -->|"GET /v1/availability"| AS["Availability Service"]
-    GW -->|"POST /v1/order"| OS["Orders Service"]
+    GW -->|"2a. GET /v1/availability"| AS["Availability Service"]
+    GW -->|"2b. POST /v1/order"| OS["Orders Service"]
     
-    AS -->|"getNearbyDCs"| NS["Nearby Service"]
-    OS -->|"getNearbyDCs"| NS
+    AS -->|"3. getNearbyDCs"| NS["Nearby Service"]
+    OS -->|"3. getNearbyDCs"| NS
     
-    NS --> IMCache[("In-Memory Cache<br/>DC → Travel Times")]
-    NS -->|"Pre-filter"| DCTable[("DC Table")]
-    NS -->|"Refine"| TTS["🌐 Travel Time<br/>Service"]
+    NS -->|"4a. Check cache"| IMCache[("In-Memory Cache<br/>DC → Travel Times")]
+    NS -->|"4b. Pre-filter"| DCTable[("DC Table")]
+    NS -->|"4c. Refine"| TTS["🌐 Travel Time<br/>Service"]
     
-    AS -->|"1. Check"| Redis[("Redis Cache<br/>Availability<br/>TTL: ~1 min")]
-    AS -->|"2. Miss"| Replicas[("Postgres Read Replicas<br/>Partitioned by Region")]
+    AS -->|"5. Check cache"| Redis[("Redis Cache<br/>Availability<br/>TTL: ~1 min")]
+    AS -->|"6. Cache miss → query"| Replicas[("Postgres Read Replicas<br/>Partitioned by Region")]
     
-    OS -->|"Atomic Transaction<br/>(Check + Reserve + Insert)"| Leader[("Postgres Leader<br/>Inventory + Orders")]
-    OS -->|"Invalidate"| Redis
+    OS -->|"5. Atomic Transaction<br/>(Check + Reserve + Insert)"| Leader[("Postgres Leader<br/>Inventory + Orders")]
+    OS -->|"6. Invalidate"| Redis
     
     Leader -->|"Replication"| Replicas
     
     subgraph Database Schema
         direction LR
-        S1["DistributionCenter<br/>Id | Lat | Long"]
-        S2["Inventory<br/>ItemId | DCId | Quantity | Status"]
-        S3["Item<br/>Id | Name | Description"]
-        S4["Orders<br/>OrderId | UserId"]
-        S5["OrderItems<br/>OrderId | ItemId | Qty"]
+        S1["DistributionCenter<br/>Id #124; Lat #124; Long"]
+        S2["Inventory<br/>ItemId #124; DCId #124; Quantity #124; Status"]
+        S3["Item<br/>Id #124; Name #124; Description"]
+        S4["Orders<br/>OrderId #124; UserId"]
+        S5["OrderItems<br/>OrderId #124; ItemId #124; Qty"]
     end
 ```
 
