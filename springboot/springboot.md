@@ -479,7 +479,7 @@ public class OrderService {
 
 ## Spring Boot Annotations
 
-### Core Annotations
+### Core Annotations — Quick Reference
 
 | Annotation | Description | Example |
 |------------|-------------|---------|
@@ -492,236 +492,608 @@ public class OrderService {
 | `@Configuration` | Java-based configuration | Config classes |
 | `@Bean` | Method-level bean definition | Inside @Configuration |
 
-### @SpringBootApplication
+---
+
+### @SpringBootApplication — How It Works
+
+This is the **entry point** of every Spring Boot app. It's a **meta-annotation** that combines 3 annotations into one:
 
 ```java
-@SpringBootApplication  // Combines 3 annotations
+@SpringBootApplication  // Combines 3 annotations below
 public class MyApplication {
     public static void main(String[] args) {
         SpringApplication.run(MyApplication.class, args);
     }
 }
 
-// Equivalent to:
-@Configuration           // This class can define beans
-@EnableAutoConfiguration // Enable auto-configuration
-@ComponentScan           // Scan for components in this package
+// What @SpringBootApplication actually does — equivalent to:
+@Configuration           // 1. This class can define @Bean methods
+@EnableAutoConfiguration // 2. Auto-configure beans based on classpath dependencies
+@ComponentScan           // 3. Scan this package + sub-packages for @Component, @Service, etc.
 public class MyApplication { }
 ```
 
-### Stereotype Annotations
+**What happens when the app starts (`SpringApplication.run()`):**
+1. **`@ComponentScan`** — Spring scans the package where this class lives (e.g., `com.example.demo`) and ALL sub-packages. Every class with `@Component`, `@Service`, `@Repository`, `@Controller`, `@RestController` is registered as a bean in the container.
+2. **`@EnableAutoConfiguration`** — Spring looks at your `pom.xml` dependencies. If `spring-boot-starter-web` is present, it auto-configures an embedded Tomcat, a `DispatcherServlet`, Jackson for JSON, etc. If `spring-boot-starter-data-jpa` is present, it auto-configures a `DataSource`, `EntityManagerFactory`, etc. You can override any auto-config by defining your own bean.
+3. **`@Configuration`** — Marks this class as a source of bean definitions (you can add `@Bean` methods here).
+
+**Important:** Place your main class in the **root package** (e.g., `com.example.demo`), so `@ComponentScan` picks up all classes in sub-packages (`com.example.demo.controller`, `com.example.demo.service`, etc.). If your main class is in `com.example.demo.config`, it won't scan `com.example.demo.controller`.
+
+---
+
+### Stereotype Annotations — @Component, @Service, @Repository, @Controller
+
+These are all **specializations of `@Component`**. They all do the same base thing: **tell Spring to create and manage an instance of this class as a bean**. The difference is **semantic** (indicates the role) + some have extra behavior.
+
+#### @Component
+
+The **base annotation**. Marks any class as a Spring-managed bean. Spring creates an instance, stores it in the container, and can inject it into other beans.
 
 ```java
-// All are specializations of @Component
-
-@Component      // Generic component
-public class MyComponent { }
-
-@Service        // Business logic
-public class UserService { }
-
-@Repository     // Data access (+ exception translation)
-public class UserRepository { }
-
-@Controller     // Web controller (returns views)
-public class HomeController { }
-
-@RestController // REST controller (returns data)
-public class ApiController { }  // = @Controller + @ResponseBody
+@Component
+public class EmailValidator {
+    public boolean isValid(String email) {
+        return email.contains("@");
+    }
+}
 ```
 
-### Dependency Injection Annotations
+**How it works internally:**
+1. `@ComponentScan` finds this class during startup
+2. Spring calls `new EmailValidator()` (or uses the constructor with `@Autowired`)
+3. The bean is stored in `ApplicationContext` with name `emailValidator` (lowercase class name)
+4. Any class that `@Autowired` an `EmailValidator` gets this same instance (singleton by default)
 
-| Annotation | Description |
-|------------|-------------|
-| `@Autowired` | Inject dependency automatically |
-| `@Qualifier` | Specify which bean to inject |
-| `@Primary` | Mark as default when multiple beans exist |
-| `@Value` | Inject property values |
-| `@Resource` | Inject by name (JSR-250) |
+**When to use:** When a class doesn't fit neatly into Service/Repository/Controller — utility classes, converters, validators, etc.
+
+#### @Service
+
+Identical to `@Component` functionally — **no extra behavior**. It's a **semantic marker** that says "this class contains business logic."
 
 ```java
 @Service
-public class UserService {
-
-    @Autowired
-    private UserRepository userRepository;
-
-    @Autowired
-    @Qualifier("emailNotification")  // Inject specific bean
-    private NotificationService notificationService;
-
-    @Value("${app.name}")  // Inject from application.properties
-    private String appName;
-
-    @Value("${app.max-users:100}")  // With default value
-    private int maxUsers;
+public class OrderService {
+    // Business logic here
+    public Order placeOrder(Cart cart) { ... }
 }
 ```
 
-### Web/REST Annotations
+**Why it exists (not just @Component):**
+- **Readability** — When you see `@Service`, you immediately know this is business logic, not a DAO or controller
+- **Team convention** — Enforces layered architecture: Controllers call Services, Services call Repositories
+- **Future-proofing** — Spring could add Service-specific behavior in future versions (like auto-transactional)
+- **AOP targeting** — You can write aspects that apply only to `@Service` classes (e.g., log all service method calls)
 
-| Annotation | Description |
-|------------|-------------|
-| `@RequestMapping` | Map URL to class/method |
-| `@GetMapping` | HTTP GET |
-| `@PostMapping` | HTTP POST |
-| `@PutMapping` | HTTP PUT |
-| `@PatchMapping` | HTTP PATCH |
-| `@DeleteMapping` | HTTP DELETE |
-| `@PathVariable` | Extract from URL path |
-| `@RequestParam` | Extract query parameter |
-| `@RequestBody` | Parse request body |
-| `@ResponseBody` | Return as response body |
-| `@ResponseStatus` | Set HTTP status code |
+#### @Repository
+
+Like `@Component` but with one **extra feature**: **automatic exception translation**. Spring converts database-specific exceptions (like `SQLIntegrityConstraintViolationException`) into Spring's unified `DataAccessException` hierarchy.
 
 ```java
-@RestController
-@RequestMapping("/api/users")  // Base path
+@Repository
+public class UserRepository {
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+    
+    public User findById(Long id) {
+        // If this throws a MySQL-specific exception,
+        // Spring catches it and wraps it in DataAccessException
+        return jdbcTemplate.queryForObject("SELECT * FROM users WHERE id = ?", ...);
+    }
+}
+```
+
+**Why exception translation matters:**
+- Without `@Repository`: Your service catches `com.mysql.jdbc.exceptions.MySQLIntegrityConstraintViolationException` — tied to MySQL
+- With `@Repository`: Your service catches `org.springframework.dao.DuplicateKeyException` — database-agnostic
+- You can switch from MySQL to PostgreSQL without changing your exception-handling code
+
+**Note:** When using Spring Data JPA (`extends JpaRepository`), `@Repository` is optional — Spring Data adds it automatically. But it's good practice to include it for clarity.
+
+#### @Controller vs @RestController
+
+**`@Controller`** — For **server-side rendering** (returning HTML views like Thymeleaf/JSP). Methods return **view names** that get resolved to HTML templates.
+
+```java
+@Controller
+public class HomeController {
+    
+    @GetMapping("/")
+    public String home(Model model) {
+        model.addAttribute("name", "John");
+        return "home";  // → resolves to templates/home.html
+    }
+}
+```
+
+**`@RestController`** — For **REST APIs** (returning JSON/XML data). It's `@Controller` + `@ResponseBody` combined. Every method's return value is automatically serialized to JSON via Jackson.
+
+```java
+@RestController  // = @Controller + @ResponseBody
+@RequestMapping("/api/users")
 public class UserController {
-
-    @GetMapping                         // GET /api/users
-    public List<User> getAll() { ... }
-
-    @GetMapping("/{id}")                // GET /api/users/1
-    public User getById(@PathVariable Long id) { ... }
-
-    @GetMapping("/search")              // GET /api/users/search?name=John
-    public List<User> search(@RequestParam String name) { ... }
-
-    @PostMapping                        // POST /api/users
-    @ResponseStatus(HttpStatus.CREATED)
-    public User create(@RequestBody User user) { ... }
-
-    @PutMapping("/{id}")                // PUT /api/users/1
-    public User update(@PathVariable Long id, @RequestBody User user) { ... }
-
-    @DeleteMapping("/{id}")             // DELETE /api/users/1
-    @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void delete(@PathVariable Long id) { ... }
+    
+    @GetMapping("/{id}")
+    public User getUser(@PathVariable Long id) {
+        return userService.findById(id); // → automatically converted to JSON
+        // {"id": 1, "name": "John", "email": "john@example.com"}
+    }
 }
 ```
 
-### JPA/Database Annotations
+**How `@ResponseBody` / JSON conversion works:**
+1. Your method returns a Java object (e.g., `User`)
+2. Spring sees `@ResponseBody` (or `@RestController`)
+3. Spring uses `HttpMessageConverter` (Jackson's `MappingJackson2HttpMessageConverter` by default)
+4. Jackson serializes the object to JSON string
+5. Spring writes that JSON to the HTTP response body with `Content-Type: application/json`
 
-| Annotation | Description |
-|------------|-------------|
-| `@Entity` | Mark as JPA entity |
-| `@Table` | Specify table name |
-| `@Id` | Primary key |
-| `@GeneratedValue` | Auto-generate ID |
-| `@Column` | Column mapping |
-| `@Transient` | Not persisted |
-| `@OneToMany` | One-to-many relationship |
-| `@ManyToOne` | Many-to-one relationship |
-| `@JoinColumn` | Foreign key column |
+---
 
-```java
-@Entity
-@Table(name = "employees")
-public class Employee {
+### @Configuration and @Bean — How They Work
 
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
-
-    @Column(nullable = false, length = 100)
-    private String name;
-
-    @Column(unique = true)
-    private String email;
-
-    @Transient  // Not stored in database
-    private String tempData;
-
-    @ManyToOne
-    @JoinColumn(name = "department_id")
-    private Department department;
-}
-```
-
-### Validation Annotations
-
-| Annotation | Description |
-|------------|-------------|
-| `@Valid` | Trigger validation |
-| `@NotNull` | Cannot be null |
-| `@NotBlank` | Cannot be null/empty/whitespace |
-| `@NotEmpty` | Cannot be null/empty |
-| `@Size` | String/collection length |
-| `@Min` / `@Max` | Numeric range |
-| `@Email` | Valid email format |
-| `@Pattern` | Regex pattern |
-| `@Past` / `@Future` | Date validation |
+`@Component`/`@Service` etc. work for **your own classes** — you can annotate them. But what about **third-party classes** you can't modify (like `RestTemplate`, `ObjectMapper`, `DataSource`)? You can't add `@Component` to their source code. That's where `@Configuration` + `@Bean` come in.
 
 ```java
-public class UserDTO {
-
-    @NotBlank(message = "Name is required")
-    @Size(min = 2, max = 50, message = "Name must be 2-50 characters")
-    private String name;
-
-    @NotNull(message = "Email is required")
-    @Email(message = "Invalid email format")
-    private String email;
-
-    @Min(value = 18, message = "Must be at least 18")
-    @Max(value = 120, message = "Invalid age")
-    private Integer age;
-
-    @Pattern(regexp = "^\\d{10}$", message = "Phone must be 10 digits")
-    private String phone;
-}
-
-// In Controller
-@PostMapping
-public User create(@Valid @RequestBody UserDTO user) { ... }
-```
-
-### Configuration Annotations
-
-| Annotation | Description |
-|------------|-------------|
-| `@Configuration` | Declare config class |
-| `@Bean` | Declare bean in config |
-| `@Profile` | Active only in profile |
-| `@Conditional` | Conditional bean creation |
-| `@PropertySource` | Load properties file |
-| `@ConfigurationProperties` | Bind properties to class |
-
-```java
-@Configuration
+@Configuration  // Tells Spring: this class defines beans
 public class AppConfig {
 
-    @Bean
+    @Bean  // The METHOD's return value becomes a Spring bean
     public RestTemplate restTemplate() {
         return new RestTemplate();
+        // Spring calls this method ONCE, stores the result as a bean named "restTemplate"
+        // Now any class can @Autowired RestTemplate and get this instance
     }
 
     @Bean
-    @Profile("dev")  // Only active in dev profile
+    public ObjectMapper objectMapper() {
+        ObjectMapper mapper = new ObjectMapper();
+        mapper.setSerializationInclusion(JsonInclude.Include.NON_NULL);
+        return mapper;  // Customized ObjectMapper registered as a bean
+    }
+
+    @Bean
+    @Profile("dev")  // Only created when running with spring.profiles.active=dev
     public DataSource devDataSource() {
         return new H2DataSource();
     }
 
     @Bean
-    @Profile("prod")
+    @Profile("prod")  // Only created when running with spring.profiles.active=prod
     public DataSource prodDataSource() {
         return new MySQLDataSource();
     }
 }
 ```
 
-### Exception Handling Annotations
+**How `@Configuration` is different from `@Component`:**
 
-| Annotation | Description |
-|------------|-------------|
-| `@ExceptionHandler` | Handle specific exception |
-| `@ControllerAdvice` | Global controller advice |
-| `@RestControllerAdvice` | Global REST controller advice |
+`@Configuration` classes are **CGLIB-proxied** — Spring creates a subclass proxy. This ensures that `@Bean` methods are called **only once** even if you call them from other `@Bean` methods:
+
+```java
+@Configuration
+public class AppConfig {
+
+    @Bean
+    public DataSource dataSource() {
+        return new HikariDataSource();  // Called ONCE, cached
+    }
+
+    @Bean
+    public JdbcTemplate jdbcTemplate() {
+        return new JdbcTemplate(dataSource());  // This does NOT create a second DataSource
+        // Because of CGLIB proxy, dataSource() returns the SAME cached bean
+    }
+}
+```
+
+If you used `@Component` instead of `@Configuration`, `dataSource()` would be called twice — creating two separate instances. `@Configuration` guarantees singleton behavior for `@Bean` methods.
+
+---
+
+### Dependency Injection Annotations — In Detail
+
+#### @Autowired — How It Works
+
+When Spring creates a bean and sees `@Autowired`, it searches the container for a bean that matches the **type** of the field/parameter.
+
+```java
+@Service
+public class OrderService {
+    @Autowired
+    private PaymentService paymentService;
+    // Spring finds a bean of type PaymentService in the container
+    // and injects it using reflection
+}
+```
+
+**Resolution order when multiple beans match:**
+1. Match by **type** — looks for a bean of type `PaymentService`
+2. If multiple found → match by **field name** — looks for a bean named `paymentService`
+3. If still ambiguous → throws `NoUniqueBeanDefinitionException`
+4. Use `@Qualifier` or `@Primary` to resolve ambiguity
+
+#### @Qualifier — Picking a Specific Bean
+
+When you have **multiple implementations** of the same interface, `@Qualifier` tells Spring which one to inject by its bean name.
+
+```java
+// Two implementations of NotificationService
+@Service("emailNotification")  // Bean name = "emailNotification"
+public class EmailNotification implements NotificationService { ... }
+
+@Service("smsNotification")    // Bean name = "smsNotification"
+public class SmsNotification implements NotificationService { ... }
+
+// Consumer — which one do you want?
+@Service
+public class OrderService {
+    
+    @Autowired
+    @Qualifier("emailNotification")  // Explicitly pick email
+    private NotificationService notificationService;
+}
+```
+
+**Without `@Qualifier`:** Spring sees two `NotificationService` beans → ambiguous → app fails to start.
+
+#### @Primary — Setting a Default
+
+Instead of forcing every consumer to use `@Qualifier`, mark one implementation as the **default** with `@Primary`:
+
+```java
+@Service
+@Primary  // This is the default when someone @Autowired NotificationService
+public class EmailNotification implements NotificationService { ... }
+
+@Service("smsNotification")
+public class SmsNotification implements NotificationService { ... }
+
+// No @Qualifier needed — gets EmailNotification (the @Primary one)
+@Autowired
+private NotificationService notificationService;
+
+// To get the non-primary one, explicitly use @Qualifier
+@Autowired
+@Qualifier("smsNotification")
+private NotificationService smsService;
+```
+
+#### @Value — Injecting Properties
+
+Reads values from `application.properties` / `application.yml` and injects them into fields.
+
+```java
+// application.properties:
+// app.name=MyApp
+// app.max-users=500
+// app.feature.enabled=true
+
+@Service
+public class AppService {
+    
+    @Value("${app.name}")           // Injects "MyApp"
+    private String appName;
+    
+    @Value("${app.max-users:100}")  // Injects 500. If property missing, defaults to 100
+    private int maxUsers;
+    
+    @Value("${app.feature.enabled}")
+    private boolean featureEnabled;
+    
+    @Value("${JAVA_HOME}")          // Can also read environment variables
+    private String javaHome;
+}
+```
+
+**How it works:** Spring's `PropertySourcesPlaceholderConfigurer` resolves `${...}` placeholders at bean creation time. If the property is missing and no default is provided (`:defaultValue`), the app fails to start.
+
+---
+
+### Web/REST Annotations — In Detail
+
+#### @RequestMapping — The Base
+
+Maps HTTP requests to controller methods. All other mappings (`@GetMapping`, `@PostMapping`, etc.) are **shortcuts** for `@RequestMapping` with a specific method.
+
+```java
+@RestController
+@RequestMapping("/api/users")  // All methods in this class start with /api/users
+public class UserController {
+    
+    // These two are IDENTICAL:
+    @RequestMapping(value = "/{id}", method = RequestMethod.GET)
+    @GetMapping("/{id}")  // Shortcut — cleaner
+}
+```
+
+#### @PathVariable — Extracting from URL Path
+
+Extracts values from the **URL path** itself — the dynamic parts inside `{}`.
+
+```java
+// URL: GET /api/users/42
+@GetMapping("/{id}")
+public User getById(@PathVariable Long id) {
+    // id = 42 (extracted from URL, auto-converted from String to Long)
+    return userService.findById(id);
+}
+
+// Multiple path variables
+// URL: GET /api/departments/IT/employees/5
+@GetMapping("/departments/{dept}/employees/{empId}")
+public Employee get(@PathVariable String dept, @PathVariable Long empId) {
+    // dept = "IT", empId = 5
+}
+
+// When variable name differs from path
+// URL: GET /api/users/42
+@GetMapping("/{userId}")
+public User get(@PathVariable("userId") Long id) {
+    // Explicitly map {userId} in path to 'id' parameter
+}
+```
+
+#### @RequestParam — Extracting Query Parameters
+
+Extracts values from the **query string** (after `?` in the URL).
+
+```java
+// URL: GET /api/users/search?name=John&age=25
+@GetMapping("/search")
+public List<User> search(
+    @RequestParam String name,                    // Required — "John"
+    @RequestParam(defaultValue = "0") int age,    // Optional with default — 25
+    @RequestParam(required = false) String city   // Optional, null if not provided
+) {
+    return userService.search(name, age, city);
+}
+```
+
+**@PathVariable vs @RequestParam:**
+- **Path**: `/api/users/42` — identifying a specific resource (`@PathVariable`)
+- **Query**: `/api/users/search?name=John` — filtering/searching (`@RequestParam`)
+- **Rule of thumb**: Use `@PathVariable` for resource IDs, `@RequestParam` for optional filters/sorting/pagination
+
+#### @RequestBody — Parsing JSON Request Body
+
+Tells Spring to **deserialize the HTTP request body** (JSON) into a Java object using Jackson.
+
+```java
+// Client sends: POST /api/users
+// Body: {"name": "John", "email": "john@example.com", "age": 25}
+
+@PostMapping
+public User create(@RequestBody User user) {
+    // Spring/Jackson automatically converts JSON → User object
+    // user.getName() = "John"
+    // user.getEmail() = "john@example.com"
+    // user.getAge() = 25
+    return userService.save(user);
+}
+```
+
+**What happens internally:**
+1. Client sends POST with `Content-Type: application/json` and JSON body
+2. Spring's `DispatcherServlet` routes the request to this method
+3. Spring sees `@RequestBody` → invokes `MappingJackson2HttpMessageConverter`
+4. Jackson reads the JSON string → creates a `User` object using setter methods (or direct field access)
+5. The populated `User` object is passed to your method
+
+**Without `@RequestBody`:** Spring would try to bind query parameters or form data to the object, not the JSON body. Your object would have all `null` fields.
+
+#### @ResponseStatus — Setting HTTP Status Code
+
+By default, successful responses return `200 OK`. Use `@ResponseStatus` to change it:
+
+```java
+@PostMapping
+@ResponseStatus(HttpStatus.CREATED)  // Returns 201 instead of 200
+public User create(@RequestBody User user) {
+    return userService.save(user);
+}
+
+@DeleteMapping("/{id}")
+@ResponseStatus(HttpStatus.NO_CONTENT)  // Returns 204 (no body)
+public void delete(@PathVariable Long id) {
+    userService.delete(id);
+}
+```
+
+**Alternative:** Use `ResponseEntity` for more control (status + headers + body):
+```java
+return ResponseEntity.status(HttpStatus.CREATED).body(user);
+```
+
+---
+
+### JPA/Database Annotations — In Detail
+
+#### @Entity and @Table
+
+`@Entity` tells JPA: "This Java class maps to a database table." `@Table` specifies which table (if the name differs from the class name).
+
+```java
+@Entity                          // Required — marks this as a JPA entity
+@Table(name = "employees")      // Optional — maps to "employees" table
+                                 // Without @Table, table name = class name "Employee"
+public class Employee {
+    // ...
+}
+```
+
+**How it works:** At startup, Hibernate scans for `@Entity` classes, reads their field annotations, and generates SQL `CREATE TABLE` statements (if `ddl-auto=create/update`). Each `@Entity` instance = one row in the table.
+
+#### @Id and @GeneratedValue
+
+Every entity **must** have a primary key field marked with `@Id`. `@GeneratedValue` tells the database to auto-generate the ID.
+
+```java
+@Id
+@GeneratedValue(strategy = GenerationType.IDENTITY)
+private Long id;
+```
+
+**GenerationType strategies:**
+
+| Strategy | How It Works | Database |
+|----------|-------------|----------|
+| `IDENTITY` | Database auto-increments (MySQL `AUTO_INCREMENT`, PostgreSQL `SERIAL`) | MySQL, PostgreSQL |
+| `SEQUENCE` | Uses a database sequence object | PostgreSQL, Oracle |
+| `TABLE` | Uses a separate table to track IDs | Any (slowest) |
+| `AUTO` | Let Hibernate choose the best strategy for your DB | Any |
+
+#### @Column — Fine-Grained Column Control
+
+Customizes how a field maps to a database column. Without it, JPA uses defaults (column name = field name).
+
+```java
+@Column(
+    name = "employee_name",   // Column name in DB (default: fieldName)
+    nullable = false,         // NOT NULL constraint
+    unique = true,            // UNIQUE constraint
+    length = 100,             // VARCHAR(100) for strings
+    columnDefinition = "TEXT" // Raw SQL type override
+)
+private String name;
+```
+
+#### @Transient
+
+Tells JPA to **completely ignore** this field — it won't be saved to or read from the database.
+
+```java
+@Entity
+public class Employee {
+    @Id
+    private Long id;
+    private String name;
+    private Double salary;
+    
+    @Transient  // NOT stored in database — computed at runtime
+    private Double bonus;  // Maybe calculated from salary
+    
+    @Transient
+    private String tempSessionData;  // Runtime-only data
+}
+```
+
+#### @ManyToOne, @OneToMany, @JoinColumn — Relationships
+
+These define how entities relate to each other (like foreign keys in tables).
+
+```java
+// Many employees belong to ONE department (foreign key on Employee table)
+@Entity
+public class Employee {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+    private String name;
+    
+    @ManyToOne                              // Many employees → one department
+    @JoinColumn(name = "department_id")     // FK column in employees table
+    private Department department;          // The department this employee belongs to
+}
+
+// One department HAS MANY employees
+@Entity
+public class Department {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+    private String name;
+    
+    @OneToMany(mappedBy = "department")     // "department" field in Employee class
+    private List<Employee> employees;       // All employees in this department
+}
+```
+
+**`mappedBy`** = "I don't own the foreign key, the other side does." The `Employee` table has the `department_id` column, so `Employee.department` is the **owning side**.
+
+---
+
+### Validation Annotations — In Detail
+
+These annotations (from `jakarta.validation`) define rules on fields. They do **nothing by themselves** — you must trigger them with `@Valid` on the controller method parameter.
+
+```java
+public class UserDTO {
+    @NotBlank(message = "Name is required")
+    // Checks: not null AND not "" AND not "   " (whitespace only)
+    // Use for: Strings that must have real content
+    private String name;
+
+    @NotNull(message = "Email is required")
+    // Checks: not null (but "" empty string is allowed!)
+    // Use for: Any type — Integer, Object, etc.
+    @Email(message = "Invalid email format")
+    // Checks: matches email regex (must have @ and domain)
+    private String email;
+
+    @NotEmpty(message = "Roles required")
+    // Checks: not null AND not empty (size > 0)
+    // Use for: Collections and Strings that must not be empty
+    private List<String> roles;
+
+    @Min(value = 18, message = "Must be at least 18")
+    @Max(value = 120, message = "Invalid age")
+    // Min/Max only work with numeric types (Integer, Long, Double)
+    private Integer age;
+
+    @Size(min = 2, max = 50, message = "Name must be 2-50 characters")
+    // Works for: Strings (character length), Collections (size), Arrays (length)
+    private String username;
+
+    @Pattern(regexp = "^\\d{10}$", message = "Phone must be 10 digits")
+    // Custom regex validation — for any format you need
+    private String phone;
+
+    @Past(message = "Birth date must be in the past")
+    // For dates: @Past = before now, @Future = after now
+    // Also: @PastOrPresent, @FutureOrPresent
+    private LocalDate birthDate;
+
+    @Positive(message = "Salary must be positive")
+    // Also: @PositiveOrZero, @Negative, @NegativeOrZero
+    private Double salary;
+}
+```
+
+**How validation triggers:**
+
+```java
+// In Controller — @Valid triggers validation BEFORE the method body runs
+@PostMapping
+public User create(@Valid @RequestBody UserDTO user) {
+    // If validation fails, this code NEVER executes
+    // Spring throws MethodArgumentNotValidException → returns 400 Bad Request
+    return userService.save(user);
+}
+```
+
+**Common gotcha — @NotNull vs @NotBlank vs @NotEmpty:**
+
+| | `null` | `""` (empty) | `"  "` (whitespace) | `"John"` |
+|---|---|---|---|---|
+| `@NotNull` | ❌ Fail | ✅ Pass | ✅ Pass | ✅ Pass |
+| `@NotEmpty` | ❌ Fail | ❌ Fail | ✅ Pass | ✅ Pass |
+| `@NotBlank` | ❌ Fail | ❌ Fail | ❌ Fail | ✅ Pass |
+
+**Rule:** For Strings, use `@NotBlank`. For other types, use `@NotNull`. For Collections, use `@NotEmpty`.
+
+---
+
+### Exception Handling Annotations — In Detail
+
+#### @RestControllerAdvice — Global Error Handler
+
+A **centralized place** to handle exceptions thrown by any controller. Without it, unhandled exceptions return ugly default error pages.
 
 ```java
 @RestControllerAdvice
+// = @ControllerAdvice + @ResponseBody
+// Applies to ALL @RestController classes in the app
 public class GlobalExceptionHandler {
 
     @ExceptionHandler(ResourceNotFoundException.class)
@@ -730,7 +1102,7 @@ public class GlobalExceptionHandler {
         return new ErrorResponse("NOT_FOUND", ex.getMessage());
     }
 
-    @ExceptionHandler(Exception.class)
+    @ExceptionHandler(Exception.class)  // Catch-all for unhandled exceptions
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
     public ErrorResponse handleGeneral(Exception ex) {
         return new ErrorResponse("ERROR", "Something went wrong");
@@ -738,55 +1110,130 @@ public class GlobalExceptionHandler {
 }
 ```
 
-### Scheduling Annotations
+**How it works:**
+1. Controller method throws `ResourceNotFoundException`
+2. Spring's `DispatcherServlet` catches it
+3. Looks for an `@ExceptionHandler` method that handles this exception type
+4. Finds `handleNotFound()` in `@RestControllerAdvice`
+5. Calls that method → returns the `ErrorResponse` as JSON with the specified HTTP status
 
-| Annotation | Description |
-|------------|-------------|
-| `@EnableScheduling` | Enable scheduling |
-| `@Scheduled` | Run method on schedule |
+**`@ExceptionHandler` matching order:** Most specific exception first. If you throw `ResourceNotFoundException` (which extends `RuntimeException`), Spring picks `@ExceptionHandler(ResourceNotFoundException.class)` over `@ExceptionHandler(Exception.class)`.
+
+---
+
+### @Profile — Environment-Specific Beans
+
+Activates beans only when a specific **profile** is active. Useful for different configs per environment (dev/staging/prod).
+
+```java
+@Configuration
+public class AppConfig {
+
+    @Bean
+    @Profile("dev")  // Only created when: spring.profiles.active=dev
+    public DataSource devDataSource() {
+        // In-memory H2 database for local development
+        return new H2DataSource();
+    }
+
+    @Bean
+    @Profile("prod")  // Only created when: spring.profiles.active=prod
+    public DataSource prodDataSource() {
+        // Real MySQL database for production
+        return new MySQLDataSource();
+    }
+}
+```
+
+**How to activate a profile:**
+- `application.properties`: `spring.profiles.active=dev`
+- Command line: `java -jar app.jar --spring.profiles.active=prod`
+- Environment variable: `SPRING_PROFILES_ACTIVE=prod`
+
+---
+
+### Scheduling Annotations — In Detail
+
+#### @EnableScheduling + @Scheduled
+
+`@EnableScheduling` on the main class tells Spring to start a **background thread pool** that checks for `@Scheduled` methods and runs them on time.
 
 ```java
 @SpringBootApplication
-@EnableScheduling  // Enable scheduling
+@EnableScheduling  // Without this, @Scheduled methods are ignored!
 public class MyApplication { }
 
 @Service
 public class ScheduledTasks {
 
-    @Scheduled(fixedRate = 5000)  // Every 5 seconds
-    public void task1() {
-        System.out.println("Running every 5 seconds");
-    }
+    @Scheduled(fixedRate = 5000)
+    // Runs every 5 seconds, REGARDLESS of how long the previous run took
+    // If task takes 3s: runs at 0s, 5s, 10s, 15s...
+    public void fixedRateTask() { }
 
-    @Scheduled(cron = "0 0 8 * * MON-FRI")  // 8 AM weekdays
-    public void task2() {
-        System.out.println("Running at 8 AM on weekdays");
-    }
+    @Scheduled(fixedDelay = 5000)
+    // Waits 5 seconds AFTER the previous run finishes
+    // If task takes 3s: runs at 0s, 8s (3+5), 16s (8+3+5)...
+    public void fixedDelayTask() { }
+
+    @Scheduled(cron = "0 0 8 * * MON-FRI")
+    // Cron expression: second minute hour day month weekday
+    // This = 8:00 AM every weekday
+    public void cronTask() { }
+
+    @Scheduled(initialDelay = 10000, fixedRate = 60000)
+    // Wait 10s after app starts, then run every 60s
+    public void delayedStart() { }
 }
 ```
 
-### Async Annotations
+---
 
-| Annotation | Description |
-|------------|-------------|
-| `@EnableAsync` | Enable async processing |
-| `@Async` | Run method asynchronously |
+### Async Annotations — In Detail
+
+#### @EnableAsync + @Async
+
+`@EnableAsync` tells Spring to create a **thread pool**. `@Async` methods run in a **separate thread** — the caller doesn't wait for them to finish.
 
 ```java
 @SpringBootApplication
-@EnableAsync
+@EnableAsync  // Without this, @Async is ignored — methods run synchronously!
 public class MyApplication { }
 
 @Service
 public class EmailService {
 
-    @Async  // Runs in separate thread
-    public CompletableFuture<String> sendEmail(String to) {
-        // Long running task
+    @Async  // Runs in a separate thread
+    public void sendEmail(String to) {
+        // This takes 5 seconds — but the caller returns immediately
+        // The email is sent in the background
+    }
+
+    @Async
+    public CompletableFuture<String> sendEmailWithResult(String to) {
+        // If you need the result later, return CompletableFuture
         return CompletableFuture.completedFuture("Email sent to " + to);
     }
 }
+
+// In Controller
+@PostMapping("/orders")
+public ResponseEntity<Order> createOrder(@RequestBody Order order) {
+    Order saved = orderService.save(order);
+    emailService.sendEmail(order.getEmail());  // Returns IMMEDIATELY
+    // Email is being sent in background thread
+    return ResponseEntity.status(HttpStatus.CREATED).body(saved);
+}
 ```
+
+**How it works internally:**
+1. Spring creates a **proxy** around `EmailService`
+2. When you call `sendEmail()`, the proxy intercepts it
+3. Instead of running on the current thread, it submits the method to a **TaskExecutor** (thread pool)
+4. The caller continues immediately without waiting
+5. The method runs asynchronously in a background thread
+
+**Important:** `@Async` only works when called from **another bean**. If you call an `@Async` method from within the same class, it runs synchronously (because the proxy is bypassed).
 
 ### Annotations Quick Reference
 
