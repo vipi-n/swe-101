@@ -201,6 +201,187 @@ public class OrderService {
 | Setter | ❌ No | ⚠️ Moderate | ❌ No | ⚠️ Sometimes |
 | Field | ❌ No | ❌ Hard | ❌ No | ❌ No |
 
+### Deep Dive: How Each Injection Type Works
+
+#### Constructor Injection — In Detail
+
+**How it works:** Dependencies are passed as constructor parameters. Spring sees the constructor, resolves all parameter types from the container, and calls `new OrderService(paymentService, notificationService)`.
+
+```java
+@Service
+public class OrderService {
+    private final PaymentService paymentService;
+    private final NotificationService notificationService;
+
+    public OrderService(PaymentService paymentService,
+                        NotificationService notificationService) {
+        this.paymentService = paymentService;
+        this.notificationService = notificationService;
+    }
+}
+```
+
+**What happens internally:**
+1. Spring scans and finds `OrderService` marked with `@Service`
+2. Looks at the constructor — needs `PaymentService` and `NotificationService`
+3. Finds those beans in the container
+4. Calls the constructor with those beans
+5. If either bean is **missing** → app **fails to start** immediately with a clear error
+
+**Why it's the best:**
+- Fields are `final` — once set, nobody can change them (immutable)
+- All dependencies are **mandatory** — if one is missing, you know at startup, not at runtime with a `NullPointerException`
+- Dependencies are **visible** — just look at the constructor to see what this class needs
+- **Testing is trivial** — no Spring needed:
+  ```java
+  // Unit test — just pass mocks directly
+  PaymentService mockPayment = Mockito.mock(PaymentService.class);
+  NotificationService mockNotif = Mockito.mock(NotificationService.class);
+  OrderService service = new OrderService(mockPayment, mockNotif);
+  ```
+- Circular dependencies are **detected immediately** (A needs B, B needs A → startup fails)
+
+**When to use:** **Always. This is the default choice.** Spring team officially recommends it. Use it for every required dependency.
+
+**Note:** `@Autowired` is optional when there's only one constructor (Spring 4.3+). If you have multiple constructors, annotate the one Spring should use.
+
+---
+
+#### Setter Injection — In Detail
+
+**How it works:** Spring first creates the object using the **default constructor** (no args), then calls each setter method marked with `@Autowired`.
+
+```java
+@Service
+public class ReportService {
+    private EmailService emailService;
+    private CacheService cacheService;  // optional — reports work without cache
+
+    @Autowired
+    public void setEmailService(EmailService emailService) {
+        this.emailService = emailService;
+    }
+
+    @Autowired(required = false)  // optional dependency
+    public void setCacheService(CacheService cacheService) {
+        this.cacheService = cacheService;
+    }
+
+    public void generateReport() {
+        // cache is optional — check before using
+        if (cacheService != null) {
+            Report cached = cacheService.get("report");
+            if (cached != null) return;
+        }
+        // ... generate report
+        emailService.send(report);
+    }
+}
+```
+
+**What happens internally:**
+1. Spring creates `ReportService` using `new ReportService()` (no-arg constructor)
+2. Spring sees `@Autowired` on `setEmailService()` → finds `EmailService` bean → calls the setter
+3. Spring sees `@Autowired(required = false)` on `setCacheService()` → if `CacheService` bean exists, calls setter; if not, **skips it** (no error)
+4. Object is now ready
+
+**Why it exists:**
+- Supports **optional dependencies** — with `required = false`, the app starts even if the bean doesn't exist
+- Allows **reconfiguration** — you can call the setter again later to swap the dependency (rare but useful in some frameworks)
+- Solves **circular dependencies** — since the object is created first (no-arg constructor), then dependencies are set, A and B can reference each other
+
+**Problems:**
+- Fields can't be `final` — they're set after construction, so they're mutable
+- Object can exist in a **partially initialized state** — between construction and setter calls, the dependency is `null`
+- Someone could accidentally call the setter and replace the dependency at runtime
+- Dependencies are less visible — you have to scan all methods for `@Autowired`
+
+**When to use:**
+- **Optional dependencies** that the class can function without (like caching, metrics, logging enhancements)
+- **Circular dependency resolution** (though this usually means your design needs refactoring)
+- **Framework/legacy code** that requires a no-arg constructor
+- When you need to **change a dependency at runtime** (very rare)
+
+---
+
+#### Field Injection — In Detail
+
+**How it works:** Spring uses **Java Reflection** to directly set the field's value, bypassing any constructor or setter. It literally reaches into the private field and sets it.
+
+```java
+@Service
+public class OrderService {
+    @Autowired
+    private PaymentService paymentService;
+
+    @Autowired
+    private NotificationService notificationService;
+}
+```
+
+**What happens internally:**
+1. Spring creates `OrderService` using `new OrderService()` (no-arg constructor)
+2. Spring uses reflection: `Field.setAccessible(true)` → `field.set(object, bean)`
+3. Private access is bypassed — Spring forces the value in
+
+**Why developers use it:** It's the **least code** — no constructor, no setter, just annotate the field. Looks clean.
+
+**Why it's bad:**
+
+1. **Can't test without Spring:**
+   ```java
+   // How do you set the private field?
+   OrderService service = new OrderService();
+   // service.paymentService is null — can't set it!
+   // You need reflection or Spring test context
+   ```
+
+2. **Hidden dependencies:** Looking at the class from outside, you don't know what it needs. The constructor signature is empty. Dependencies are buried inside the class.
+
+3. **No immutability:** Can't use `final` — reflection sets the field after construction.
+
+4. **Hides design problems:** If your class has 15 `@Autowired` fields, with constructor injection you'd see a constructor with 15 parameters and immediately think "this class does too much." Field injection hides this smell.
+
+5. **Circular dependencies go undetected:** A depends on B, B depends on A — field injection silently allows this. Constructor injection would fail at startup, forcing you to fix the design.
+
+**When to use:**
+- **Test classes only** — `@Autowired` in `@SpringBootTest` classes is acceptable because tests aren't production code and always run with Spring context
+  ```java
+  @SpringBootTest
+  class OrderServiceTest {
+      @Autowired  // acceptable here
+      private OrderService orderService;
+  }
+  ```
+- **Never in production code**
+
+---
+
+### When to Use What — Decision Guide
+
+```
+Is the dependency REQUIRED for the class to work?
+├── YES → Constructor Injection ✅
+│         (final field, fails fast, easy to test)
+│
+└── NO (optional, class works without it)
+    └── Setter Injection with @Autowired(required = false)
+        (check for null before using)
+
+Is this a test class?
+├── YES → Field Injection is fine
+└── NO  → Never use Field Injection
+```
+
+| Scenario | Use |
+|----------|-----|
+| Service depends on Repository | **Constructor** |
+| Controller depends on Service | **Constructor** |
+| Optional caching layer | **Setter** (`required = false`) |
+| Spring Boot test class | **Field** (acceptable) |
+| Class with 10+ dependencies | **Constructor** (and refactor — too many deps) |
+| Circular dependency A ↔ B | **Setter** (but redesign your code) |
+
 ### IoC Container / ApplicationContext
 
 The **Spring IoC Container** (ApplicationContext) is responsible for:
