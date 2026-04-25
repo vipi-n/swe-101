@@ -5087,25 +5087,23 @@ class Example {
 
 ---
 
-### Q58: What is Garbage Collection? (Heap Structure & Generations - Deep Dive)
+### Q58: What is Garbage Collection? (Heap, Generations & Metaspace)
 
 #### What Is It?
 
-**Garbage Collection (GC)** is Java's automatic memory management. The JVM finds objects that are no longer reachable from any live thread/root and reclaims their memory. You don't need to manually `free()` memory like in C/C++.
+**Garbage Collection (GC)** = Java's automatic memory cleanup. The JVM finds objects nothing is using anymore and frees their memory. No manual `free()` like in C/C++.
 
-**Garbage Collection** = Automatic memory management - reclaims unused (unreachable) objects from the heap.
+#### Why Generations? (Simple Idea)
 
-#### The Weak Generational Hypothesis (Why Generations Exist)
+Two simple facts drive the whole design:
+- **Most objects die young** (loop variables, temporary strings, request DTOs).
+- **Old objects rarely point to new ones.**
 
-GC design is based on two empirical observations:
-1. **Most objects die young** - temporary objects (loop variables, request DTOs, intermediate strings) become garbage very quickly.
-2. **Few references go from old objects to young objects** - long-lived objects rarely point to short-lived ones.
-
-This means we can collect young objects very frequently and cheaply, and rarely scan the entire heap. This is why the heap is split into **generations**.
+So instead of scanning the whole heap every time, Java splits the heap into a **small "young" area** (collected often, very fast) and a **larger "old" area** (collected rarely).
 
 ---
 
-#### Detailed Heap Structure
+#### Heap Structure (Simple View)
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────┐
@@ -5136,280 +5134,129 @@ This means we can collect young objects very frequently and cheaply, and rarely 
 └────────────────────────────────────────────────────────────────────────────┘
 
   ┌──────────────────── METASPACE (off-heap, since Java 8) ─────────────┐
-  │   Class metadata, method bytecode, static fields, constant pool.    │
-  │   Replaced PermGen. Grows dynamically (limited by -XX:MaxMetaspace).│
+  │   Class metadata, method bytecode, constant pool.                   │
+  │   Replaced PermGen. Lives in native memory (outside -Xmx).          │
   └─────────────────────────────────────────────────────────────────────┘
 ```
 
----
+**Sizing flags you should know:**
 
-#### Metaspace Deep Dive (Replaced PermGen in Java 8)
-
-##### What Is Metaspace?
-
-**Metaspace** is the JVM memory region (since Java 8) that stores **class-level metadata** — the runtime representation of every class the JVM has loaded. Unlike Eden / Survivor / Old, it lives in **native (off-heap) memory** managed by the OS, **not** inside `-Xmx`.
-
-##### What's Actually Stored in Metaspace?
-
-| Item | Description |
-|------|-------------|
-| **Klass structures** | The JVM's internal representation of each loaded class (one per class) |
-| **Method metadata** | Method signatures, bytecode, exception tables, line number tables |
-| **Field metadata** | Names, types, modifiers, offsets of each field |
-| **Constant pool** | Interned class/method/field references and literal constants |
-| **Annotations** | Class-level, method-level, field-level annotation data |
-| **Vtables / itables** | Virtual & interface dispatch tables for polymorphism |
-| **ClassLoader data** | One `ClassLoaderMetaspace` per ClassLoader holding all its classes |
-
-> Note: **Static fields** themselves live in the **heap** (Java 8+), but the **metadata describing them** is in Metaspace. The string literal pool also moved to the heap in Java 7.
-
-##### Why It Replaced PermGen
-
-PermGen (Java ≤ 7) was a **fixed-size** region inside the heap that caused two big problems:
-
-1. **`OutOfMemoryError: PermGen space`** — extremely common in app servers (Tomcat, JBoss) that redeploy WARs frequently, each redeploy leaking ClassLoaders and never being able to reuse fixed PermGen capacity.
-2. **Hard to size** — you had to predict total class count at JVM start and pass `-XX:MaxPermSize`.
-
-Metaspace solves both:
-- **Auto-grows** by allocating native memory chunks from the OS as needed.
-- **No hard upper bound by default** — only limited by available native memory (or `-XX:MaxMetaspaceSize` if set).
-- **Per-ClassLoader chunks** — when a ClassLoader is GC'd, all its Metaspace chunks are released back, fixing the "redeploy leak" pattern.
-
-##### Memory Layout
-
-```
-┌─── Native Memory (outside -Xmx) ──────────────────────────────────┐
-│                                                                   │
-│  ┌─── Metaspace ─────────────────────────────────────────────┐   │
-│  │                                                           │   │
-│  │  ┌─ ClassLoader A ─┐  ┌─ ClassLoader B ─┐  ┌─ Bootstrap ┐ │   │
-│  │  │  Chunk Chunk    │  │  Chunk Chunk    │  │  Chunk     │ │   │
-│  │  │  ─────────────  │  │  ─────────────  │  │  Chunk     │ │   │
-│  │  │  com.app.Foo    │  │  com.lib.Bar    │  │  java.lang │ │   │
-│  │  │  com.app.Baz    │  │                 │  │  java.util │ │   │
-│  │  └─────────────────┘  └─────────────────┘  └────────────┘ │   │
-│  │                                                           │   │
-│  │  ┌─── Compressed Class Space (default 1 GB) ─────────────┐│   │
-│  │  │  Just the `Klass` pointers, packed into 32-bit refs   ││   │
-│  │  │  Enabled by -XX:+UseCompressedClassPointers (default) ││   │
-│  │  └───────────────────────────────────────────────────────┘│   │
-│  └───────────────────────────────────────────────────────────┘   │
-└───────────────────────────────────────────────────────────────────┘
-```
-
-Metaspace has **two sub-regions**:
-1. **Class space** (the "Compressed Class Space") — holds only the small `Klass` pointer structures, capped by `-XX:CompressedClassSpaceSize` (default 1 GB). Enables 32-bit class pointers for memory savings.
-2. **Non-class space** — holds everything else (method bytecode, constant pool, etc.).
-
-##### How Metaspace Is Garbage Collected
-
-Metaspace GC is **driven by ClassLoader unloading**, not by individual class collection:
-
-```
-1. A ClassLoader becomes unreachable (e.g., webapp redeployed).
-2. All Class objects loaded by it become unreachable.
-3. Next Full GC (or concurrent cycle in G1/ZGC) detects this.
-4. The ENTIRE metaspace chunk owned by that ClassLoader is freed
-   back to native memory — atomic and clean.
-```
-
-This is why Metaspace problems usually mean **ClassLoader leaks** — some root (a thread, a static field, a JNDI binding) is still pointing at a "dead" ClassLoader, preventing all its classes from being unloaded.
-
-##### Triggers and Tuning
-
-| Flag | Default | Purpose |
-|------|---------|---------|
-| `-XX:MetaspaceSize` | ~21 MB | Initial size; **first Full GC** to unload classes triggers when this is exceeded |
-| `-XX:MaxMetaspaceSize` | unlimited | Hard cap — beyond this you get `OOM: Metaspace` |
-| `-XX:MinMetaspaceFreeRatio` | 40 | Min free % after GC; below this Metaspace grows |
-| `-XX:MaxMetaspaceFreeRatio` | 70 | Max free % after GC; above this Metaspace shrinks |
-| `-XX:CompressedClassSpaceSize` | 1 GB | Cap on compressed-class sub-region |
-| `-XX:+UseCompressedClassPointers` | on | Use 32-bit class pointers (saves memory) |
-
-> **Production tip:** Always set `-XX:MaxMetaspaceSize` in production. Without it, a ClassLoader leak can consume **all** native memory and crash the entire host (not just the JVM).
-
-##### When You'll See `OutOfMemoryError: Metaspace`
-
-Common causes:
-1. **ClassLoader leak** in app servers — old webapp's classes can't be unloaded after redeploy.
-2. **Excessive dynamic class generation** — frameworks using CGLIB / ByteBuddy / Javassist (Hibernate proxies, Spring AOP, mocking libraries) creating thousands of classes per test.
-3. **Too many small apps in one JVM** with `-XX:MaxMetaspaceSize` set too low.
-4. **Groovy / Scala / JRuby** apps generating runtime classes per script.
-
-How to diagnose:
-```bash
-# Histogram of loaded classes per loader
-jcmd <pid> VM.classloader_stats
-
-# Check Metaspace size
-jcmd <pid> GC.heap_info
-
-# Heap dump and inspect ClassLoader retention
-jmap -dump:live,format=b,file=heap.hprof <pid>
-```
-
-##### Metaspace vs Heap — Quick Comparison
-
-| Aspect | Heap | Metaspace |
-|--------|------|-----------|
-| **What lives here** | Object instances | Class metadata |
-| **Memory location** | JVM-managed, inside `-Xmx` | Native OS memory, outside `-Xmx` |
-| **Sized by** | `-Xms` / `-Xmx` | `-XX:MetaspaceSize` / `MaxMetaspaceSize` |
-| **GC unit** | Individual object | Entire ClassLoader's chunks |
-| **Default cap** | Required (`-Xmx`) | Unlimited (until OS runs out) |
-| **OOM message** | `Java heap space` | `Metaspace` |
-| **Fragmentation** | Compacted by GC | Possible (chunk-based, harder to defragment) |
-
-**Key sizing flags:**
 | Flag | Meaning |
 |------|---------|
-| `-Xms512m` | Initial heap size |
-| `-Xmx4g` | Max heap size |
+| `-Xms512m` / `-Xmx4g` | Initial / max heap size |
 | `-Xmn1g` | Young generation size |
-| `-XX:NewRatio=2` | Old : Young ratio (2 means Old is 2x Young) |
-| `-XX:SurvivorRatio=8` | Eden : Survivor ratio (8 means Eden is 8x each Survivor) |
-| `-XX:MaxTenuringThreshold=15` | Promotion age (max 15) |
+| `-XX:NewRatio=2` | Old : Young ratio (Old = 2× Young) |
+| `-XX:SurvivorRatio=8` | Eden : Survivor ratio (Eden = 8× each Survivor) |
+| `-XX:MaxTenuringThreshold=15` | How many Minor GCs an object survives before promotion |
 | `-XX:MaxMetaspaceSize=256m` | Cap on Metaspace |
 
 ---
 
-#### Step-by-Step: How GC Works in Each Generation
+#### Metaspace (the Simple Version)
 
-##### 1. Allocation in Eden
+**Metaspace** is where the JVM stores **class info** — not your objects, but the *blueprint* of every class loaded:
 
-When you write `new Employee()`, the JVM allocates the object in **Eden** using a **bump-the-pointer** allocation (just moves a pointer forward — extremely fast). Each thread actually gets its own **TLAB (Thread Local Allocation Buffer)** inside Eden so allocations are lock-free.
+- Class structure (fields, methods)
+- Method bytecode
+- Constant pool
+- Annotations
 
-```java
-Employee e = new Employee();   // Allocated in Eden via TLAB
-```
+**Key facts:**
+- Lives in **native OS memory**, **not** inside `-Xmx`.
+- **Grows automatically** as you load more classes (no fixed size by default).
+- Replaced **PermGen** (Java 7) which had a fixed size and caused frequent `OutOfMemoryError: PermGen space`, especially on app server redeploys.
+- When a **ClassLoader** is unloaded, all its classes (and their Metaspace memory) are freed together.
+- Common cause of `OOM: Metaspace` = **ClassLoader leaks** (e.g. webapp redeploys not releasing old classes) or frameworks generating tons of dynamic classes (CGLIB, ByteBuddy, Hibernate proxies).
 
-##### 2. Minor GC (Young Generation Collection)
+> **Production tip:** Always set `-XX:MaxMetaspaceSize` so a leak can't eat all your machine's memory.
 
-Triggered when **Eden fills up**. Uses a **copying collector** (Cheney's algorithm):
-
-```
-STEP A — Eden full, S0 has survivors from last GC, S1 is empty:
-
-  Eden: [A][B][C][D][E][F]    S0: [X(age=1)][Y(age=2)]    S1: [empty]
-              ↑
-          Trigger Minor GC
-
-STEP B — Mark live objects (reachable from GC Roots):
-
-  GC Roots = active stack frames, static fields, JNI refs, synchronized monitors
-  Live in Eden: A, C, F   (B, D, E are unreachable garbage)
-  Live in S0:  X, Y
-
-STEP C — Copy all live objects from Eden + S0 → S1, increment age:
-
-  Eden: [empty]    S0: [empty]    S1: [A(1)][C(1)][F(1)][X(2)][Y(3)]
-
-STEP D — Swap roles of S0 and S1. Eden + old "from" survivor are wiped.
-
-  Garbage objects (B, D, E) are NOT touched - we just abandon them.
-  Cost is proportional to LIVE objects, not garbage. Very fast.
-```
-
-**Key properties of Minor GC:**
-- **Stop-the-world**, but typically only **1–10 ms** (small region, few live objects).
-- Uses **copying** → automatically compacts (no fragmentation in Young Gen).
-- One Survivor space is **always empty** (the "to" space).
-- An object's **age** = number of Minor GCs it has survived.
-
-##### 3. Promotion to Old Generation
-
-An object is **promoted (tenured)** to Old Gen when one of these happens:
-1. Its **age ≥ `MaxTenuringThreshold`** (default 15).
-2. The "to" Survivor space **doesn't have enough room** (premature promotion).
-3. The object is too **large to fit in Eden** → allocated directly in Old Gen.
-4. Dynamic tenuring: if Survivor is more than 50% full, JVM lowers the threshold.
-
-```
-Young Gen (after several Minor GCs)              Old Gen
-  ┌──────────────┐                                ┌─────────────────┐
-  │  S1: Y(15)   │ ────── promote ──────►        │  Y, longLivedDB │
-  │      Z(15)   │                                │  cache, session │
-  └──────────────┘                                └─────────────────┘
-```
-
-##### 4. Major / Full GC (Old Generation Collection)
-
-Triggered when **Old Gen fills up** (or by `System.gc()`, or Metaspace pressure). This is **expensive** — it scans the entire heap. Different collectors handle this differently:
-
-**Mark-Sweep-Compact** (used by Serial / Parallel Old / CMS old phase):
-```
-PHASE 1 — MARK:    Walk from GC Roots, mark every reachable object.
-PHASE 2 — SWEEP:   Walk the heap, free unmarked (garbage) objects.
-PHASE 3 — COMPACT: Slide live objects together to eliminate fragmentation.
-```
-
-Pause times can be **hundreds of ms to several seconds** on multi-GB heaps.
-
-##### 5. The Card Table (Cross-Generational References)
-
-Problem: during Minor GC we shouldn't scan the whole Old Gen for references into Young Gen. Solution: a **Card Table** — a byte array where each byte represents a 512-byte "card" of Old Gen. When an old object writes a reference to a young object (via a **write barrier**), the card is marked **dirty**. Minor GC only scans dirty cards — not the whole Old Gen.
+| | Heap | Metaspace |
+|---|---|---|
+| Stores | Object instances | Class metadata |
+| Location | Inside `-Xmx` | Native memory (off-heap) |
+| OOM message | `Java heap space` | `Metaspace` |
+| Freed by | GC of individual objects | GC of entire ClassLoader |
 
 ---
 
-#### Garbage Collector Algorithms
+#### How GC Works in Each Generation
 
-| Collector | Flag | Young | Old | Pause | Best For |
-|-----------|------|-------|-----|-------|----------|
-| **Serial GC** | `-XX:+UseSerialGC` | Copying (1 thread) | Mark-Sweep-Compact | High | Small heaps (< 100 MB), single-CPU |
-| **Parallel GC** | `-XX:+UseParallelGC` | Copying (N threads) | Parallel MSC | Medium | Throughput-focused batch jobs |
-| **CMS** (deprecated, removed in 14) | `-XX:+UseConcMarkSweepGC` | Copying | Concurrent Mark-Sweep | Lower | Older latency-sensitive apps |
-| **G1 GC** *(default since Java 9)* | `-XX:+UseG1GC` | Region-based copying | Concurrent + incremental | Predictable (target with `-XX:MaxGCPauseMillis`) | Multi-GB heaps, balanced |
-| **ZGC** | `-XX:+UseZGC` | Concurrent | Concurrent (colored pointers) | **< 10 ms** | Huge heaps (TB), low-latency |
-| **Shenandoah** | `-XX:+UseShenandoahGC` | Concurrent | Concurrent (Brooks pointers) | < 10 ms | Low-latency, smaller than ZGC's target |
-| **Epsilon** | `-XX:+UseEpsilonGC` | None — never collects | None | N/A | Performance testing, short-lived jobs |
+##### 1. Allocation — into Eden
 
-##### G1 GC in More Detail (Default Today)
+`new Employee()` → object is placed in **Eden** by just moving a pointer forward (super fast). Each thread gets its own little slice of Eden (a **TLAB**) to avoid locking.
 
-G1 divides the heap into ~2048 equal-sized **regions** (1–32 MB each). Each region is dynamically labeled: **Eden**, **Survivor**, **Old**, or **Humongous** (for objects ≥ 50% of a region).
+##### 2. Minor GC — when Eden fills up
 
 ```
-┌──┬──┬──┬──┬──┬──┬──┬──┬──┬──┬──┬──┬──┬──┬──┬──┐
-│E │E │O │O │S │E │O │H │H │E │O │O │S │E │O │ -│
-└──┴──┴──┴──┴──┴──┴──┴──┴──┴──┴──┴──┴──┴──┴──┴──┘
- E=Eden  S=Survivor  O=Old  H=Humongous  -=Free
+Eden:  [A][B][C][D][E]      S0: [X][Y]      S1: (empty)
+                ↓ Minor GC ↓
+Eden:  (empty)              S0: (empty)     S1: [A][C][X][Y]   ← live ones copied here
+                                                  (B, D, E were garbage — abandoned)
 ```
 
-- Tracks **garbage density** per region; collects regions with the most garbage first ("Garbage First").
-- **Mixed collections** clean Young + a few Old regions per cycle → avoids long Full GCs.
-- Pause target tunable via `-XX:MaxGCPauseMillis=200` (default 200 ms).
+- JVM finds **live objects** (reachable from active threads, static fields, etc.).
+- **Copies** them from Eden + the "from" Survivor → the empty "to" Survivor.
+- Each survivor gets an **age++**.
+- Garbage isn't touched at all — we just wipe Eden and the old Survivor.
+- **Fast (1–10 ms)** because work is proportional to *live* objects only.
 
-##### ZGC / Shenandoah (Ultra-Low Latency)
+##### 3. Promotion to Old Gen
 
-- Use **load barriers / colored pointers** so marking and relocation happen **concurrently** with application threads.
-- Pause times stay **sub-10 ms even on TB-scale heaps**.
-- Trade some throughput for predictable latency.
+An object moves to Old Gen when:
+- It has survived ~15 Minor GCs (configurable).
+- The Survivor space is full.
+- The object is too big to fit in Eden → goes straight to Old Gen.
+
+##### 4. Major / Full GC — when Old Gen fills up
+
+Scans the **whole heap**. Three phases:
+1. **Mark** — find all reachable objects.
+2. **Sweep** — free the rest.
+3. **Compact** — shift surviving objects together to remove fragmentation.
+
+**Slow** (100 ms → several seconds on big heaps). Try to avoid these.
+
+##### 5. Card Table (cross-generational refs)
+
+To avoid scanning all of Old Gen during a Minor GC, the JVM tracks which old-to-young references exist using a small **card table**. Only "dirty" cards get scanned. You don't need to configure this — just know it exists.
 
 ---
 
-#### Object Lifecycle Summary
+#### Garbage Collectors (Pick One)
+
+| Collector | Flag | Best For |
+|---|---|---|
+| **Serial** | `-XX:+UseSerialGC` | Tiny apps (< 100 MB), single CPU |
+| **Parallel** | `-XX:+UseParallelGC` | Throughput batch jobs |
+| **G1** *(default Java 9+)* | `-XX:+UseG1GC` | Most apps, multi-GB heaps, predictable pauses |
+| **ZGC** | `-XX:+UseZGC` | Huge heaps, sub-10 ms pauses |
+| **Shenandoah** | `-XX:+UseShenandoahGC` | Low-latency apps |
+
+**G1 in one paragraph:** splits the heap into ~2048 small regions (each tagged Eden / Survivor / Old / Humongous). It collects regions with the most garbage first ("Garbage First") and tries to hit your target pause time (`-XX:MaxGCPauseMillis=200`).
+
+**ZGC / Shenandoah in one line:** they do most GC work *concurrently* with your app threads, so pauses stay tiny even on huge heaps.
+
+---
+
+#### Object Lifecycle (One Picture)
 
 ```
 new Object()
      │
      ▼
-   ┌──────┐  Minor GC   ┌──────────┐  Minor GC   ┌──────────┐
-   │ Eden │ ──────────► │ Survivor │ ──────────► │ Survivor │
-   └──────┘             │   (S1)   │   (swap)    │   (S0)   │
-                        └──────────┘             └──────────┘
-                                    age++ each cycle
-                                          │
-                       age ≥ threshold OR survivor full
-                                          ▼
-                                    ┌───────────┐
-                                    │  Old Gen  │
-                                    └───────────┘
-                                          │
-                                  Major / Full GC
-                                          ▼
-                                  Reclaimed (or kept)
+   Eden ──Minor GC──► Survivor ──Minor GC──► Survivor ──┐
+                          (age++ each cycle)            │
+                                                        │ age ≥ 15
+                                                        │ OR Survivor full
+                                                        ▼
+                                                     Old Gen
+                                                        │
+                                                  Major / Full GC
+                                                        ▼
+                                                   Reclaimed
 ```
 
-#### Useful JVM Flags for GC Tuning & Diagnosis
+#### Useful JVM Flags
 
 ```bash
 # Logging (Java 9+)
@@ -5419,50 +5266,47 @@ new Object()
 -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/var/log/heap.hprof
 
 # Pick a collector
--XX:+UseG1GC                       # Default, balanced
--XX:+UseZGC                        # Low-latency, large heaps
--XX:MaxGCPauseMillis=200           # Target pause time (G1/ZGC)
+-XX:+UseG1GC
+-XX:MaxGCPauseMillis=200
 
 # Sizing
--Xms2g -Xmx2g                      # Same min/max avoids resize pauses
--XX:MetaspaceSize=128m -XX:MaxMetaspaceSize=256m
+-Xms2g -Xmx2g                        # Same min/max avoids resize pauses
+-XX:MaxMetaspaceSize=256m            # Always set this in production
 ```
 
 #### Quick Interview Cheat Sheet
 
 | Question | Answer |
-|----------|--------|
-| Why generations? | Most objects die young → cheap frequent collection of small region |
-| Why two Survivor spaces? | Enables copying collection; one is always empty as the "to" space |
-| What's in Metaspace? | Class metadata, method bytecode, static fields (off-heap since Java 8) |
-| Default GC since Java 9? | **G1 GC** |
-| What's a "stop-the-world" pause? | All app threads paused while GC runs (Minor GC = short, Full GC = long) |
-| What triggers Full GC? | Old Gen full, Metaspace full, `System.gc()`, promotion failure |
-| How to avoid Full GCs? | Right-size heap, avoid memory leaks, use G1/ZGC, don't allocate humongous objects |
+|---|---|
+| Why generations? | Most objects die young → cheap, frequent young-gen cleanup |
+| Why two Survivor spaces? | One is always empty as the "to" space for copying |
+| What's in Metaspace? | Class metadata (off-heap, since Java 8) |
+| Default GC since Java 9? | **G1** |
+| What's "stop-the-world"? | App threads paused during GC |
+| What triggers a Full GC? | Old Gen full, Metaspace full, `System.gc()` |
+| How to avoid Full GCs? | Right-size heap, fix leaks, use G1/ZGC |
 
 ---
 
-#### TL;DR — Heap, GC & Metaspace
+#### TL;DR
 
-> **Heap layout:** Young Gen (Eden + S0 + S1) for short-lived objects, Old Gen for long-lived objects, Metaspace (off-heap native memory) for class metadata.
+> **Heap layout:** Young (Eden + 2 Survivors) for short-lived objects, Old for long-lived ones, Metaspace (off-heap native memory) for class metadata.
 
-> **Allocation:** New objects go into Eden via fast bump-pointer in a Thread-Local Allocation Buffer (TLAB).
+> **Allocation:** New objects go into Eden (fast pointer bump in a TLAB).
 
-> **Minor GC:** Triggered when Eden fills. Copies live objects from Eden + active Survivor to the empty Survivor; ages them; abandons garbage. Fast (1–10 ms) because it scans only live objects in a small region.
+> **Minor GC:** When Eden fills, live objects are copied to a Survivor space, garbage is abandoned. Fast because cost = live objects only.
 
-> **Promotion:** After surviving ~15 Minor GCs (or if Survivor overflows, or object is too big), object moves to Old Gen.
+> **Promotion:** After surviving ~15 Minor GCs (or if Survivor overflows / object is too big) → moves to Old Gen.
 
-> **Major / Full GC:** Triggered when Old Gen / Metaspace fills. Mark → Sweep → Compact across the whole heap. Slow (100s of ms to seconds).
+> **Major / Full GC:** When Old Gen fills. Mark → Sweep → Compact. Slow — try to avoid.
 
-> **Card Table + write barriers** let Minor GC find old→young references without scanning all of Old Gen.
+> **Generations exist** because most objects die young.
 
-> **Generations exist** because most objects die young (weak generational hypothesis) — collecting young space cheaply is the biggest GC win.
+> **Metaspace** replaced PermGen: stores class metadata in native memory, grows automatically, freed per-ClassLoader. Always cap it with `-XX:MaxMetaspaceSize`.
 
-> **Default collector since Java 9 = G1** (region-based, predictable pauses). Use **ZGC / Shenandoah** for sub-10 ms pauses on huge heaps. **Parallel GC** for max throughput batch jobs.
+> **Default GC = G1** (balanced). Use **ZGC/Shenandoah** for ultra-low pauses, **Parallel** for max throughput.
 
-> **Metaspace** replaced PermGen in Java 8: holds class metadata in **native memory** (outside `-Xmx`), grows dynamically, and is freed **per-ClassLoader** when that loader is unloaded. Always cap it with `-XX:MaxMetaspaceSize` in production to prevent ClassLoader-leak runaway.
-
-> **Tune by:** sizing heap (`-Xms = -Xmx`), picking the right collector, setting pause target (`-XX:MaxGCPauseMillis`), enabling GC logging, and **always** `HeapDumpOnOutOfMemoryError` in production.
+> **Always** enable `HeapDumpOnOutOfMemoryError` in production.
 
 ---
 
