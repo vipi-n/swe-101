@@ -5087,62 +5087,239 @@ class Example {
 
 ---
 
-### Q58: What is Garbage Collection?
+### Q58: What is Garbage Collection? (Heap Structure & Generations - Deep Dive)
 
 #### What Is It?
 
-**Garbage Collection (GC)** is Java's automatic memory management. It finds objects that are no longer used and reclaims their memory. You don't need to manually `free()` memory like in C/C++.
+**Garbage Collection (GC)** is Java's automatic memory management. The JVM finds objects that are no longer reachable from any live thread/root and reclaims their memory. You don't need to manually `free()` memory like in C/C++.
 
-**Garbage Collection** = Automatic memory management - reclaims unused objects
+**Garbage Collection** = Automatic memory management - reclaims unused (unreachable) objects from the heap.
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    HOW GC WORKS (SIMPLIFIED)                            │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│   BEFORE GC:                         AFTER GC:                          │
-│   ┌───────────────────────┐          ┌───────────────────────┐          │
-│   │ ┌───┐ ┌───┐ ┌───┐     │          │ ┌───┐ ┌───┐           │          │
-│   │ │ A │ │ B │ │ C │     │          │ │ A │ │ C │           │          │
-│   │ └───┘ └───┘ └───┘     │    ══►   │ └───┘ └───┘           │          │
-│   │        ↑               │          │                       │          │
-│   │      (no reference     │          │  B is garbage         │          │
-│   │       to B anymore)    │          │  (memory reclaimed)   │          │
-│   └───────────────────────┘          └───────────────────────┘          │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+#### The Weak Generational Hypothesis (Why Generations Exist)
+
+GC design is based on two empirical observations:
+1. **Most objects die young** - temporary objects (loop variables, request DTOs, intermediate strings) become garbage very quickly.
+2. **Few references go from old objects to young objects** - long-lived objects rarely point to short-lived ones.
+
+This means we can collect young objects very frequently and cheaply, and rarely scan the entire heap. This is why the heap is split into **generations**.
+
+---
+
+#### Detailed Heap Structure
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      HEAP GENERATIONS                        │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │                    YOUNG GENERATION                   │   │
-│  │  ┌─────────┐    ┌───────────┐    ┌───────────┐       │   │
-│  │  │  EDEN   │    │ Survivor 0│    │ Survivor 1│       │   │
-│  │  │ (new)   │    │    (S0)   │    │    (S1)   │       │   │
-│  │  └─────────┘    └───────────┘    └───────────┘       │   │
-│  │  Minor GC happens here (fast, frequent)               │   │
-│  └──────────────────────────────────────────────────────┘   │
-│                           │                                 │
-│                  Objects survive →                          │
-│                           ▼                                 │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │                    OLD GENERATION                     │   │
-│  │  Long-lived objects                                   │   │
-│  │  Major GC happens here (slow, infrequent)             │   │
-│  └──────────────────────────────────────────────────────┘   │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────┐
+│                              JVM HEAP                                       │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  ┌──────────────────────── YOUNG GENERATION (~1/3 of heap) ────────────┐   │
+│  │                                                                     │   │
+│  │   ┌────────────────────┐   ┌──────────┐   ┌──────────┐              │   │
+│  │   │       EDEN         │   │ Survivor │   │ Survivor │              │   │
+│  │   │  (new objects)     │   │    S0    │   │    S1    │              │   │
+│  │   │   ~80% of Young    │   │ (~10%)   │   │ (~10%)   │              │   │
+│  │   └────────────────────┘   └──────────┘   └──────────┘              │   │
+│  │                                                                     │   │
+│  │   Collected by MINOR GC (fast, frequent, stop-the-world but short)  │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                  │                                         │
+│                Promotion after surviving N collections                     │
+│                                  ▼                                         │
+│  ┌──────────────────── OLD (TENURED) GENERATION (~2/3 of heap) ────────┐   │
+│  │                                                                     │   │
+│  │   Long-lived objects: caches, singletons, session state, large      │   │
+│  │   objects allocated directly here (when too big for Eden).          │   │
+│  │                                                                     │   │
+│  │   Collected by MAJOR / FULL GC (slow, infrequent, longer pauses)    │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────────── METASPACE (off-heap, since Java 8) ─────────────┐
+  │   Class metadata, method bytecode, static fields.                   │
+  │   Replaced PermGen. Grows dynamically (limited by -XX:MaxMetaspace).│
+  └─────────────────────────────────────────────────────────────────────┘
 ```
 
-**Types of GC:**
-- **Serial GC** - Single thread, small apps
-- **Parallel GC** - Multiple threads, throughput focus
-- **G1 GC** - Balanced, default in Java 9+
-- **ZGC / Shenandoah** - Low latency
+**Key sizing flags:**
+| Flag | Meaning |
+|------|---------|
+| `-Xms512m` | Initial heap size |
+| `-Xmx4g` | Max heap size |
+| `-Xmn1g` | Young generation size |
+| `-XX:NewRatio=2` | Old : Young ratio (2 means Old is 2x Young) |
+| `-XX:SurvivorRatio=8` | Eden : Survivor ratio (8 means Eden is 8x each Survivor) |
+| `-XX:MaxTenuringThreshold=15` | Promotion age (max 15) |
+| `-XX:MaxMetaspaceSize=256m` | Cap on Metaspace |
+
+---
+
+#### Step-by-Step: How GC Works in Each Generation
+
+##### 1. Allocation in Eden
+
+When you write `new Employee()`, the JVM allocates the object in **Eden** using a **bump-the-pointer** allocation (just moves a pointer forward — extremely fast). Each thread actually gets its own **TLAB (Thread Local Allocation Buffer)** inside Eden so allocations are lock-free.
+
+```java
+Employee e = new Employee();   // Allocated in Eden via TLAB
+```
+
+##### 2. Minor GC (Young Generation Collection)
+
+Triggered when **Eden fills up**. Uses a **copying collector** (Cheney's algorithm):
+
+```
+STEP A — Eden full, S0 has survivors from last GC, S1 is empty:
+
+  Eden: [A][B][C][D][E][F]    S0: [X(age=1)][Y(age=2)]    S1: [empty]
+              ↑
+          Trigger Minor GC
+
+STEP B — Mark live objects (reachable from GC Roots):
+
+  GC Roots = active stack frames, static fields, JNI refs, synchronized monitors
+  Live in Eden: A, C, F   (B, D, E are unreachable garbage)
+  Live in S0:  X, Y
+
+STEP C — Copy all live objects from Eden + S0 → S1, increment age:
+
+  Eden: [empty]    S0: [empty]    S1: [A(1)][C(1)][F(1)][X(2)][Y(3)]
+
+STEP D — Swap roles of S0 and S1. Eden + old "from" survivor are wiped.
+
+  Garbage objects (B, D, E) are NOT touched - we just abandon them.
+  Cost is proportional to LIVE objects, not garbage. Very fast.
+```
+
+**Key properties of Minor GC:**
+- **Stop-the-world**, but typically only **1–10 ms** (small region, few live objects).
+- Uses **copying** → automatically compacts (no fragmentation in Young Gen).
+- One Survivor space is **always empty** (the "to" space).
+- An object's **age** = number of Minor GCs it has survived.
+
+##### 3. Promotion to Old Generation
+
+An object is **promoted (tenured)** to Old Gen when one of these happens:
+1. Its **age ≥ `MaxTenuringThreshold`** (default 15).
+2. The "to" Survivor space **doesn't have enough room** (premature promotion).
+3. The object is too **large to fit in Eden** → allocated directly in Old Gen.
+4. Dynamic tenuring: if Survivor is more than 50% full, JVM lowers the threshold.
+
+```
+Young Gen (after several Minor GCs)              Old Gen
+  ┌──────────────┐                                ┌─────────────────┐
+  │  S1: Y(15)   │ ────── promote ──────►        │  Y, longLivedDB │
+  │      Z(15)   │                                │  cache, session │
+  └──────────────┘                                └─────────────────┘
+```
+
+##### 4. Major / Full GC (Old Generation Collection)
+
+Triggered when **Old Gen fills up** (or by `System.gc()`, or Metaspace pressure). This is **expensive** — it scans the entire heap. Different collectors handle this differently:
+
+**Mark-Sweep-Compact** (used by Serial / Parallel Old / CMS old phase):
+```
+PHASE 1 — MARK:    Walk from GC Roots, mark every reachable object.
+PHASE 2 — SWEEP:   Walk the heap, free unmarked (garbage) objects.
+PHASE 3 — COMPACT: Slide live objects together to eliminate fragmentation.
+```
+
+Pause times can be **hundreds of ms to several seconds** on multi-GB heaps.
+
+##### 5. The Card Table (Cross-Generational References)
+
+Problem: during Minor GC we shouldn't scan the whole Old Gen for references into Young Gen. Solution: a **Card Table** — a byte array where each byte represents a 512-byte "card" of Old Gen. When an old object writes a reference to a young object (via a **write barrier**), the card is marked **dirty**. Minor GC only scans dirty cards — not the whole Old Gen.
+
+---
+
+#### Garbage Collector Algorithms
+
+| Collector | Flag | Young | Old | Pause | Best For |
+|-----------|------|-------|-----|-------|----------|
+| **Serial GC** | `-XX:+UseSerialGC` | Copying (1 thread) | Mark-Sweep-Compact | High | Small heaps (< 100 MB), single-CPU |
+| **Parallel GC** | `-XX:+UseParallelGC` | Copying (N threads) | Parallel MSC | Medium | Throughput-focused batch jobs |
+| **CMS** (deprecated, removed in 14) | `-XX:+UseConcMarkSweepGC` | Copying | Concurrent Mark-Sweep | Lower | Older latency-sensitive apps |
+| **G1 GC** *(default since Java 9)* | `-XX:+UseG1GC` | Region-based copying | Concurrent + incremental | Predictable (target with `-XX:MaxGCPauseMillis`) | Multi-GB heaps, balanced |
+| **ZGC** | `-XX:+UseZGC` | Concurrent | Concurrent (colored pointers) | **< 10 ms** | Huge heaps (TB), low-latency |
+| **Shenandoah** | `-XX:+UseShenandoahGC` | Concurrent | Concurrent (Brooks pointers) | < 10 ms | Low-latency, smaller than ZGC's target |
+| **Epsilon** | `-XX:+UseEpsilonGC` | None — never collects | None | N/A | Performance testing, short-lived jobs |
+
+##### G1 GC in More Detail (Default Today)
+
+G1 divides the heap into ~2048 equal-sized **regions** (1–32 MB each). Each region is dynamically labeled: **Eden**, **Survivor**, **Old**, or **Humongous** (for objects ≥ 50% of a region).
+
+```
+┌──┬──┬──┬──┬──┬──┬──┬──┬──┬──┬──┬──┬──┬──┬──┬──┐
+│E │E │O │O │S │E │O │H │H │E │O │O │S │E │O │ -│
+└──┴──┴──┴──┴──┴──┴──┴──┴──┴──┴──┴──┴──┴──┴──┴──┘
+ E=Eden  S=Survivor  O=Old  H=Humongous  -=Free
+```
+
+- Tracks **garbage density** per region; collects regions with the most garbage first ("Garbage First").
+- **Mixed collections** clean Young + a few Old regions per cycle → avoids long Full GCs.
+- Pause target tunable via `-XX:MaxGCPauseMillis=200` (default 200 ms).
+
+##### ZGC / Shenandoah (Ultra-Low Latency)
+
+- Use **load barriers / colored pointers** so marking and relocation happen **concurrently** with application threads.
+- Pause times stay **sub-10 ms even on TB-scale heaps**.
+- Trade some throughput for predictable latency.
+
+---
+
+#### Object Lifecycle Summary
+
+```
+new Object()
+     │
+     ▼
+   ┌──────┐  Minor GC   ┌──────────┐  Minor GC   ┌──────────┐
+   │ Eden │ ──────────► │ Survivor │ ──────────► │ Survivor │
+   └──────┘             │   (S1)   │   (swap)    │   (S0)   │
+                        └──────────┘             └──────────┘
+                                    age++ each cycle
+                                          │
+                       age ≥ threshold OR survivor full
+                                          ▼
+                                    ┌───────────┐
+                                    │  Old Gen  │
+                                    └───────────┘
+                                          │
+                                  Major / Full GC
+                                          ▼
+                                  Reclaimed (or kept)
+```
+
+#### Useful JVM Flags for GC Tuning & Diagnosis
+
+```bash
+# Logging (Java 9+)
+-Xlog:gc*=info:file=gc.log:time,uptime,level,tags
+
+# Heap dump on OOM (essential in production)
+-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/var/log/heap.hprof
+
+# Pick a collector
+-XX:+UseG1GC                       # Default, balanced
+-XX:+UseZGC                        # Low-latency, large heaps
+-XX:MaxGCPauseMillis=200           # Target pause time (G1/ZGC)
+
+# Sizing
+-Xms2g -Xmx2g                      # Same min/max avoids resize pauses
+-XX:MetaspaceSize=128m -XX:MaxMetaspaceSize=256m
+```
+
+#### Quick Interview Cheat Sheet
+
+| Question | Answer |
+|----------|--------|
+| Why generations? | Most objects die young → cheap frequent collection of small region |
+| Why two Survivor spaces? | Enables copying collection; one is always empty as the "to" space |
+| What's in Metaspace? | Class metadata, method bytecode, static fields (off-heap since Java 8) |
+| Default GC since Java 9? | **G1 GC** |
+| What's a "stop-the-world" pause? | All app threads paused while GC runs (Minor GC = short, Full GC = long) |
+| What triggers Full GC? | Old Gen full, Metaspace full, `System.gc()`, promotion failure |
+| How to avoid Full GCs? | Right-size heap, avoid memory leaks, use G1/ZGC, don't allocate humongous objects |
 
 ---
 
