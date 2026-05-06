@@ -318,7 +318,7 @@ We now address the non-functional requirements one at a time.
 flowchart LR
     C[Client] --> GW[API Gateway]
     GW --> BS[Booking Service]
-    BS --> R[(Redis<br/>lock:ticket:{id} TTL 10m)]
+    BS --> R[("Redis<br/>lock:ticket:ID TTL 10m")]
     BS --> DB[(Events DB)]
     BS <--> ST[Stripe]
     ST -. webhook .-> BS
@@ -568,7 +568,7 @@ flowchart LR
     SS --> RQ[(Redis<br/>query cache)]
     RQ -. miss .-> ESX[(Elasticsearch)]
 
-    BS --> RL[(Redis<br/>distributed lock<br/>TTL 10 min)]
+    BS --> RL[("Redis<br/>distributed lock<br/>TTL 10 min")]
     BS --> P
     BS <--> ST[Stripe]
     ST -. webhook .-> BS
