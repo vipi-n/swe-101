@@ -137,7 +137,17 @@ erDiagram
     PERFORMER ||--o{ EVENT : "performs at"
 ```
 
-> 💡 **Why a separate `Booking` entity?** Groups multiple tickets in one order with a shared payment status & total price — cleaner than overloading a `Ticket` row.
+> 💡 **Why a separate `Booking` entity?**
+> A user often buys **multiple tickets in one purchase** (e.g., 4 seats for the family). All 4 tickets share **one payment, one total price, one purchase timestamp**.
+>
+> - **If we put payment info on each `Ticket` row:** we'd duplicate `paymentId`, `totalPrice`, `purchaseStatus` across 4 rows. On refund or failure we'd have to update all 4 atomically and risk them drifting out of sync.
+> - **With a separate `Booking` row:** the `Booking` models the *order* (1 row per purchase) and `Ticket` rows model the *seats* (N rows). The booking holds payment status and total; each ticket just points to its `bookingId`.
+>
+> Result:
+> - 1 booking → many tickets (clean 1-to-many).
+> - "Show me my orders" = `SELECT * FROM bookings WHERE userId = ?` (trivial).
+> - Refund/cancel = update **one** booking row, not N tickets.
+> - No duplicated payment data, no drift.
 
 ### 2.3 API / System Interface
 
