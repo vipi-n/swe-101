@@ -2115,17 +2115,134 @@ ExecutorService userPool      = Executors.newFixedThreadPool(6);
 
 ---
 
-### 6.10 Two-Phase Commit (2PC) vs Saga
+### 6.10 Two-Phase Commit (2PC)
+
+**Problem:** A single business operation must update data on **multiple independent resource managers** (databases, message brokers, etc.) and the result must be **all-or-nothing** (atomic) — even if any participant or the network fails midway.
+
+**Solution:** A **Two-Phase Commit (2PC)** is a blocking, synchronous distributed transaction protocol coordinated by a **Transaction Coordinator (TC)**. It guarantees ACID across multiple participants by splitting the commit into two phases: **Prepare** and **Commit**.
+
+#### The Two Phases
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                  PHASE 1 — PREPARE (Voting Phase)                      │
+├────────────────────────────────────────────────────────────────────────┤
+│                                                                        │
+│  Coordinator ──"PREPARE"──► Participant A  (DB1)                       │
+│              ──"PREPARE"──► Participant B  (DB2)                       │
+│              ──"PREPARE"──► Participant C  (Kafka/MQ)                  │
+│                                                                        │
+│  Each participant:                                                     │
+│    1. Executes the transaction LOCALLY but does NOT commit             │
+│    2. Writes changes + "prepared" record to its WAL (durable)          │
+│    3. ACQUIRES LOCKS on affected rows/resources                        │
+│    4. Replies VOTE_COMMIT (yes) or VOTE_ABORT (no)                     │
+│                                                                        │
+│  Coordinator collects all votes.                                       │
+│                                                                        │
+└────────────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────────────┐
+│              PHASE 2 — COMMIT or ABORT (Decision Phase)                │
+├────────────────────────────────────────────────────────────────────────┤
+│                                                                        │
+│  IF all participants voted YES:                                        │
+│     Coordinator writes "COMMIT" to its log (point of no return)        │
+│     Coordinator ──"COMMIT"──► all participants                         │
+│       Each participant: commits locally, releases locks, ACKs           │
+│                                                                        │
+│  IF any participant voted NO (or timed out):                           │
+│     Coordinator writes "ABORT" to its log                              │
+│     Coordinator ──"ROLLBACK"──► all participants                       │
+│       Each participant: rolls back, releases locks, ACKs                │
+│                                                                        │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Sequence Diagram (Happy Path)
+
+```
+Client       Coordinator        Participant A        Participant B
+  │               │                    │                    │
+  │──begin tx────►│                    │                    │
+  │               │                    │                    │
+  │               │──── PREPARE ──────►│                    │
+  │               │──── PREPARE ──────────────────────────►│
+  │               │                    │ lock + write WAL   │
+  │               │◄──── VOTE_YES ─────│                    │
+  │               │                    │ lock + write WAL   │
+  │               │◄──── VOTE_YES ─────────────────────────│
+  │               │                                         │
+  │               │ [write COMMIT to log — durable]         │
+  │               │                                         │
+  │               │──── COMMIT ───────►│                    │
+  │               │──── COMMIT ───────────────────────────►│
+  │               │◄──── ACK ──────────│                    │
+  │               │◄──── ACK ──────────────────────────────│
+  │◄──── OK ──────│                                         │
+```
+
+#### Failure Scenarios
+
+| Failure | What Happens |
+|---|---|
+| **Participant fails before voting** | Coordinator times out → ABORT all |
+| **Participant votes NO** | Coordinator sends ROLLBACK to all |
+| **Coordinator crashes BEFORE writing decision** | All participants are **blocked holding locks** until coordinator recovers (read its log) — this is the infamous **blocking problem** |
+| **Coordinator crashes AFTER writing COMMIT** | On recovery, reads log, re-sends COMMIT to participants |
+| **Participant crashes AFTER voting YES** | On recovery, asks coordinator for the decision (it MUST honor its vote) |
+| **Network partition during commit phase** | Participants block until network heals — locks held entire time |
+
+#### Why 2PC is Rarely Used in Microservices
+
+| Issue | Impact |
+|---|---|
+| **Blocking protocol** | If coordinator crashes mid-commit, participants hold locks indefinitely → deadlocks, hung transactions |
+| **Synchronous + chatty** | Multiple round trips per transaction → high latency (often 100s of ms) |
+| **Coordinator is SPOF** | Coordinator failure freezes the whole system |
+| **Lock contention** | Locks held across the network for the entire 2-phase duration → kills throughput |
+| **Doesn't scale** | Performance degrades sharply as participants grow |
+| **Heterogeneous participants** | Requires every participant to support XA/2PC protocol — most NoSQL DBs and message brokers (Kafka) don't |
+| **Tight coupling** | All participants must be available simultaneously — defeats microservices autonomy |
+
+#### Where 2PC is Still Used
+
+- **Single-vendor enterprise systems** with XA-compliant resources (Oracle DB + IBM MQ + WebSphere)
+- **Java EE JTA transactions** spanning two RDBMS within one app server
+- **Legacy banking core systems** where strict consistency is non-negotiable and scale is bounded
+- **Coordinated commits in databases** (e.g., PostgreSQL `PREPARE TRANSACTION` / `COMMIT PREPARED`)
+
+```sql
+-- PostgreSQL 2PC example
+BEGIN;
+INSERT INTO accounts (id, balance) VALUES (1, 100);
+PREPARE TRANSACTION 'tx-001';   -- Phase 1: prepared, locks held
+
+-- Coordinator decides...
+COMMIT PREPARED 'tx-001';       -- Phase 2: commit
+-- or
+ROLLBACK PREPARED 'tx-001';     -- Phase 2: abort
+```
+
+#### Three-Phase Commit (3PC) — Brief Note
+
+3PC adds a **pre-commit** phase + timeouts on participants to make the protocol **non-blocking** in most failure cases. It assumes a synchronous network with bounded message delays — an assumption that **doesn't hold on the public internet**, so 3PC is rarely used in practice.
+
+#### 2PC vs Saga — Comparison
 
 | Aspect | 2PC | Saga |
 |---|---|---|
 | Coordination | Central coordinator | Orchestrator or Choreography |
-| Locking | Holds locks until all vote | No distributed locks |
-| Consistency | Strong (ACID) | Eventual |
-| Availability | Low (blocking) | High |
-| Latency | High (synchronous) | Low (async) |
-| Failure handling | Rollback all | Compensating transactions |
-| Use case | Strict consistency (banking core) | Microservices, long-running processes |
+| Locking | Holds locks until all vote + commit | No distributed locks |
+| Consistency | Strong (ACID across participants) | Eventual |
+| Availability | Low (blocking on coordinator/peer failure) | High (each step is independent) |
+| Latency | High (multiple sync round trips) | Low (async, per-step local commits) |
+| Failure handling | Rollback all (atomic) | Compensating transactions (semantic undo) |
+| Scalability | Poor — degrades with participants | Good — scales horizontally |
+| Protocol support needed | XA/2PC support in every participant | Just messaging + local transactions |
+| Use case | Strict consistency, bounded scale (banking core, ERP) | Microservices, long-running processes, web-scale |
+
+**Rule of thumb:** In microservices, **prefer Saga + Outbox** for cross-service consistency. Reach for 2PC only when participants are XA-capable, scale is small, and strong consistency is a hard requirement.
 
 ---
 
