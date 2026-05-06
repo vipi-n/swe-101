@@ -805,3 +805,58 @@ flowchart LR
 | **Idempotency** | Webhook handling keyed on `bookingId`. |
 | **PCI Compliance** | Stripe.js tokenization — server never sees raw cards. |
 | **Throttling / Admission Control** | Virtual waiting room for hot events. |
+
+---
+
+## Appendix — Common Interviewer Follow-Ups
+
+Questions an interviewer is very likely to ask after you present this design. Have a 1-minute answer ready for each.
+
+### Booking & Concurrency
+1. **How do you prevent double booking?** → Redis `SET NX EX` for the reservation lock + Postgres ACID `UPDATE … WHERE status='reserved' AND bookingId=?` on confirmation. Two layers: lock prevents two carts; DB constraint is the final source of truth.
+2. **What if Redis goes down mid-checkout?** → Bring up a new instance. For ~10 min two users could *reach* the payment page for the same seat, but only one DB transaction wins on confirm — the other gets a clean error. Mitigate with Redis Sentinel / Redlock.
+3. **Why not lock the DB row directly for 10 minutes?** → Holds an open TX → connection pool exhaustion + lock leaks on crashes. Redis TTL is decoupled and self-cleans.
+4. **What isolation level do you use?** → Default `READ COMMITTED` is enough because we use explicit row locks (`SELECT … FOR UPDATE`) on the critical path. `SERIALIZABLE` would be overkill and cost throughput.
+5. **OCC vs pessimistic locking — which and why?** → Pessimistic (`FOR UPDATE`) here because contention on hot seats is high; OCC's retry storm would be wasteful. OCC is better when conflicts are rare.
+
+### Payments
+6. **Walk me through the full payment flow including failure modes.** → Reserve → Stripe.js tokenizes → server creates `PaymentIntent` with `bookingId` → Stripe webhook on success → idempotent DB transaction. Failure: Redis TTL releases seat; webhook retries on 5xx; Stripe is idempotent on `idempotencyKey`.
+7. **How do you handle webhook retries?** → Webhook handler is keyed on `bookingId`, checks `bookings.status` before mutating. Same event N times → same final state.
+8. **What happens if the payment succeeds but our DB write fails?** → Webhook returns 5xx → Stripe retries with exponential backoff. Eventually our handler succeeds. User sees "Processing…" until then.
+9. **How do you stay PCI compliant?** → `Stripe.js` tokenizes in the browser; our backend never sees PAN/CVV. We only store the `paymentIntentId` reference.
+
+### Distributed Systems / Transactions
+10. **Don't you need distributed transactions across services?** → No — Bookings, Tickets, Events live in the same Postgres, so the critical write is one local ACID TX. The Redis + Stripe parts are a workflow held together by idempotency and a status state-machine.
+11. **What if you split Bookings DB and Payment DB?** → Switch to Saga + Transactional Outbox + idempotent consumers. Accept eventual consistency between payment and booking.
+12. **Why not 2PC?** → Stripe doesn't support it; locks during 2PC kill throughput; coordinator failure leaves participants stuck.
+
+### Scale (Read Path)
+13. **How do you serve 10M users hitting one event page?** → CDN for static event content + Redis cache for the dynamic payload + horizontal-scaled stateless Event Service + Postgres read replicas. Don't cache seat status in the event blob.
+14. **How do you keep the seat map fresh without hammering the DB?** → SSE stream pushing seat-status diffs from a Redis Pub/Sub bus that the Booking Service publishes to.
+15. **How do you handle the "Taylor Swift" surge (10M users, 60K seats)?** → Virtual waiting queue (Redis sorted set) gates entry. Admit users in waves matched to Booking Service capacity. Most users never reach the seat map.
+16. **How do you shard Postgres if it gets too hot?** → Shard by `eventId` — all rows for one event live on one shard, so the booking transaction stays local. Consistent hashing for distribution.
+
+### Search
+17. **Why Elasticsearch and not Postgres full-text?** → Postgres FTS is fine to ~tens of millions of rows; ES wins on fuzzy matching, typo tolerance, relevance ranking, geo, and aggregations at scale.
+18. **How do you keep ES in sync with Postgres?** → CDC (Debezium) reads the WAL → Kafka → Indexer worker → ES. Eventually consistent within seconds. Tradeoff over dual-write: no risk of divergence on partial failure.
+19. **What if ES is down?** → Search Service falls back to Postgres (degraded — slower, no fuzzy match). Better than serving 5xx.
+
+### Real-Time
+20. **SSE vs WebSocket vs long polling — why SSE for seat updates?** → One-way server→client (we don't need bidirectional), works over plain HTTP, auto-reconnects, much simpler than WebSocket. WebSocket would be needed if clients also pushed (e.g., chat).
+21. **How do you fan out SSE updates across many Event Service instances?** → Redis Pub/Sub. Booking Service publishes seat changes; every Event Service pod subscribes and pushes to its connected clients.
+
+### Caching
+22. **What's your cache invalidation strategy?** → Short TTLs (30–60s for event payload, 5min for search results) + write-through invalidation on event mutations. Avoids most stale-data pain without complex invalidation logic.
+23. **Why don't you cache seat status?** → Changes too fast — cache hit rate would tank and we'd serve stale data. Either fetch fresh per request or stream via SSE.
+
+### Failure / Edge Cases
+24. **What if a user holds a seat and never pays?** → Redis TTL expires after 10 min; the booking row stays as `expired`. Either a daily job marks the ticket `available` or — better — the ticket's "effective availability" is computed at read time (no lock present + no `sold` row).
+25. **What if two users reserve different seats but want them refunded together?** → That's the `Booking` entity — one booking → many tickets. Refund the booking, all tickets flip to `available`.
+26. **How do you handle Stripe webhook ordering / out-of-order delivery?** → Each event has a `created_at`. Compare against `bookings.last_event_at`; ignore older events. Idempotency makes it safe.
+
+### Beyond the Core Design
+27. **How would you add dynamic pricing for popular events?** → Async pricing service that recomputes ticket prices based on demand signals. Booking Service reads the *current* price at lock-time and stores it on the Ticket so the user is charged what they saw.
+28. **How would you support seat recommendations / "best available"?** → Pre-rank seats per event by section/row score; on `POST /bookings/best`, pop the highest-ranked still-available seat in the requested section. Cache the ranking.
+29. **How do you handle bot/scalper traffic?** → CAPTCHA + rate limit at API Gateway + virtual waiting queue + per-account ticket caps + ML-based bot detection on browser fingerprints.
+30. **What metrics would you monitor?** → Reservation conversion rate (lock → confirm), webhook lag, SSE connection count, ES indexing lag, Redis memory & lock rate, Postgres replica lag, p99 latency per endpoint.
+
