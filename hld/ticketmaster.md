@@ -484,7 +484,60 @@ Each step is local + idempotent; failures trigger compensating transactions. Thi
 - **Idempotency:** webhook handler keys on `bookingId` and checks current status before mutating — Stripe retries are safe.
 - **What if Redis dies?** Bring up a new instance; for ~10 min, multiple users could both reach payment for the same ticket. The DB transaction is still the source of truth — only one will succeed; the loser gets an error. Trade-off worth discussing (Redlock / Redis Sentinel improve this).
 
+#### Is the Booking Service also handling payments?
+
+**No — Booking Service *orchestrates* payment, it doesn't *process* it.** This is an important distinction:
+
+| Concern | Who actually does it |
+|---|---|
+| Collect raw card details (PAN, CVV) | **Stripe.js in the browser** — tokenizes client-side; our backend never sees the card |
+| Charge the card | **Stripe** (external SaaS) |
+| Store card data, be PCI-DSS compliant | **Stripe** |
+| Fraud detection, 3-D Secure, retries on declines | **Stripe** |
+| Tell Stripe *"charge $X for booking B-456"* | **Booking Service** → creates a `PaymentIntent` |
+| Receive *"payment succeeded"* callback | **Booking Service** → webhook handler |
+| Update ticket / booking status post-payment | **Booking Service** → local Postgres TX |
+
+So the Booking Service is a **payment orchestrator/coordinator**, not a payment processor. It owns the *workflow* (reserve → call Stripe → wait for webhook → confirm), while the actual money movement and card handling are entirely Stripe's job. This is what keeps us out of PCI scope.
+
+##### Should there be a separate Payment Service?
+
+For this interview-scoped design, folding the Stripe glue into the Booking Service is fine — it keeps the diagram simple. But in a larger production system you'd typically extract a **dedicated Payment Service** because:
+
+- **Reuse:** other parts of the business (refunds, gift cards, partner payouts) also need to talk to payment providers.
+- **Separation of concerns:** Booking Service shouldn't know which provider you use (Stripe today, Adyen tomorrow). Payment Service hides that.
+- **Own its own data:** payment attempts, refunds, chargebacks, reconciliation rows live in their own DB owned by Payment Service.
+- **Stricter security boundary:** webhook endpoints, secrets, and audit logging are isolated.
+
+The split looks like this:
+
+```mermaid
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
+flowchart LR
+    BS[Booking Service<br/>owns: bookings, tickets,<br/>reservation workflow] -->|createPayment bookingId, amount| PS[Payment Service<br/>owns: payments,<br/>provider integration]
+    PS -->|PaymentIntent| ST[Stripe]
+    ST -. webhook .-> PS
+    PS -->|paymentConfirmed event| BS
+    BS --> DB[(Postgres<br/>bookings, tickets)]
+    PS --> PDB[(Postgres<br/>payments)]
+```
+
+> 💡 **Interview soundbite:** "For brevity I've kept payment logic inside the Booking Service. In production I'd extract a Payment Service that owns the Stripe integration, holds payment records, and emits a `paymentConfirmed` event the Booking Service subscribes to. That keeps Booking Service business-logic-only and lets us swap payment providers without touching it."
+
+##### But if Payment Service has its own DB, doesn't ACID break?
+
+Yes — once `payments` lives in a separate DB from `bookings`/`tickets`, no single `BEGIN…COMMIT` can span both. You replace strict cross-service ACID with **eventual consistency**, using:
+
+- **Saga** — chain of local transactions; on failure run compensating actions (e.g., `refund` undoes `chargeCard`).
+- **Transactional Outbox + CDC** — write the domain row and an `outbox` event in the **same local TX**; a publisher tails the outbox to Kafka so events are never lost.
+- **Idempotent consumers** — every event handler is safe to run N times (key on `paymentId` / `bookingId`).
+
+Trade-off: brief window where Payment DB says `confirmed` but Booking DB still says `in-progress` — UI shows "Processing…".
+
+> 💡 We kept everything in one Postgres here precisely to **avoid** this complexity and keep the critical "mark sold + mark confirmed" step a single ACID transaction.
+
 ---
+
 
 ### DD2: Scaling the View API to millions of concurrent users
 
