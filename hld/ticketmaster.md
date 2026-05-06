@@ -321,7 +321,44 @@ We now address the non-functional requirements one at a time.
 | ✅✅ **Great** — Implicit status: `status + expiresAt` computed at read time (no cron) | No cron needed; reads treat expired locks as available. |
 | ✅✅✅ **Great (chosen)** — **Distributed lock in Redis with TTL** | Atomic, fast, auto-expiring, decoupled from DB. |
 
-#### Chosen design — Redis distributed lock
+#### Why a Redis distributed lock (in plain English)
+
+> **The core problem:** When a user clicks a seat, we need to "hold" it for them for ~10 minutes while they enter payment, *without* changing the seat to `sold` in the DB (because they haven't paid yet). And if they walk away, the seat must come back automatically. The naive approaches all have issues:
+
+| Naive approach | Why it's bad |
+|---|---|
+| Lock the DB row for 10 min | Holds an open DB transaction for 10 minutes. DB connections are precious — you'd run out. If the app crashes mid-checkout, the lock can leak. |
+| Add a `reserved_until` column + cron job | Works, but cron runs every X seconds — so a seat can stay locked minutes after the timer expires. Also one more moving part to monitor. |
+| App-level lock in Booking Service memory | Doesn't work — we have **multiple Booking Service instances** behind a load balancer. They don't share memory. |
+
+> **What we actually need:**
+> 1. A **shared, central place** all Booking Service instances can check ("is this seat held?").
+> 2. **Atomic** — two requests racing for the same seat must have exactly one winner.
+> 3. **Auto-expires** — if the user abandons checkout, the lock vanishes on its own (no cron, no cleanup job).
+> 4. **Fast** — sub-millisecond, because users will hit "select seat" thousands of times per second on a hot drop.
+
+Redis ticks every box:
+- It's a separate, shared service all booking pods talk to → **central**.
+- The `SET key value NX EX ttl` command is **atomic** and only succeeds if the key doesn't exist → exactly one winner.
+- The `EX 600` argument tells Redis to delete the key after 600 seconds → **auto-cleanup, no cron**.
+- In-memory → **microseconds per op**.
+
+#### The Redis command, explained
+
+```
+SET lock:ticket:T123  user:U7  NX  EX 600
+    └─────┬─────┘     └──┬───┘  │   └──┬─┘
+          key            value  │      │
+                                │      └─ expire after 600s (10 min TTL)
+                                └─────── only set if key does NOT exist
+```
+
+- **First user wins:** `SET` succeeds, returns OK.
+- **Second user (racing for same seat):** `SET` fails because key exists → service responds "seat unavailable, pick another."
+- **Value = userId:** so when we later release the lock we can verify *we* own it (don't accidentally release someone else's lock).
+
+#### Architecture
+
 
 ```mermaid
 %%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
@@ -366,6 +403,81 @@ sequenceDiagram
 
     Note over R: If user abandons → TTL expires → seat available again
 ```
+
+#### Walking through the flow in plain English
+
+1. **User clicks seat A-12** in the seat map → browser sends `POST /bookings { ticketId: "T123" }`.
+2. **Booking Service tries to grab the lock** in Redis: `SET lock:ticket:T123 user:U7 NX EX 600`.
+   - ✅ If it succeeds → this user "owns" the seat for 10 minutes.
+   - ❌ If it fails → another user already grabbed it; we return "seat unavailable" and the client picks another.
+3. **Booking Service writes a `Booking` row** with status `in-progress` (so we have a record of the in-flight order) and returns `bookingId` to the client.
+4. **Client navigates to the payment page**, sees a 10-minute countdown timer (the same TTL as the Redis lock).
+5. **User enters card details** → `Stripe.js` tokenizes the card *in the browser* (PCI compliance — our server never sees the raw PAN). Token + `bookingId` are sent to Stripe via a `PaymentIntent`.
+6. **Stripe processes the charge** and calls our **webhook** with `payment_succeeded`.
+7. **Webhook handler runs a DB transaction:**
+   - `UPDATE tickets SET status='sold' WHERE id='T123'`
+   - `UPDATE bookings SET status='confirmed' WHERE id=B-...`
+   - Now the source of truth (Postgres) reflects the sale. The Redis lock is no longer needed (it'll just expire harmlessly).
+8. **What if the user abandons** (closes the tab at step 5)? Nothing happens immediately — but after 10 minutes the Redis key auto-expires. Now the seat appears available again to anyone who tries (`SET ... NX` succeeds for the next person).
+
+> 🔑 **The big insight:** Redis holds *temporary, in-flight intent*. Postgres holds *permanent, confirmed truth*. The lock is the bridge — it gives the user breathing room to pay without committing the sale prematurely, and it cleans itself up if they ghost.
+
+#### Transaction handling — what does `BEGIN TX … COMMIT` mean here?
+
+The `BEGIN TX … COMMIT` block in step 7 is a **local Postgres ACID transaction** inside the Booking Service. It guarantees that the two updates either **both succeed or both fail**:
+
+```sql
+BEGIN;
+  UPDATE tickets  SET status = 'sold'      WHERE id = 'T123';
+  UPDATE bookings SET status = 'confirmed' WHERE id = 'B-456';
+COMMIT;
+```
+
+If the service crashes between the two updates, Postgres rolls back automatically — we never end up with a confirmed booking pointing at an unsold ticket (or vice versa). This is just classical single-DB ACID; nothing distributed yet.
+
+##### But wait — we have multiple microservices. Don't we need a *distributed* transaction?
+
+You'd think so, but **no**. Here's the trick:
+
+| Step | Where it happens | Storage | Atomicity needed? |
+|---|---|---|---|
+| Reserve seat | Booking Service → Redis | Redis | Atomic via `SET NX` |
+| Create in-progress booking | Booking Service → Postgres | Postgres | Single-row insert (atomic by default) |
+| Charge card | Stripe (external) | Stripe's DB | Stripe handles it |
+| Mark ticket sold + booking confirmed | Booking Service → Postgres | Postgres | Local TX (the `BEGIN…COMMIT`) |
+
+> Crucially, the Tickets, Bookings, and Events tables all live in **the same Postgres database** (we chose a shared DB earlier). So step 7 — the part that *must* be atomic — is just a **local single-DB transaction**. No 2PC, no saga, no distributed coordination needed for that step.
+
+##### What about the work that spans Redis + Postgres + Stripe?
+
+That's a **multi-step business workflow**, not a transaction. We make it safe with three patterns:
+
+1. **Status as a state machine.** A booking moves through `in-progress → confirmed` (or `expired`/`cancelled`). At any point we can look at the booking row and know exactly what stage it's in. If we crash, we can resume.
+2. **Idempotency on every external boundary.**
+   - Stripe webhook handler keys on `bookingId`. If Stripe retries the webhook (which it will, on any 5xx), we check `bookings.status` first — if it's already `confirmed`, we just return 200 and skip the update. Same event processed 5 times → same final state.
+   - Stripe's own `PaymentIntent` is idempotent (uses an idempotency key) — calling it twice with the same key won't double-charge.
+3. **Compensating actions instead of rollback.** If something fails *after* the lock is held but *before* payment, we don't need to "undo" anything — the Redis TTL releases the seat automatically. If a payment succeeds but our DB write fails, the webhook is retried until it lands (idempotent), so we eventually converge.
+
+##### Why not 2PC (two-phase commit) across services?
+
+- **Stripe doesn't support it** — you can't ask an external SaaS to participate in your XA transaction.
+- **Locks held during 2PC kill throughput** — exactly what we're trying to avoid in a high-contention system.
+- **Operational nightmare** — coordinator failures leave participants stuck.
+- We don't need it: the only multi-row write that *must* be atomic happens inside one Postgres DB → one local TX is enough.
+
+##### What if we later split Bookings DB and Tickets DB?
+
+Then we'd have a real distributed-transaction problem and would use the **Saga pattern**:
+
+```
+reserveTicket → createBooking → chargeCard → markSold → confirmBooking
+       ↓ (on failure of any step, run compensations in reverse)
+   releaseTicket   deleteBooking   refund   markAvailable   cancelBooking
+```
+
+Each step is local + idempotent; failures trigger compensating transactions. This is the standard answer when an interviewer pushes "what if these were separate services with separate DBs?" — but for this design we deliberately kept them in one DB to *avoid* that complexity.
+
+> 💡 **Interview soundbite:** "I'm putting Bookings and Tickets in the same Postgres so the critical state change is one local ACID transaction. The rest of the flow (Redis lock, Stripe call, webhook) is a workflow held together by idempotency and a status state-machine, not a distributed transaction. If we ever split the DBs, we'd switch to a saga."
 
 #### Key points
 - **PCI compliance:** `Stripe.js` tokenizes the card in the browser; our server **never** sees the raw card number.
