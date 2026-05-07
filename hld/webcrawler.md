@@ -100,14 +100,14 @@ The sequential steps from input to output:
 ```mermaid
 %%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
 flowchart LR
-    SEED[Seed URLs] --> FQ[(Frontier Queue)]
-    FQ --> CR[Crawler]
-    CR --> DNS[(DNS)]
-    CR --> WEB[External Web]
-    CR --> TXT[Extract Text]
-    TXT --> S3[(S3<br/>text data)]
-    CR --> URLS[Extract URLs]
-    URLS --> FQ
+    SEED[Seed URLs] -->|1| FQ[(Frontier Queue)]
+    FQ -->|2| CR[Crawler]
+    CR -->|3| DNS[(DNS)]
+    CR -->|4| WEB[External Web]
+    CR -->|5| TXT[Extract Text]
+    TXT -->|6| S3[(S3<br/>text data)]
+    CR -->|7| URLS[Extract URLs]
+    URLS -->|8| FQ
 ```
 
 > 💡 Start simple. We'll evolve this into a multi-stage pipeline in [DD1](#dd1-fault-tolerance--pipelined-stages-retries-dlq).
@@ -136,11 +136,11 @@ flowchart LR
     DNS[(DNS)]
     WEB[External Webpage]
 
-    FQ --> CR
-    CR --> DNS
-    CR --> WEB
-    CR --> S3
-    CR -- new URLs --> FQ
+    FQ -->|1. Dequeue URL| CR
+    CR -->|2. Resolve IP| DNS
+    CR -->|3. Fetch page| WEB
+    CR -->|4. Store text| S3
+    CR -->|5. Enqueue new URLs| FQ
 ```
 
 > ✅ This satisfies both functional requirements (crawl from seeds + store text). Now we layer on the non-functional requirements via deep dives.
@@ -175,17 +175,17 @@ We also add a **Metadata DB** (DynamoDB or Postgres) — a `URL` table tracking 
 ```mermaid
 %%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
 flowchart LR
-    FQ[("Frontier Queue<br/>SQS")] --> UF[URL Fetcher]
-    UF --> DNS[(DNS)]
-    UF --> WEB[External Web]
-    UF --> S3H[(S3<br/>raw HTML)]
-    UF --> MD[(Metadata DB<br/>URL · status · s3Link · hash · depth)]
-    UF --> PQ[("Parsing Queue<br/>SQS")]
-    PQ --> PW[Parser Worker]
-    PW --> S3H
-    PW --> S3T[(S3<br/>text data)]
-    PW --> MD
-    PW -- new URLs --> FQ
+    FQ[("Frontier Queue<br/>SQS")] -->|1. Dequeue URL| UF[URL Fetcher]
+    UF -->|2. Resolve IP| DNS[(DNS)]
+    UF -->|3. Fetch page| WEB[External Web]
+    UF -->|4. Store raw HTML| S3H[(S3<br/>raw HTML)]
+    UF -->|5. Update status| MD[(Metadata DB<br/>URL · status · s3Link · hash · depth)]
+    UF -->|6. Enqueue for parsing| PQ[("Parsing Queue<br/>SQS")]
+    PQ -->|7. Dequeue task| PW[Parser Worker]
+    PW -->|8. Read HTML| S3H
+    PW -->|9. Store extracted text| S3T[(S3<br/>text data)]
+    PW -->|10. Update metadata| MD
+    PW -->|11. Enqueue new URLs| FQ
     UF -. retry · backoff .-> FQ
     UF -. exhausted .-> DLQ[("DLQ")]
 ```
@@ -437,22 +437,22 @@ Pulling everything together:
 ```mermaid
 %%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '17px'}}}%%
 flowchart LR
-    SEED[Seed URLs] --> FQ[("Frontier Queue<br/>SQS")]
+    SEED[Seed URLs] -->|1. Bootstrap| FQ[("Frontier Queue<br/>SQS")]
 
-    FQ --> UF[URL Fetcher<br/>~8 × c6in.32xlarge]
-    UF --> RC[(Redis<br/>per-domain lock + rate limit + DNS cache)]
-    UF --> DNS[(DNS<br/>multi-provider · local resolver)]
-    UF --> WEB[External Web]
-    UF --> S3H[(S3<br/>raw HTML)]
-    UF --> MD[(Metadata DB<br/>URL · Domain<br/>status · hash · depth · robots)]
-    UF --> PQ[("Parsing Queue<br/>SQS")]
+    FQ -->|2. Dequeue URL| UF[URL Fetcher<br/>~8 × c6in.32xlarge]
+    UF -->|3. Check politeness & rate limit| RC[(Redis<br/>per-domain lock + rate limit + DNS cache)]
+    UF -->|4. Resolve IP| DNS[(DNS<br/>multi-provider · local resolver)]
+    UF -->|5. Fetch page| WEB[External Web]
+    UF -->|6. Store raw HTML| S3H[(S3<br/>raw HTML)]
+    UF -->|7. Update metadata| MD[(Metadata DB<br/>URL · Domain<br/>status · hash · depth · robots)]
+    UF -->|8. Enqueue for parsing| PQ[("Parsing Queue<br/>SQS")]
     UF -. exhausted retries .-> DLQ[("DLQ")]
 
-    PQ --> PW[Parser Worker<br/>auto-scaled on queue depth]
-    PW --> S3H
-    PW --> S3T[(S3<br/>extracted text)]
-    PW --> MD
-    PW -- dedup'd new URLs --> FQ
+    PQ -->|9. Dequeue task| PW[Parser Worker<br/>auto-scaled on queue depth]
+    PW -->|10. Read HTML| S3H
+    PW -->|11. Store extracted text| S3T[(S3<br/>extracted text)]
+    PW -->|12. Update metadata| MD
+    PW -->|13. Enqueue new URLs| FQ
 
     MD <-. dedup lookups .-> UF
     MD <-. politeness lookups .-> UF
