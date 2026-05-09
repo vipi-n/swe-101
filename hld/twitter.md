@@ -160,50 +160,92 @@ flowchart LR
 
 A first cut that satisfies the functional requirements before we tackle the hard problems.
 
+> 💡 **How to read these diagrams:** numbers (`1️⃣`, `2️⃣`, ...) show the **order of invocation**. Solid arrows are synchronous calls; dashed arrows are async (event-driven).
+
+### 3.1 Write path — "User posts a tweet"
+
 ```mermaid
 %%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '17px'}}}%%
-flowchart TB
-    subgraph Client
-        APP[Web / Mobile App]
-    end
+flowchart LR
+    APP["📱 Client App"]
+    GW["API Gateway<br/>auth + rate-limit"]
+    TIS["Tweet Ingestion<br/>Service"]
+    AS["Asset Service"]
+    S3[("S3 + CDN")]
+    CS[("Cassandra<br/>tweets")]
+    K[("Kafka<br/>tweet_posted")]
+    TP["Tweet Processor<br/>(fanout worker)"]
+    SI["Search Indexer"]
+    TC["Trends Worker<br/>Spark"]
+    WSN["Live WS<br/>Notifier"]
+    TLR[("Redis<br/>Timeline ZSET")]
+    ES[("Elasticsearch")]
+    TRR[("Redis<br/>Trends")]
+    WS["WebSocket Service"]
 
-    APP --> GW[API Gateway<br/>Auth + Rate Limit]
+    APP -->|"1️⃣ POST /tweets"| GW
+    GW -->|"2️⃣"| TIS
+    TIS -->|"3️⃣ upload media"| AS
+    AS -->|"4️⃣"| S3
+    TIS -->|"5️⃣ persist tweet"| CS
+    TIS -->|"6️⃣ publish event"| K
+    TIS -->|"7️⃣ 201 Created"| APP
 
-    GW --> US[User Service]
-    GW --> GS[Graph Service]
-    GW --> TIS[Tweet Ingestion<br/>Service]
-    GW --> TS[Timeline Service]
-    GW --> SS[Search Service]
+    K -.->|"8️⃣ async"| TP
+    K -.->|"8️⃣ async"| SI
+    K -.->|"8️⃣ async"| TC
+    K -.->|"8️⃣ async"| WSN
 
-    US --> UDB[(MySQL: Users)]
-    US -.cache.-> UR[(Redis)]
-
-    GS --> GDB[(MySQL: Follow Graph)]
-    GS -.cache.-> GR[(Redis)]
-
-    TIS --> TDB[(Cassandra: Tweets)]
-    TIS --> AS[Asset Service]
-    AS --> S3[(S3 + CDN)]
-    TIS --> K[(Kafka)]
-
-    K --> TP[Tweet Processor<br/>Fanout]
-    K --> SI[Search Indexer]
-    K --> TC[Trends Consumer]
-    K --> WS[Live WebSocket<br/>Service]
-
-    TP --> TLR[(Redis:<br/>Timeline Cache)]
-    SI --> ES[(Elasticsearch)]
-    TC --> TRR[(Redis: Trends)]
-
-    TS --> TLR
-    TS --> TDB
-    TS --> GS
-
-    SS --> ES
-    SS -.cache.-> SR[(Redis)]
+    TP -->|"9️⃣ ZADD timeline"| TLR
+    SI -->|"9️⃣ index doc"| ES
+    TC -->|"9️⃣ update top-N"| TRR
+    WSN -->|"9️⃣ push to live users"| WS
 ```
 
-### Components at a glance
+**Step-by-step:**
+1. Client sends `POST /v1/tweets`.
+2. Gateway authenticates and routes to **Tweet Ingestion**.
+3-4. Media (if any) is uploaded to **S3** via Asset Service and a CDN URL is returned.
+5. Tweet row is persisted in **Cassandra** (source of truth).
+6. A `tweet_posted` event is published to **Kafka**.
+7. Service responds **`201 Created`** — the user does **not** wait for fanout.
+8-9. Async consumers do their work in parallel: fanout to followers, search indexing, trends counting, live-user notification.
+
+### 3.2 Read path — "User opens home timeline"
+
+```mermaid
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '17px'}}}%%
+flowchart LR
+    APP["📱 Client App"]
+    GW["API Gateway"]
+    TLS["Timeline Service"]
+    GS["Graph Service"]
+    GR[("Redis<br/>graph cache")]
+    TLR[("Redis<br/>Timeline ZSET")]
+    CS[("Cassandra<br/>tweets")]
+    TWS["Tweet Service"]
+
+    APP -->|"1️⃣ GET /feed/home"| GW
+    GW -->|"2️⃣"| TLS
+    TLS -->|"3️⃣ get pre-built<br/>timeline (ZREVRANGE)"| TLR
+    TLS -->|"4️⃣ who are my<br/>famous followees?"| GS
+    GS --> GR
+    TLS -->|"5️⃣ pull recent tweets<br/>from celebs"| CS
+    TLS -->|"6️⃣ hydrate tweet IDs"| TWS
+    TWS --> CS
+    TLS -->|"7️⃣ merged feed"| APP
+```
+
+**Step-by-step:**
+1. Client sends `GET /v1/feed/home`.
+2. Gateway routes to **Timeline Service**.
+3. Read pre-computed timeline (non-celeb tweets) from **Redis** — this is the hot path, sub-ms.
+4. Get the user's **famous followees** from Graph Service (also cached in Redis).
+5. Pull recent tweets from those celebs directly from **Cassandra** (small set, manageable).
+6. **Hydrate** tweet IDs → full tweet objects via Tweet Service.
+7. **Merge + rank** the two streams and return to client.
+
+### 3.3 Components at a glance
 
 | Component | Purpose | Storage |
 |---|---|---|
@@ -576,69 +618,105 @@ STORAGE (tweets only, ~300 bytes each):
 
 ## 5. Final Architecture
 
+The full picture, organized into **3 layers** (Client → Services → Storage) with **two clearly numbered flows** overlaid.
+
+> 🟢 **Green numbers `1️⃣–7️⃣`** = WRITE flow (posting a tweet).
+> 🔵 **Blue numbers `Ⓐ–Ⓖ`** = READ flow (loading the home timeline).
+
 ```mermaid
-%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '16px'}}}%%
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '15px'}}}%%
 flowchart TB
-    subgraph Clients
-        APP[Web / Mobile / API clients]
+    %% ============== CLIENT LAYER ==============
+    APP["📱 Web / Mobile App"]
+    GW["API Gateway<br/>Auth + Rate Limit"]
+
+    APP <-->|"1️⃣ POST /tweets<br/>Ⓐ GET /feed/home"| GW
+    APP <-."WebSocket (push)".-> WS
+
+    %% ============== SERVICE LAYER ==============
+    subgraph SVC["⚙️  SERVICE LAYER"]
+        direction TB
+        TIS["Tweet Ingestion"]
+        TLS["Timeline Service"]
+        US["User Service"]
+        GS["Graph Service"]
+        SS["Search Service"]
+        AS["Asset Service"]
+        TWS["Tweet Service"]
     end
 
-    APP --> GW[API Gateway<br/>Auth + Rate Limit]
+    GW -->|"2️⃣ write"| TIS
+    GW -->|"Ⓑ read"| TLS
 
-    subgraph WritePath[WRITE PATH]
-        GW --> TIS[Tweet Ingestion Service]
-        TIS --> AS[Asset Service]
-        AS --> S3[(S3 + CDN)]
-        TIS --> CS[(Cassandra: Tweets)]
-        TIS --> K[(Kafka)]
+    %% ============== ASYNC PIPELINE ==============
+    K[("Kafka<br/>tweet_posted")]
+    subgraph WORKERS["🔄  ASYNC WORKERS"]
+        direction LR
+        TP["Tweet Processor<br/>(fanout)"]
+        SI["Search Indexer"]
+        TC["Trends Worker<br/>(Spark)"]
+        WSN["Live WS Notifier"]
     end
 
-    subgraph AsyncWorkers[ASYNC WORKERS]
-        K --> TP[Tweet Processor<br/>Fanout]
-        K --> SI[Search Indexer]
-        K --> TC[Trends - Spark]
-        K --> WSK[Live WS Notifier]
+    TIS -->|"5️⃣ event"| K
+    K -.->|"6️⃣"| TP
+    K -.->|"6️⃣"| SI
+    K -.->|"6️⃣"| TC
+    K -.->|"6️⃣"| WSN
+
+    %% ============== STORAGE LAYER ==============
+    subgraph STORE["💾  STORAGE LAYER"]
+        direction LR
+        UDB[("MySQL<br/>Users")]
+        GDB[("MySQL<br/>Graph")]
+        CS[("Cassandra<br/>Tweets")]
+        TLR[("Redis<br/>Timelines (ZSET)")]
+        ES[("Elasticsearch")]
+        TRR[("Redis<br/>Trends")]
+        S3[("S3 + CDN<br/>Media")]
     end
 
-    TP --> TLR[(Redis:<br/>Timeline ZSET)]
-    SI --> ES[(Elasticsearch)]
-    TC --> TRR[(Redis: Trends)]
-    WSK --> WS[Live WebSocket Service]
+    %% ----- WRITE flow into storage -----
+    TIS -->|"3️⃣ media"| AS --> S3
+    TIS -->|"4️⃣ persist"| CS
+    TP -->|"7️⃣ ZADD"| TLR
+    SI -->|"7️⃣ index"| ES
+    TC -->|"7️⃣ top-N"| TRR
+    WSN --> WS["Live WebSocket<br/>Service (stateful)"]
 
-    subgraph ReadPath[READ PATH]
-        GW --> TLS[Timeline Service]
-        TLS --> TLR
-        TLS --> CS
-        TLS --> GS[Graph Service]
-
-        GW --> SS[Search Service]
-        SS --> SR[(Redis: Search)]
-        SS --> ES
-
-        GW --> US[User Service]
-        US --> UR[(Redis: Users)]
-        US --> UDB[(MySQL: Users)]
-
-        GS --> GR[(Redis: Graph)]
-        GS --> GDB[(MySQL: Graph)]
-    end
-
-    APP <-.WebSocket.-> WS
+    %% ----- READ flow into storage -----
+    TLS -->|"Ⓒ read cache"| TLR
+    TLS -->|"Ⓓ celeb followees"| GS
+    TLS -->|"Ⓔ pull celeb tweets"| CS
+    TLS -->|"Ⓕ hydrate"| TWS --> CS
+    GW --> US --> UDB
+    GW --> SS --> ES
+    GS --> GDB
 ```
 
-### Write path (post tweet)
-1. Client → API Gateway → **Tweet Ingestion**.
-2. Media uploaded via Asset Service → S3 + CDN.
-3. Tweet persisted in **Cassandra**.
-4. `tweet_posted` event → **Kafka** → return `201` to client.
-5. Async: Tweet Processor (fanout), Search Indexer, Trends, Live WS Notifier.
+### 🟢 WRITE PATH — User posts a tweet
 
-### Read path (home timeline)
-1. Client → API Gateway → **Timeline Service**.
-2. Read pre-computed timeline from **Redis** (ZSET).
-3. Get famous followees from Graph Service → pull their recent tweets from Cassandra.
-4. Merge + rank → hydrate tweet bodies → return.
-5. If user is **LIVE**, future tweets arrive via **WebSocket** push.
+| # | Step |
+|---|------|
+| **1️⃣** | Client → `POST /v1/tweets` → API Gateway. |
+| **2️⃣** | Gateway authenticates → routes to **Tweet Ingestion**. |
+| **3️⃣** | Media (image/video) uploaded via **Asset Service** → S3 + CDN URL returned. |
+| **4️⃣** | Tweet persisted in **Cassandra** (source of truth). |
+| **5️⃣** | `tweet_posted` event published to **Kafka**. Client immediately receives **`201 Created`**. |
+| **6️⃣** | Async consumers fork off: Tweet Processor (fanout), Search Indexer, Trends Worker, Live WS Notifier. |
+| **7️⃣** | Each worker writes to its target store (Redis timelines, Elasticsearch, Redis trends) and pushes to live WebSocket users. |
+
+### 🔵 READ PATH — User opens home timeline
+
+| # | Step |
+|---|------|
+| **Ⓐ** | Client → `GET /v1/feed/home` → API Gateway. |
+| **Ⓑ** | Gateway routes to **Timeline Service**. |
+| **Ⓒ** | Read pre-computed timeline (non-celeb tweets) from **Redis ZSET** — sub-ms hot path. |
+| **Ⓓ** | Look up user's **famous followees** via Graph Service (Redis-cached). |
+| **Ⓔ** | Pull recent tweets from those celebs directly from **Cassandra**. |
+| **Ⓕ** | **Hydrate** tweet IDs → full tweet bodies via Tweet Service. |
+| **Ⓖ** | Merge + rank both streams → return to client. If client is **LIVE**, future tweets arrive via WebSocket push. |
 
 ---
 
