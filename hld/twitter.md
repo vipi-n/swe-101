@@ -154,6 +154,11 @@ flowchart LR
     TS -->|return| U2
 ```
 
+**Flow walkthrough:**
+- **Write side (top half):** `User → API Gateway → Tweet Store` (synchronous persist) → publishes a Kafka event → three async workers fork off (fanout, search index, trends) → fanout worker writes into the Timeline Cache.
+- **Read side (bottom half):** `User → Timeline Service` reads the pre-built cache, *also* merges in fresh tweets pulled from the Tweet Store (for celebs), then returns the merged feed.
+- The **Kafka boundary** is the key decoupling point — writes return fast; everything heavy happens async.
+
 ---
 
 ## 3. High-Level Design
@@ -289,6 +294,14 @@ flowchart LR
     TS -->|merge + sort| U
 ```
 
+**Flow walkthrough (Pull):**
+1. User opens the app → hits **Timeline Service**.
+2. Timeline Service asks **Graph Service**: *"who does this user follow?"* (returns ~200 user IDs).
+3. For each followee, query **Cassandra** for their recent tweets.
+4. Merge-sort all results by timestamp → take top N → return to user.
+
+> ⚠️ Notice the read does **200+ Cassandra queries per timeline load** — this is why pure pull doesn't scale.
+
 | ✅ Pros | ❌ Cons |
 |---|---|
 | Cheap writes (no fanout) | **VERY** expensive reads — 200+ subqueries per timeline load |
@@ -312,6 +325,15 @@ flowchart LR
     FAN -->|"ZADD timeline:F2"| R1
     FAN -->|"ZADD timeline:Fn"| R1
 ```
+
+**Flow walkthrough (Push):**
+1. User posts a tweet → event is published to **Kafka**.
+2. **Fanout Worker** consumes the event.
+3. Worker asks **Graph Service** for the author's follower list.
+4. For *every* follower, worker `ZADD`s the tweet ID into that follower's Redis timeline (`timeline:F1`, `timeline:F2`, … `timeline:Fn`).
+5. Reads later are O(1) — just `ZREVRANGE timeline:user_id 0 49`.
+
+> ⚠️ For a celeb with 100M followers, step 4 means **100M Redis writes for one tweet** — unscalable.
 
 | ✅ Pros | ❌ Cons |
 |---|---|
@@ -389,6 +411,20 @@ flowchart TD
     SEG -->|Inactive| IGNORE[Ignore]
 ```
 
+**Flow walkthrough (decision tree):**
+1. **Tweet posted** → Tweet Processor checks the author.
+2. **Author check:** Does the author have ≥1M followers?
+   - **Yes (Celeb):** Stop here — tweet stays in Cassandra, no fanout. Followers will pull it at read time.
+   - **No (Normal user):** Continue to step 3.
+3. **Get followers** from Graph Service → iterate.
+4. **For each follower**, classify and act:
+   - **Active** (used app in last 3 days) → `ZADD` to their Redis timeline.
+   - **Live** (currently online with WS open) → also push via WebSocket for instant delivery.
+   - **Passive** (dormant) → skip; build their timeline lazily on next login.
+   - **Inactive** (deactivated) → ignore entirely.
+
+> 💡 The decision tree is the **whole hybrid strategy** in one picture — each branch saves us from a different scaling pitfall.
+
 | User Type | Definition | Fanout Strategy |
 |---|---|---|
 | **Famous** | ≥ 1M followers | Pull-on-read (no fanout) |
@@ -417,6 +453,19 @@ flowchart LR
     TS -->|"pull recent tweets<br/>from celebs"| CS
     TS -->|merge + return| U
 ```
+
+**Flow walkthrough:**
+- **Top half — Celeb posts:**
+  1. Bieber tweets → **Tweet Ingestion** persists to **Cassandra**.
+  2. Event published to **Kafka**.
+  3. **Tweet Processor** consumes the event, checks `is_famous == true`, and **skips fanout entirely** (no Redis writes).
+- **Bottom half — Follower reads:**
+  1. Follower opens timeline → **Timeline Service** invoked.
+  2. Reads pre-built timeline (only non-celeb tweets) from **Redis**.
+  3. Pulls recent celeb tweets directly from **Cassandra** (a small `WHERE user_id IN (...)` query).
+  4. **Merges** the two streams by timestamp/score → returns to user.
+
+> 💡 The work is **shifted from write-time to read-time** — 1 expensive read per follower (cheap, cacheable) instead of 100M writes per tweet (catastrophic).
 
 #### Strategy details
 
@@ -459,12 +508,13 @@ flowchart LR
     HEARTBEAT --> WS
 ```
 
-#### Flow
-1. User opens app → WebSocket connects → User Service marks them **LIVE** in Redis.
-2. Tweet Processor sees a follower is LIVE → publishes `notify_live_user` event to Kafka.
-3. Live WS Service routes the event to the correct WS connection (consistent hashing on `user_id`).
-4. App receives push → prepends to in-memory timeline.
-5. User closes app → WS disconnects → marked offline → `last_active_ts` updated.
+**Flow walkthrough:**
+1. **Live user opens app** → establishes a persistent **WebSocket** to the Live WS Service → user marked `LIVE` in Redis.
+2. **Heartbeat** every 30s keeps the connection alive (and lets the server detect disconnects).
+3. When *anyone* tweets, the **Tweet Processor** scans the follower list. For each follower flagged `LIVE`, it publishes a `notify_live_user` event to **Kafka**.
+4. **Live WS Service** consumes the event, finds the WebSocket connection (consistent hash on `user_id`), and pushes the tweet down the wire.
+5. App receives the push instantly → prepends to the in-memory timeline (no refresh needed).
+6. User closes app → WS disconnects → user marked offline.
 
 #### Scaling WebSockets
 
@@ -500,6 +550,17 @@ flowchart LR
     R --> U
 ```
 
+**Flow walkthrough:**
+- **Indexing path (top):**
+  1. Every new tweet flows through **Tweet Ingestion** → published to **Kafka**.
+  2. **Search Indexer** consumes the event and writes a denormalized document to **Elasticsearch** (with hashtags, mentions, content tokens).
+- **Query path (bottom):**
+  1. User searches → hits **Search Service**.
+  2. Service first checks **Redis** (TTL 2–3 min). On a **HIT** → return immediately.
+  3. On **MISS** → query Elasticsearch → store the result in Redis → return to user.
+
+> 💡 During trending events, a single search query may serve thousands of users — the Redis cache deflects 90%+ of ES load.
+
 **Why cache search results?** Trending events cause many users to search the same terms. A 2-minute Redis cache reduces ES load by 10–100×.
 
 **ES document:**
@@ -528,6 +589,16 @@ flowchart LR
     K --> H[Hadoop / S3]
     H --> ML[ML Models<br/>weekly newsletter]
 ```
+
+**Flow walkthrough:**
+- **Real-time path (top):**
+  1. **Kafka** streams tweet events → **Spark Streaming** processes a sliding 5-min window.
+  2. Spark counts hashtag occurrences → publishes top-N to **Trends Service**.
+  3. Trends Service writes the list to **Redis** (per region + global).
+  4. **Trends UI** reads from Redis on every page load — always fresh, sub-ms.
+- **Batch path (bottom):**
+  1. Same Kafka topic is also dumped into **Hadoop / S3** for archival.
+  2. Nightly **ML jobs** crunch this data for: most-engaged tweets, recommendation training, weekly digest emails to passive users.
 
 - **Spark Streaming** sliding window (e.g., 5 min) counts hashtag occurrences and updates Redis with top-N **globally and per-region**.
 - **Hadoop** batch jobs run nightly for: most-engaged tweets, recommendation training data, weekly digest emails to passive users (re-engagement).
