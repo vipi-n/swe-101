@@ -6,6 +6,7 @@ A complete LLD for a multi-floor / multi-spot Parking Lot system using
 ---
 
 ## Table of Contents
+0. [Quick Step-by-Step Recap](#0-quick-step-by-step-recap)
 1. [Problem Statement](#1-problem-statement)
 2. [Design Patterns Used](#2-design-patterns-used)
 3. [Folder Layout](#3-folder-layout)
@@ -26,7 +27,30 @@ A complete LLD for a multi-floor / multi-spot Parking Lot system using
 
 ---
 
-## 1. Problem Statement
+##0. Quick Step-by-Step Recap
+
+A 30-second tour of how the design was built up:
+
+| # | Step | What & Why |
+|---|---|---|
+| 1 | **Understand requirements** | Multiple vehicle/spot sizes, size-compatible parking, ticket+fare, pluggable pricing & allocation, thread-safe |
+| 2 | **Pick patterns** | Facade (`ParkingLot`), Strategy (pricing + allocation), per-spot lock for concurrency |
+| 3 | **Define enums** | `VehicleType`, `SpotType` — small closed sets, type-safe |
+| 4 | **Build `Vehicle`** | Immutable; owns `canFitIn(SpotType)` — single source of truth for size rules |
+| 5 | **Build `ParkingSpot`** | `synchronized park()` returns boolean → atomic claim, callers can race-retry |
+| 6 | **Build `Ticket`** | UUID id; entry time at creation, exit time + amount set on close |
+| 7 | **Pricing strategy** | Interface + `HourlyPricingStrategy` (EnumMap by type, hours rounded up) |
+| 8 | **Allocation strategy** | Interface + `NearestFirstAllocationStrategy` (list pre-sorted by distance) |
+| 9 | **`ParkingLot` facade** | `park()` = findSpot → atomic claim → retry on race → issue ticket. `unpark()` = remove ticket → price → free spot |
+| 10 | **Concurrency** | Per-spot `synchronized` + `ConcurrentHashMap` of active tickets → N parallel parks across N spots |
+| 11 | **Demo** | Bike → M-1, Car → C-1 (skips bike spot), Truck → L-1, fare $20 for 1 hour |
+| 12 | **Extend** | Multi-floor, EV chargers, reservations, payments — all via new strategies / decorators |
+
+> **Mental model:** Enums + `canFitIn` = size correctness. Per-spot lock = race correctness. Strategy interfaces = pluggable behavior. Facade = clean public API.
+
+---
+
+##  1. Problem Statement
 
 Design a parking lot system that:
 - Supports **multiple vehicle types** (Motorcycle / Car / Truck) and **spot types** (Motorcycle / Compact / Large).
