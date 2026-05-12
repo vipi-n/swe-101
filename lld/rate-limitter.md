@@ -1,422 +1,276 @@
-# Rate Limiter — Low-Level Design (Java)
+# Rate Limiter — Low Level Design (Java)
 
-> Complete LLD with Java implementations for Token Bucket, Sliding Window Log, Fixed Window Counter, and Leaky Bucket rate limiting algorithms. Includes thread-safety, extensibility via Strategy pattern, and distributed support with Redis.
+A complete LLD for a Rate Limiter supporting **4 algorithms** using the **Strategy + Factory** patterns, fully thread-safe and per-client isolated.
 
 ---
 
 ## Table of Contents
-
-- [1. Requirements Recap](#1-requirements-recap)
-- [2. Class Diagram Overview](#2-class-diagram-overview)
-- [3. Core Interfaces & Enums](#3-core-interfaces--enums)
-- [4. Algorithm Implementations](#4-algorithm-implementations)
-  - [4.1 Token Bucket](#41-token-bucket)
-  - [4.2 Sliding Window Log](#42-sliding-window-log)
-  - [4.3 Fixed Window Counter](#43-fixed-window-counter)
-  - [4.4 Leaky Bucket](#44-leaky-bucket)
-- [5. Rate Limiter Rule & Configuration](#5-rate-limiter-rule--configuration)
-- [6. Rate Limiter Service (Facade)](#6-rate-limiter-service-facade)
-- [7. Distributed Rate Limiter with Redis](#7-distributed-rate-limiter-with-redis)
-- [8. Middleware / Interceptor Integration](#8-middleware--interceptor-integration)
-- [9. Factory Pattern for Algorithm Selection](#9-factory-pattern-for-algorithm-selection)
-- [10. Usage Example & Driver Code](#10-usage-example--driver-code)
-- [11. Design Patterns Used](#11-design-patterns-used)
-- [12. Key Interview Talking Points](#12-key-interview-talking-points)
+1. [Problem Statement](#1-problem-statement)
+2. [Design Patterns Used](#2-design-patterns-used)
+3. [Class Diagram / Folder Layout](#3-folder-layout)
+4. [Step-by-Step Code Walkthrough](#4-step-by-step-code-walkthrough)
+   - [Step 1 — Strategy Interface](#step-1--strategy-interface-ratelimiter)
+   - [Step 2 — Config Object](#step-2--config-object)
+   - [Step 3 — Token Bucket Algorithm](#step-3--token-bucket-algorithm)
+   - [Step 4 — Leaky Bucket Algorithm](#step-4--leaky-bucket-algorithm)
+   - [Step 5 — Fixed Window Counter](#step-5--fixed-window-counter)
+   - [Step 6 — Sliding Window Log](#step-6--sliding-window-log)
+   - [Step 7 — Factory](#step-7--factory)
+   - [Step 8 — Consumer (API Gateway)](#step-8--consumer-api-gateway)
+   - [Step 9 — Demo Driver](#step-9--demo-driver-main)
+5. [Algorithm Comparison](#5-algorithm-comparison)
+6. [Thread Safety](#6-thread-safety)
+7. [Extensibility](#7-extensibility)
+8. [SOLID Compliance](#8-solid-compliance)
 
 ---
 
-## 1. Requirements Recap
+## 1. Problem Statement
 
-| Aspect | Detail |
+Build a system that **restricts how many requests a client (user / API key / IP) can make in a time window**.
+
+**Functional requirements**
+- Support multiple algorithms: Token Bucket, Leaky Bucket, Fixed Window, Sliding Window.
+- Independent quota per client.
+- Return `true` (allow) / `false` (throttle → HTTP 429).
+
+**Non-functional requirements**
+- Thread safe under concurrent requests.
+- O(1) per request.
+- Easy to add new algorithms (Open/Closed Principle).
+- Extensible to a distributed setup (Redis-backed) later.
+
+---
+
+## 2. Design Patterns Used
+
+| Pattern | Reason |
 |---|---|
-| **Identify clients** | By user ID, IP address, or API key |
-| **Limit requests** | Configurable rules (e.g., 100 req/min per user) |
-| **Reject excess** | Return HTTP 429 with retry-after info |
-| **Thread-safe** | Support concurrent access in multi-threaded servers |
-| **Extensible** | Easily plug in new algorithms |
-| **Distributed** | Optionally sync state across nodes via Redis |
+| **Strategy** | Algorithm is interchangeable at runtime via one common interface |
+| **Factory** | Hides `new XxxRateLimiter()` from callers; choosing algorithm = enum value |
+| **Per-key map** | `ConcurrentHashMap<clientId, Bucket>` gives O(1) per-client lookup |
 
 ---
 
-## 2. Class Diagram Overview
+## 3. Folder Layout
 
 ```
-                        ┌──────────────────────┐
-                        │   «interface»         │
-                        │   RateLimiter         │
-                        │───────────────────────│
-                        │ + tryAcquire(key)     │
-                        │     : RateLimitResult │
-                        └──────────┬────────────┘
-                                   │ implements
-             ┌─────────────┬───────┼────────┬──────────────┐
-             │             │       │        │              │
-    ┌────────▼───────┐ ┌───▼──────────┐ ┌───▼──────────┐ ┌▼──────────────┐
-    │ TokenBucket    │ │SlidingWindow │ │FixedWindow   │ │ LeakyBucket   │
-    │ RateLimiter    │ │LogRateLimiter│ │RateLimiter   │ │ RateLimiter   │
-    └────────────────┘ └──────────────┘ └──────────────┘ └───────────────┘
-
-    ┌──────────────────┐        ┌──────────────────────┐
-    │ RateLimitRule     │◄──────│ RateLimiterService    │
-    │──────────────────│        │──────────────────────│
-    │ - maxRequests    │        │ - rules: Map          │
-    │ - windowMillis   │        │ - limiters: Map       │
-    │ - algorithm      │        │ + handleRequest(req)  │
-    └──────────────────┘        └──────────────────────┘
-                                         │
-                                         │ uses
-                                ┌────────▼───────────┐
-                                │ RateLimiterFactory  │
-                                │────────────────────│
-                                │ + create(rule)      │
-                                └────────────────────┘
-
-    ┌──────────────────┐
-    │ RateLimitResult   │
-    │──────────────────│
-    │ - allowed: bool  │
-    │ - remaining: int │
-    │ - retryAfterMs   │
-    └──────────────────┘
+ratelimiter/
+├── RateLimiter.java                          ← Strategy interface
+├── Main.java                                 ← Demo driver
+├── config/
+│   └── RateLimiterConfig.java                ← capacity, refill, window
+├── algorithm/
+│   ├── TokenBucketRateLimiter.java
+│   ├── LeakyBucketRateLimiter.java
+│   ├── FixedWindowRateLimiter.java
+│   └── SlidingWindowLogRateLimiter.java
+├── factory/
+│   ├── RateLimiterType.java                  ← enum
+│   └── RateLimiterFactory.java
+└── service/
+    └── ApiGateway.java                       ← sample consumer
 ```
 
 ---
 
-## 3. Core Interfaces & Enums
+## 4. Step-by-Step Code Walkthrough
 
-### 3.1 `RateLimitResult`
+### Step 1 — Strategy Interface (`RateLimiter`)
 
-```java
-public class RateLimitResult {
-    private final boolean allowed;
-    private final int remaining;
-    private final long retryAfterMs;
+The single contract every algorithm implements. One method only — true = allow, false = throttle.
 
-    private RateLimitResult(boolean allowed, int remaining, long retryAfterMs) {
-        this.allowed = allowed;
-        this.remaining = remaining;
-        this.retryAfterMs = retryAfterMs;
-    }
-
-    public static RateLimitResult allowed(int remaining) {
-        return new RateLimitResult(true, remaining, 0);
-    }
-
-    public static RateLimitResult rejected(long retryAfterMs) {
-        return new RateLimitResult(false, 0, retryAfterMs);
-    }
-
-    public boolean isAllowed()     { return allowed; }
-    public int getRemaining()      { return remaining; }
-    public long getRetryAfterMs()  { return retryAfterMs; }
-}
-```
-
-### 3.2 `RateLimiter` Interface (Strategy)
+**File:** `src/main/java/ratelimiter/RateLimiter.java`
 
 ```java
+package ratelimiter;
+
+/**
+ * Core contract for any rate-limiting algorithm.
+ * Implementations decide HOW requests are allowed/throttled per client.
+ */
 public interface RateLimiter {
 
     /**
-     * Attempt to acquire permission for the given key (userId / IP / apiKey).
-     * Thread-safe — implementations must handle concurrency.
+     * @param clientId unique identifier of the caller (userId / apiKey / ip)
+     * @return true if request is allowed, false if throttled
      */
-    RateLimitResult tryAcquire(String key);
+    boolean allowRequest(String clientId);
 }
 ```
 
-### 3.3 `RateLimitAlgorithm` Enum
+**Why an interface?** Lets `ApiGateway` depend on the abstraction — we can swap algorithms without touching the gateway code (Dependency Inversion Principle).
+
+---
+
+### Step 2 — Config Object
+
+Avoid long parameter lists; immutable so it’s safe to share across threads.
+
+**File:** `src/main/java/ratelimiter/config/RateLimiterConfig.java`
 
 ```java
-public enum RateLimitAlgorithm {
-    TOKEN_BUCKET,
-    SLIDING_WINDOW_LOG,
-    FIXED_WINDOW_COUNTER,
-    LEAKY_BUCKET
+package ratelimiter.config;
+
+/**
+ * Immutable configuration passed to a RateLimiter.
+ *  - capacity        : max tokens / max requests in window
+ *  - refillRate      : tokens added per second (Token/Leaky Bucket)
+ *  - windowSizeMillis: size of fixed/sliding window
+ */
+public class RateLimiterConfig {
+
+    private final int capacity;
+    private final int refillRatePerSecond;
+    private final long windowSizeMillis;
+
+    public RateLimiterConfig(int capacity, int refillRatePerSecond, long windowSizeMillis) {
+        if (capacity <= 0) {
+            throw new IllegalArgumentException("capacity must be > 0");
+        }
+        this.capacity = capacity;
+        this.refillRatePerSecond = refillRatePerSecond;
+        this.windowSizeMillis = windowSizeMillis;
+    }
+
+    public int getCapacity()             { return capacity; }
+    public int getRefillRatePerSecond()  { return refillRatePerSecond; }
+    public long getWindowSizeMillis()    { return windowSizeMillis; }
 }
 ```
 
 ---
 
-## 4. Algorithm Implementations
+### Step 3 — Token Bucket Algorithm
 
-### 4.1 Token Bucket
+**Idea:** Each client owns a bucket holding up to `capacity` tokens. Tokens refill at `refillRatePerSecond`. Each request consumes 1 token. Empty bucket → reject.
 
-**How it works:** Each client has a bucket that holds tokens. Tokens are added at a fixed rate. Each request consumes one token. If the bucket is empty, the request is rejected.
+**Allows bursts** up to `capacity` then throttles to refill rate. Used by Stripe / AWS APIs.
 
-```
-Time ─────────────────────────────────►
-Bucket: [■ ■ ■ ■ ■]  capacity = 5, refill = 1 token/sec
+**Flow per request:**
+1. Find/create the client’s bucket (`computeIfAbsent`).
+2. Lazily refill tokens based on elapsed time.
+3. If `tokens >= 1` → consume & allow; else reject.
 
-Request 1 → consume → [■ ■ ■ ■ □]  ✅ allowed (remaining: 4)
-Request 2 → consume → [■ ■ ■ □ □]  ✅ allowed (remaining: 3)
- ... 1 second later, refill 1 token ...
-                       [■ ■ ■ ■ □]
-Request 3 → consume → [■ ■ ■ □ □]  ✅ allowed (remaining: 3)
-```
+**File:** `src/main/java/ratelimiter/algorithm/TokenBucketRateLimiter.java`
 
 ```java
+package ratelimiter.algorithm;
+
+import ratelimiter.RateLimiter;
+import ratelimiter.config.RateLimiterConfig;
+
 import java.util.concurrent.ConcurrentHashMap;
 
 public class TokenBucketRateLimiter implements RateLimiter {
 
-    private final int maxTokens;        // bucket capacity
-    private final long refillIntervalMs; // how often tokens are added
-    private final int refillAmount;      // tokens added per interval
-
+    private final RateLimiterConfig config;
     private final ConcurrentHashMap<String, Bucket> buckets = new ConcurrentHashMap<>();
 
-    public TokenBucketRateLimiter(int maxTokens, long refillIntervalMs, int refillAmount) {
-        this.maxTokens = maxTokens;
-        this.refillIntervalMs = refillIntervalMs;
-        this.refillAmount = refillAmount;
-    }
-
-    /**
-     * Convenience: e.g., 100 requests per 60_000ms → bucket capacity = 100, refill = 100 per 60s.
-     */
-    public TokenBucketRateLimiter(int maxRequests, long windowMs) {
-        this(maxRequests, windowMs, maxRequests);
+    public TokenBucketRateLimiter(RateLimiterConfig config) {
+        this.config = config;
     }
 
     @Override
-    public RateLimitResult tryAcquire(String key) {
-        Bucket bucket = buckets.computeIfAbsent(key, k -> new Bucket(maxTokens));
+    public boolean allowRequest(String clientId) {
+        Bucket bucket = buckets.computeIfAbsent(clientId,
+                k -> new Bucket(config.getCapacity(), System.nanoTime()));
         return bucket.tryConsume();
     }
 
-    // ─── Inner Bucket Class (thread-safe) ────────────────────────────
-
+    /** Per-client bucket state. Synchronized for thread safety. */
     private class Bucket {
         private double tokens;
-        private long lastRefillTimestamp;
+        private long lastRefillNanos;
 
-        Bucket(int initialTokens) {
+        Bucket(int initialTokens, long now) {
             this.tokens = initialTokens;
-            this.lastRefillTimestamp = System.currentTimeMillis();
+            this.lastRefillNanos = now;
         }
 
-        synchronized RateLimitResult tryConsume() {
+        synchronized boolean tryConsume() {
             refill();
-
-            if (tokens >= 1) {
-                tokens -= 1;
-                return RateLimitResult.allowed((int) tokens);
+            if (tokens >= 1.0) {
+                tokens -= 1.0;
+                return true;
             }
-
-            long waitMs = (long) ((1 - tokens) / refillAmount * refillIntervalMs);
-            return RateLimitResult.rejected(waitMs);
+            return false;
         }
 
         private void refill() {
-            long now = System.currentTimeMillis();
-            long elapsed = now - lastRefillTimestamp;
-
-            if (elapsed <= 0) return;
-
-            double tokensToAdd = (double) elapsed / refillIntervalMs * refillAmount;
-            tokens = Math.min(maxTokens, tokens + tokensToAdd);
-            lastRefillTimestamp = now;
+            long now = System.nanoTime();
+            double elapsedSeconds = (now - lastRefillNanos) / 1_000_000_000.0;
+            double newTokens = elapsedSeconds * config.getRefillRatePerSecond();
+            if (newTokens > 0) {
+                tokens = Math.min(config.getCapacity(), tokens + newTokens);
+                lastRefillNanos = now;
+            }
         }
     }
 }
 ```
 
----
-
-### 4.2 Sliding Window Log
-
-**How it works:** Store the timestamp of every request. On each new request, remove timestamps older than the window. Count the remaining entries — if under the limit, allow.
-
-```
-Window = 60 seconds, max = 3 requests
-
-Timeline:  [t=0s] [t=20s] [t=40s] [t=55s]
-Log after:   [0]  [0,20]  [0,20,40] → 3 entries → full
-t=55s request → evict entries before (55-60= -5 → none) → log=[0,20,40] → size=3 → REJECT ❌
-t=61s request → evict entries before (61-60=1) → evict [0] → log=[20,40] → size=2 → ALLOW ✅, add 61
-```
-
-```java
-import java.util.Deque;
-import java.util.LinkedList;
-import java.util.concurrent.ConcurrentHashMap;
-
-public class SlidingWindowLogRateLimiter implements RateLimiter {
-
-    private final int maxRequests;
-    private final long windowMs;
-
-    private final ConcurrentHashMap<String, Deque<Long>> logs = new ConcurrentHashMap<>();
-
-    public SlidingWindowLogRateLimiter(int maxRequests, long windowMs) {
-        this.maxRequests = maxRequests;
-        this.windowMs = windowMs;
-    }
-
-    @Override
-    public RateLimitResult tryAcquire(String key) {
-        Deque<Long> log = logs.computeIfAbsent(key, k -> new LinkedList<>());
-
-        synchronized (log) {
-            long now = System.currentTimeMillis();
-            long windowStart = now - windowMs;
-
-            // Evict expired entries
-            while (!log.isEmpty() && log.peekFirst() <= windowStart) {
-                log.pollFirst();
-            }
-
-            if (log.size() < maxRequests) {
-                log.addLast(now);
-                return RateLimitResult.allowed(maxRequests - log.size());
-            }
-
-            // Retry after the oldest entry expires
-            long retryAfter = log.peekFirst() + windowMs - now;
-            return RateLimitResult.rejected(retryAfter);
-        }
-    }
-}
-```
+**Why lazy refill?** No background timer thread → cheap and simpler — refill is computed on each request from `now − lastRefill`.
 
 ---
 
-### 4.3 Fixed Window Counter
+### Step 4 — Leaky Bucket Algorithm
 
-**How it works:** Divide time into fixed windows (e.g., every minute). Maintain a counter per window. Reset when the window rolls over.
+**Idea:** Requests pour water into a bucket of fixed `capacity`. Bucket leaks at constant `refillRatePerSecond`. Overflow → reject.
 
-```
-Window size = 60s, max = 3
+**Difference from Token Bucket:** Output is **smoothed** to a constant rate — no bursts. Used by network routers for traffic shaping.
 
-|--- Window 1 (0-60s) ---|--- Window 2 (60-120s) ---|
-  req@10s → count=1 ✅
-  req@30s → count=2 ✅
-  req@50s → count=3 ✅
-  req@55s → count=3 → REJECT ❌
-  req@61s → new window → count=1 ✅
-```
+**File:** `src/main/java/ratelimiter/algorithm/LeakyBucketRateLimiter.java`
 
 ```java
-import java.util.concurrent.ConcurrentHashMap;
+package ratelimiter.algorithm;
 
-public class FixedWindowRateLimiter implements RateLimiter {
+import ratelimiter.RateLimiter;
+import ratelimiter.config.RateLimiterConfig;
 
-    private final int maxRequests;
-    private final long windowMs;
-
-    private final ConcurrentHashMap<String, WindowCounter> counters = new ConcurrentHashMap<>();
-
-    public FixedWindowRateLimiter(int maxRequests, long windowMs) {
-        this.maxRequests = maxRequests;
-        this.windowMs = windowMs;
-    }
-
-    @Override
-    public RateLimitResult tryAcquire(String key) {
-        WindowCounter counter = counters.computeIfAbsent(key, k -> new WindowCounter());
-        return counter.tryIncrement();
-    }
-
-    private class WindowCounter {
-        private long windowStart;
-        private int count;
-
-        WindowCounter() {
-            this.windowStart = System.currentTimeMillis();
-            this.count = 0;
-        }
-
-        synchronized RateLimitResult tryIncrement() {
-            long now = System.currentTimeMillis();
-
-            // Reset if current window has expired
-            if (now - windowStart >= windowMs) {
-                windowStart = now;
-                count = 0;
-            }
-
-            if (count < maxRequests) {
-                count++;
-                return RateLimitResult.allowed(maxRequests - count);
-            }
-
-            long retryAfter = windowMs - (now - windowStart);
-            return RateLimitResult.rejected(retryAfter);
-        }
-    }
-}
-```
-
----
-
-### 4.4 Leaky Bucket
-
-**How it works:** Requests enter a FIFO queue (the bucket). Requests are processed at a fixed rate. If the queue is full, new requests are rejected.
-
-```
-Bucket capacity = 3, leak rate = 1 req/sec
-
-Queue: [ ]
-  req1 → [req1]           ✅ queued
-  req2 → [req1, req2]     ✅ queued
-  req3 → [req1, req2, req3] ✅ queued (full)
-  req4 → queue full        ❌ REJECTED
-
-  ... 1 second later, req1 leaks out ...
-  Queue: [req2, req3]
-  req5 → [req2, req3, req5] ✅ queued
-```
-
-```java
 import java.util.concurrent.ConcurrentHashMap;
 
 public class LeakyBucketRateLimiter implements RateLimiter {
 
-    private final int bucketCapacity;
-    private final long leakIntervalMs; // time between each leak (1000ms = 1 req/sec)
+    private final RateLimiterConfig config;
+    private final ConcurrentHashMap<String, Bucket> buckets = new ConcurrentHashMap<>();
 
-    private final ConcurrentHashMap<String, LeakyBucket> buckets = new ConcurrentHashMap<>();
-
-    public LeakyBucketRateLimiter(int bucketCapacity, long leakIntervalMs) {
-        this.bucketCapacity = bucketCapacity;
-        this.leakIntervalMs = leakIntervalMs;
+    public LeakyBucketRateLimiter(RateLimiterConfig config) {
+        this.config = config;
     }
 
     @Override
-    public RateLimitResult tryAcquire(String key) {
-        LeakyBucket bucket = buckets.computeIfAbsent(key, k -> new LeakyBucket());
+    public boolean allowRequest(String clientId) {
+        Bucket bucket = buckets.computeIfAbsent(clientId,
+                k -> new Bucket(System.nanoTime()));
         return bucket.tryAdd();
     }
 
-    private class LeakyBucket {
-        private int waterLevel;
-        private long lastLeakTimestamp;
+    private class Bucket {
+        private double water;       // current queue size
+        private long lastLeakNanos;
 
-        LeakyBucket() {
-            this.waterLevel = 0;
-            this.lastLeakTimestamp = System.currentTimeMillis();
+        Bucket(long now) {
+            this.water = 0;
+            this.lastLeakNanos = now;
         }
 
-        synchronized RateLimitResult tryAdd() {
+        synchronized boolean tryAdd() {
             leak();
-
-            if (waterLevel < bucketCapacity) {
-                waterLevel++;
-                return RateLimitResult.allowed(bucketCapacity - waterLevel);
+            if (water + 1 <= config.getCapacity()) {
+                water += 1;
+                return true;
             }
-
-            return RateLimitResult.rejected(leakIntervalMs);
+            return false;
         }
 
         private void leak() {
-            long now = System.currentTimeMillis();
-            long elapsed = now - lastLeakTimestamp;
-            int leaks = (int) (elapsed / leakIntervalMs);
-
-            if (leaks > 0) {
-                waterLevel = Math.max(0, waterLevel - leaks);
-                lastLeakTimestamp = now;
+            long now = System.nanoTime();
+            double elapsedSeconds = (now - lastLeakNanos) / 1_000_000_000.0;
+            double leaked = elapsedSeconds * config.getRefillRatePerSecond();
+            if (leaked > 0) {
+                water = Math.max(0, water - leaked);
+                lastLeakNanos = now;
             }
         }
     }
@@ -425,206 +279,57 @@ public class LeakyBucketRateLimiter implements RateLimiter {
 
 ---
 
-## 5. Rate Limiter Rule & Configuration
+### Step 5 — Fixed Window Counter
+
+**Idea:** Time is divided into fixed windows (e.g., per second). Each client gets `capacity` requests per window; counter resets on window change.
+
+**Pros:** O(1) memory, easiest to implement.
+**Cons:** Edge burst — 100 requests at `t=0.999s` + 100 at `t=1.001s` = 200 requests in 2ms.
+
+**File:** `src/main/java/ratelimiter/algorithm/FixedWindowRateLimiter.java`
 
 ```java
-public class RateLimitRule {
-    private final String ruleId;
-    private final String description;       // e.g., "API rate limit for free-tier users"
-    private final int maxRequests;
-    private final long windowMs;
-    private final RateLimitAlgorithm algorithm;
+package ratelimiter.algorithm;
 
-    public RateLimitRule(String ruleId, String description,
-                         int maxRequests, long windowMs,
-                         RateLimitAlgorithm algorithm) {
-        this.ruleId = ruleId;
-        this.description = description;
-        this.maxRequests = maxRequests;
-        this.windowMs = windowMs;
-        this.algorithm = algorithm;
-    }
+import ratelimiter.RateLimiter;
+import ratelimiter.config.RateLimiterConfig;
 
-    // Getters
-    public String getRuleId()               { return ruleId; }
-    public String getDescription()          { return description; }
-    public int getMaxRequests()             { return maxRequests; }
-    public long getWindowMs()               { return windowMs; }
-    public RateLimitAlgorithm getAlgorithm() { return algorithm; }
-}
-```
-
----
-
-## 6. Rate Limiter Service (Facade)
-
-The service ties together rules, algorithm selection, and per-client state. It acts as the single entry point for checking rate limits.
-
-```java
-import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-public class RateLimiterService {
+public class FixedWindowRateLimiter implements RateLimiter {
 
-    // ruleId → RateLimiter instance
-    private final Map<String, RateLimiter> limiters = new ConcurrentHashMap<>();
+    private final RateLimiterConfig config;
+    private final ConcurrentHashMap<String, Window> windows = new ConcurrentHashMap<>();
 
-    /**
-     * Register a rule and create the corresponding rate limiter.
-     */
-    public void addRule(RateLimitRule rule) {
-        RateLimiter limiter = RateLimiterFactory.create(rule);
-        limiters.put(rule.getRuleId(), limiter);
-    }
-
-    /**
-     * Check if a request from the given clientKey under the specified rule is allowed.
-     *
-     * @param ruleId    which rule to check against
-     * @param clientKey unique client identifier (userId, IP, apiKey)
-     * @return          result indicating allowed/rejected + metadata
-     */
-    public RateLimitResult handleRequest(String ruleId, String clientKey) {
-        RateLimiter limiter = limiters.get(ruleId);
-        if (limiter == null) {
-            // No rule found → allow by default (fail-open)
-            return RateLimitResult.allowed(Integer.MAX_VALUE);
-        }
-        return limiter.tryAcquire(clientKey);
-    }
-
-    /**
-     * Remove a rule (e.g., for dynamic reconfiguration).
-     */
-    public void removeRule(String ruleId) {
-        limiters.remove(ruleId);
-    }
-}
-```
-
----
-
-## 7. Distributed Rate Limiter with Redis
-
-For multi-node deployments, use Redis as the shared state store. Below is the Token Bucket algorithm implemented with a Redis Lua script (atomic execution).
-
-### 7.1 Redis Lua Script
-
-```lua
--- token_bucket.lua
--- KEYS[1] = rate limit key  (e.g., "rl:user:alice123")
--- ARGV[1] = max tokens (bucket capacity)
--- ARGV[2] = refill rate (tokens per second)
--- ARGV[3] = current timestamp in milliseconds
-
-local key = KEYS[1]
-local max_tokens = tonumber(ARGV[1])
-local refill_rate = tonumber(ARGV[2])
-local now = tonumber(ARGV[3])
-
-local bucket = redis.call('hmget', key, 'tokens', 'last_refill')
-local tokens = tonumber(bucket[1])
-local last_refill = tonumber(bucket[2])
-
--- Initialize if first request
-if tokens == nil then
-    tokens = max_tokens
-    last_refill = now
-end
-
--- Refill tokens
-local elapsed = (now - last_refill) / 1000.0
-local new_tokens = math.min(max_tokens, tokens + elapsed * refill_rate)
-
--- Try to consume one token
-if new_tokens >= 1 then
-    new_tokens = new_tokens - 1
-    redis.call('hmset', key, 'tokens', new_tokens, 'last_refill', now)
-    redis.call('pexpire', key, math.ceil(max_tokens / refill_rate) * 1000 + 1000)
-    return {1, math.floor(new_tokens)}  -- allowed, remaining
-else
-    redis.call('hmset', key, 'tokens', new_tokens, 'last_refill', now)
-    local wait_ms = math.ceil((1 - new_tokens) / refill_rate * 1000)
-    return {0, wait_ms}  -- rejected, retry_after_ms
-end
-```
-
-### 7.2 Java Redis Client
-
-```java
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.JedisPool;
-import java.util.Collections;
-import java.util.List;
-
-public class RedisTokenBucketRateLimiter implements RateLimiter {
-
-    private final JedisPool jedisPool;
-    private final String luaScript;
-    private final int maxTokens;
-    private final double refillRatePerSec;
-    private String scriptSha;
-
-    public RedisTokenBucketRateLimiter(JedisPool jedisPool, int maxTokens, double refillRatePerSec) {
-        this.jedisPool = jedisPool;
-        this.maxTokens = maxTokens;
-        this.refillRatePerSec = refillRatePerSec;
-        this.luaScript = loadLuaScript();
-        loadScript();
-    }
-
-    private String loadLuaScript() {
-        // In production, load from a resource file
-        return "local key = KEYS[1]\n"
-             + "local max_tokens = tonumber(ARGV[1])\n"
-             + "local refill_rate = tonumber(ARGV[2])\n"
-             + "local now = tonumber(ARGV[3])\n"
-             + "local bucket = redis.call('hmget', key, 'tokens', 'last_refill')\n"
-             + "local tokens = tonumber(bucket[1])\n"
-             + "local last_refill = tonumber(bucket[2])\n"
-             + "if tokens == nil then tokens = max_tokens; last_refill = now end\n"
-             + "local elapsed = (now - last_refill) / 1000.0\n"
-             + "local new_tokens = math.min(max_tokens, tokens + elapsed * refill_rate)\n"
-             + "if new_tokens >= 1 then\n"
-             + "  new_tokens = new_tokens - 1\n"
-             + "  redis.call('hmset', key, 'tokens', new_tokens, 'last_refill', now)\n"
-             + "  redis.call('pexpire', key, math.ceil(max_tokens / refill_rate) * 1000 + 1000)\n"
-             + "  return {1, math.floor(new_tokens)}\n"
-             + "else\n"
-             + "  redis.call('hmset', key, 'tokens', new_tokens, 'last_refill', now)\n"
-             + "  local wait_ms = math.ceil((1 - new_tokens) / refill_rate * 1000)\n"
-             + "  return {0, wait_ms}\n"
-             + "end";
-    }
-
-    private void loadScript() {
-        try (Jedis jedis = jedisPool.getResource()) {
-            this.scriptSha = jedis.scriptLoad(luaScript);
-        }
+    public FixedWindowRateLimiter(RateLimiterConfig config) {
+        this.config = config;
     }
 
     @Override
-    public RateLimitResult tryAcquire(String key) {
-        try (Jedis jedis = jedisPool.getResource()) {
-            String redisKey = "rl:" + key;
+    public boolean allowRequest(String clientId) {
+        Window w = windows.computeIfAbsent(clientId, k -> new Window());
+        return w.tryAcquire();
+    }
 
-            @SuppressWarnings("unchecked")
-            List<Long> result = (List<Long>) jedis.evalsha(
-                scriptSha,
-                Collections.singletonList(redisKey),
-                List.of(
-                    String.valueOf(maxTokens),
-                    String.valueOf(refillRatePerSec),
-                    String.valueOf(System.currentTimeMillis())
-                )
-            );
+    private class Window {
+        private long windowStart = currentWindow();
+        private int count = 0;
 
-            boolean allowed = result.get(0) == 1;
-            if (allowed) {
-                return RateLimitResult.allowed(result.get(1).intValue());
-            } else {
-                return RateLimitResult.rejected(result.get(1));
+        synchronized boolean tryAcquire() {
+            long current = currentWindow();
+            if (current != windowStart) {
+                windowStart = current;
+                count = 0;
             }
+            if (count < config.getCapacity()) {
+                count++;
+                return true;
+            }
+            return false;
+        }
+
+        private long currentWindow() {
+            return System.currentTimeMillis() / config.getWindowSizeMillis();
         }
     }
 }
@@ -632,236 +337,245 @@ public class RedisTokenBucketRateLimiter implements RateLimiter {
 
 ---
 
-## 8. Middleware / Interceptor Integration
+### Step 6 — Sliding Window Log
 
-### Spring Boot Interceptor Example
+**Idea:** Keep timestamps of recent requests in a deque. On each request, drop entries older than `now - windowSize`; allow if size < capacity.
+
+**Pros:** Most accurate — fixes the fixed-window edge burst.
+**Cons:** O(N) memory per client (N = capacity).
+
+**File:** `src/main/java/ratelimiter/algorithm/SlidingWindowLogRateLimiter.java`
 
 ```java
-import org.springframework.http.HttpStatus;
-import org.springframework.stereotype.Component;
-import org.springframework.web.servlet.HandlerInterceptor;
+package ratelimiter.algorithm;
 
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
+import ratelimiter.RateLimiter;
+import ratelimiter.config.RateLimiterConfig;
 
-@Component
-public class RateLimitInterceptor implements HandlerInterceptor {
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.concurrent.ConcurrentHashMap;
 
-    private final RateLimiterService rateLimiterService;
+public class SlidingWindowLogRateLimiter implements RateLimiter {
 
-    public RateLimitInterceptor(RateLimiterService rateLimiterService) {
-        this.rateLimiterService = rateLimiterService;
+    private final RateLimiterConfig config;
+    private final ConcurrentHashMap<String, Deque<Long>> logs = new ConcurrentHashMap<>();
+
+    public SlidingWindowLogRateLimiter(RateLimiterConfig config) {
+        this.config = config;
     }
 
     @Override
-    public boolean preHandle(HttpServletRequest request,
-                             HttpServletResponse response,
-                             Object handler) throws Exception {
+    public boolean allowRequest(String clientId) {
+        Deque<Long> log = logs.computeIfAbsent(clientId, k -> new ArrayDeque<>());
+        long now = System.currentTimeMillis();
+        long windowStart = now - config.getWindowSizeMillis();
 
-        String clientKey = extractClientKey(request);
-        String ruleId = resolveRuleId(request);
-
-        RateLimitResult result = rateLimiterService.handleRequest(ruleId, clientKey);
-
-        // Always set rate limit headers
-        response.setHeader("X-RateLimit-Remaining", String.valueOf(result.getRemaining()));
-
-        if (!result.isAllowed()) {
-            response.setStatus(HttpStatus.TOO_MANY_REQUESTS.value());
-            response.setHeader("Retry-After", String.valueOf(result.getRetryAfterMs() / 1000));
-            response.getWriter().write("{\"error\": \"Rate limit exceeded. Try again later.\"}");
-            return false; // block request
+        synchronized (log) {
+            while (!log.isEmpty() && log.peekFirst() <= windowStart) {
+                log.pollFirst();
+            }
+            if (log.size() < config.getCapacity()) {
+                log.offerLast(now);
+                return true;
+            }
+            return false;
         }
-
-        return true; // allow request to proceed
-    }
-
-    private String extractClientKey(HttpServletRequest request) {
-        // Priority: API key > authenticated user > IP
-        String apiKey = request.getHeader("X-API-Key");
-        if (apiKey != null) return "apikey:" + apiKey;
-
-        String userId = request.getHeader("X-User-Id");
-        if (userId != null) return "user:" + userId;
-
-        String forwarded = request.getHeader("X-Forwarded-For");
-        String ip = (forwarded != null) ? forwarded.split(",")[0].trim() : request.getRemoteAddr();
-        return "ip:" + ip;
-    }
-
-    private String resolveRuleId(HttpServletRequest request) {
-        // Map endpoints to rules — can be extended with annotations or config
-        String path = request.getRequestURI();
-        if (path.startsWith("/api/search")) return "search-rate-limit";
-        if (path.startsWith("/api/"))       return "api-rate-limit";
-        return "default-rate-limit";
-    }
-}
-```
-
-### Register the Interceptor
-
-```java
-import org.springframework.context.annotation.Configuration;
-import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
-import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
-
-@Configuration
-public class WebConfig implements WebMvcConfigurer {
-
-    private final RateLimitInterceptor rateLimitInterceptor;
-
-    public WebConfig(RateLimitInterceptor rateLimitInterceptor) {
-        this.rateLimitInterceptor = rateLimitInterceptor;
-    }
-
-    @Override
-    public void addInterceptors(InterceptorRegistry registry) {
-        registry.addInterceptor(rateLimitInterceptor)
-                .addPathPatterns("/api/**");
     }
 }
 ```
 
 ---
 
-## 9. Factory Pattern for Algorithm Selection
+### Step 7 — Factory
+
+Adding a new algorithm = new class + new enum value + one switch case. Callers stay unchanged.
+
+**File:** `src/main/java/ratelimiter/factory/RateLimiterType.java`
 
 ```java
+package ratelimiter.factory;
+
+public enum RateLimiterType {
+    TOKEN_BUCKET,
+    LEAKY_BUCKET,
+    FIXED_WINDOW,
+    SLIDING_WINDOW_LOG
+}
+```
+
+**File:** `src/main/java/ratelimiter/factory/RateLimiterFactory.java`
+
+```java
+package ratelimiter.factory;
+
+import ratelimiter.RateLimiter;
+import ratelimiter.algorithm.FixedWindowRateLimiter;
+import ratelimiter.algorithm.LeakyBucketRateLimiter;
+import ratelimiter.algorithm.SlidingWindowLogRateLimiter;
+import ratelimiter.algorithm.TokenBucketRateLimiter;
+import ratelimiter.config.RateLimiterConfig;
+
 public class RateLimiterFactory {
 
-    private RateLimiterFactory() {} // utility class
-
-    public static RateLimiter create(RateLimitRule rule) {
-        return switch (rule.getAlgorithm()) {
-            case TOKEN_BUCKET -> new TokenBucketRateLimiter(
-                    rule.getMaxRequests(), rule.getWindowMs());
-
-            case SLIDING_WINDOW_LOG -> new SlidingWindowLogRateLimiter(
-                    rule.getMaxRequests(), rule.getWindowMs());
-
-            case FIXED_WINDOW_COUNTER -> new FixedWindowRateLimiter(
-                    rule.getMaxRequests(), rule.getWindowMs());
-
-            case LEAKY_BUCKET -> new LeakyBucketRateLimiter(
-                    rule.getMaxRequests(), rule.getWindowMs() / rule.getMaxRequests());
-        };
+    public static RateLimiter create(RateLimiterType type, RateLimiterConfig config) {
+        switch (type) {
+            case TOKEN_BUCKET:        return new TokenBucketRateLimiter(config);
+            case LEAKY_BUCKET:        return new LeakyBucketRateLimiter(config);
+            case FIXED_WINDOW:        return new FixedWindowRateLimiter(config);
+            case SLIDING_WINDOW_LOG:  return new SlidingWindowLogRateLimiter(config);
+            default:
+                throw new IllegalArgumentException("Unsupported rate limiter type: " + type);
+        }
     }
 }
 ```
 
 ---
 
-## 10. Usage Example & Driver Code
+### Step 8 — Consumer (API Gateway)
+
+A sample component that uses the rate limiter — gateway returns HTTP 429 on throttling. Notice it depends only on the `RateLimiter` interface (DI).
+
+**File:** `src/main/java/ratelimiter/service/ApiGateway.java`
 
 ```java
-public class RateLimiterDemo {
+package ratelimiter.service;
 
-    public static void main(String[] args) throws InterruptedException {
+import ratelimiter.RateLimiter;
 
-        // ── 1. Create the service ──────────────────────────────
-        RateLimiterService service = new RateLimiterService();
+public class ApiGateway {
 
-        // ── 2. Define rules ────────────────────────────────────
-        RateLimitRule apiRule = new RateLimitRule(
-            "api-rate-limit",
-            "Standard API: 5 requests per 10 seconds",
-            5,
-            10_000,
-            RateLimitAlgorithm.TOKEN_BUCKET
-        );
+    private final RateLimiter rateLimiter;
 
-        RateLimitRule searchRule = new RateLimitRule(
-            "search-rate-limit",
-            "Search API: 3 requests per 10 seconds",
-            3,
-            10_000,
-            RateLimitAlgorithm.SLIDING_WINDOW_LOG
-        );
+    public ApiGateway(RateLimiter rateLimiter) {
+        this.rateLimiter = rateLimiter;
+    }
 
-        service.addRule(apiRule);
-        service.addRule(searchRule);
-
-        // ── 3. Simulate requests ───────────────────────────────
-        String user = "user:alice";
-
-        System.out.println("=== Token Bucket (API rule: 5 req / 10s) ===");
-        for (int i = 1; i <= 7; i++) {
-            RateLimitResult result = service.handleRequest("api-rate-limit", user);
-            System.out.printf("  Request %d → %s (remaining: %d)%n",
-                    i,
-                    result.isAllowed() ? "ALLOWED" : "REJECTED (retry after " + result.getRetryAfterMs() + "ms)",
-                    result.getRemaining());
+    public String handle(String clientId, String payload) {
+        if (!rateLimiter.allowRequest(clientId)) {
+            return "429 TOO_MANY_REQUESTS for client=" + clientId;
         }
-
-        System.out.println("\n=== Sliding Window Log (Search rule: 3 req / 10s) ===");
-        for (int i = 1; i <= 5; i++) {
-            RateLimitResult result = service.handleRequest("search-rate-limit", user);
-            System.out.printf("  Request %d → %s (remaining: %d)%n",
-                    i,
-                    result.isAllowed() ? "ALLOWED" : "REJECTED (retry after " + result.getRetryAfterMs() + "ms)",
-                    result.getRemaining());
-        }
-
-        // ── 4. Wait and retry ──────────────────────────────────
-        System.out.println("\n  ... waiting 11 seconds for window to reset ...\n");
-        Thread.sleep(11_000);
-
-        RateLimitResult afterWait = service.handleRequest("search-rate-limit", user);
-        System.out.printf("  After wait → %s (remaining: %d)%n",
-                afterWait.isAllowed() ? "ALLOWED" : "REJECTED",
-                afterWait.getRemaining());
+        // delegate to downstream service ...
+        return "200 OK [" + clientId + "] " + payload;
     }
 }
 ```
 
-**Expected Output:**
+---
 
+### Step 9 — Demo Driver (`Main`)
+
+Builds a Token Bucket of capacity 5, refilling at 2/sec. Bursts 8, sleeps 2s, sends 4 more.
+
+**File:** `src/main/java/ratelimiter/Main.java`
+
+```java
+package ratelimiter;
+
+import ratelimiter.config.RateLimiterConfig;
+import ratelimiter.factory.RateLimiterFactory;
+import ratelimiter.factory.RateLimiterType;
+import ratelimiter.service.ApiGateway;
+
+public class Main {
+
+    public static void main(String[] args) throws InterruptedException {
+        RateLimiterConfig config = new RateLimiterConfig(
+                /* capacity */ 5,
+                /* refillRatePerSecond */ 2,
+                /* windowSizeMillis */ 1000
+        );
+
+        RateLimiter limiter = RateLimiterFactory.create(RateLimiterType.TOKEN_BUCKET, config);
+        ApiGateway gateway = new ApiGateway(limiter);
+
+        String client = "user-42";
+
+        System.out.println("--- burst of 8 requests ---");
+        for (int i = 1; i <= 8; i++) {
+            System.out.println(gateway.handle(client, "req#" + i));
+        }
+
+        System.out.println("--- sleep 2s (refills ~4 tokens) ---");
+        Thread.sleep(2000);
+
+        for (int i = 9; i <= 12; i++) {
+            System.out.println(gateway.handle(client, "req#" + i));
+        }
+    }
+}
 ```
-=== Token Bucket (API rule: 5 req / 10s) ===
-  Request 1 → ALLOWED (remaining: 4)
-  Request 2 → ALLOWED (remaining: 3)
-  Request 3 → ALLOWED (remaining: 2)
-  Request 4 → ALLOWED (remaining: 1)
-  Request 5 → ALLOWED (remaining: 0)
-  Request 6 → REJECTED (retry after 2000ms) (remaining: 0)
-  Request 7 → REJECTED (retry after 2000ms) (remaining: 0)
 
-=== Sliding Window Log (Search rule: 3 req / 10s) ===
-  Request 1 → ALLOWED (remaining: 2)
-  Request 2 → ALLOWED (remaining: 1)
-  Request 3 → ALLOWED (remaining: 0)
-  Request 4 → REJECTED (retry after ~10000ms) (remaining: 0)
-  Request 5 → REJECTED (retry after ~10000ms) (remaining: 0)
-
-  ... waiting 11 seconds for window to reset ...
-
-  After wait → ALLOWED (remaining: 2)
+**Verified output:**
+```
+--- burst of 8 requests ---
+200 OK [user-42] req#1
+200 OK [user-42] req#2
+200 OK [user-42] req#3
+200 OK [user-42] req#4
+200 OK [user-42] req#5
+429 TOO_MANY_REQUESTS for client=user-42
+429 TOO_MANY_REQUESTS for client=user-42
+429 TOO_MANY_REQUESTS for client=user-42
+--- sleep 2s (refills ~4 tokens) ---
+200 OK [user-42] req#9
+200 OK [user-42] req#10
+200 OK [user-42] req#11
+200 OK [user-42] req#12
 ```
 
 ---
 
-## 11. Design Patterns Used
+## 5. Algorithm Comparison
 
-| Pattern | Where | Why |
+| Algorithm | Bursts | Memory | Accuracy | Use case |
+|---|---|---|---|---|
+| Token Bucket        | ✅ up to capacity | O(1) / client | High    | Public APIs (Stripe, AWS) |
+| Leaky Bucket        | ❌ smoothed       | O(1) / client | High    | Network traffic shaping |
+| Fixed Window        | ⚠️ edge burst     | O(1) / client | Medium  | Simple quota counters |
+| Sliding Window Log  | ❌                | O(N) / client | Highest | Strict per-second SLAs |
+
+---
+
+## 6. Thread Safety
+
+Two levels of concurrency control:
+
+| Level | Tool | Purpose |
 |---|---|---|
-| **Strategy** | `RateLimiter` interface + multiple algorithm implementations | Swap algorithms without changing client code |
-| **Factory** | `RateLimiterFactory.create(rule)` | Encapsulate algorithm instantiation logic |
-| **Facade** | `RateLimiterService` | Single entry point hiding rule management complexity |
-| **Template Method** | Each algorithm has `tryAcquire()` with internal refill/evict steps | Common structure, varying internal logic |
-| **Singleton per key** | `ConcurrentHashMap.computeIfAbsent()` | One bucket/counter per client, lazily initialized |
+| Map level | `ConcurrentHashMap.computeIfAbsent` | Atomically create one bucket per new client |
+| Bucket level | `synchronized` method / block | Atomic `refill + consume` on the same bucket |
+
+Without bucket-level locking, two threads could both read `tokens=1` and both consume → race condition (over-allowance).
 
 ---
 
-## 12. Key Interview Talking Points
+## 7. Extensibility
 
-| Topic | Talking Point |
+| Future Need | How to add |
 |---|---|
-| **Thread Safety** | All implementations use `synchronized` on per-client objects (not global lock) for fine-grained concurrency |
-| **Memory Management** | In production, use a TTL-based eviction (Guava `Cache` or Caffeine) for the per-client maps to prevent unbounded growth |
-| **Distributed** | Redis Lua scripts provide atomic check-and-decrement, avoiding race conditions across nodes |
-| **Fail-Open vs Fail-Closed** | Our service fails open (allows requests when no rule is found). Discuss trade-offs in interview |
-| **Algorithm Choice** | Token Bucket is most versatile — allows bursts while maintaining average rate. Sliding Window Log is most accurate but memory-heavy |
-| **HTTP Headers** | Always return `X-RateLimit-Remaining`, `X-RateLimit-Limit`, `Retry-After` — client-friendly |
-| **Extensibility** | Adding a new algorithm = implement `RateLimiter` interface + add enum value + add factory case |
-| **Testing** | Inject a `Clock` interface instead of `System.currentTimeMillis()` for deterministic unit tests |
+| New algorithm (e.g., GCRA) | Create class + enum + factory case (no changes to existing code) |
+| **Distributed** rate limiting | Replace `ConcurrentHashMap` with Redis; use a Lua script for atomic decrement |
+| Per-user-tier limits (free / pro / enterprise) | `TierResolver` returns different `RateLimiterConfig` per user |
+| Per-API-route limits | Composite key `clientId + ":" + route` |
+| Observability | Decorator pattern: wrap `RateLimiter` to emit metrics on allow/deny |
+
+---
+
+## 8. SOLID Compliance
+
+- **S**ingle Responsibility — each algorithm class handles only its own logic.
+- **O**pen/Closed — add a new algorithm without modifying existing classes.
+- **L**iskov — every `RateLimiter` implementation is fully substitutable.
+- **I**nterface Segregation — tiny single-method interface, no fat contracts.
+- **D**ependency Inversion — `ApiGateway` depends on `RateLimiter` (abstraction), not on a concrete bucket class.
+
+---
+
+### How to Run
+
+```bash
+mvn -q compile
+mvn -q exec:java -Dexec.mainClass=ratelimiter.Main
+```
