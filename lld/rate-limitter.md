@@ -189,20 +189,37 @@ public class TokenBucketRateLimiter implements RateLimiter {
         }
 
         synchronized boolean tryConsume() {
+            // 1. First top-up the bucket based on time elapsed since last call.
             refill();
+            // 2. If at least one token is available -> consume it and allow the request.
             if (tokens >= 1.0) {
                 tokens -= 1.0;
                 return true;
             }
+            // 3. Bucket empty -> throttle (HTTP 429).
             return false;
         }
 
+        /**
+         * Lazy refill: instead of running a background timer thread to add tokens,
+         * we compute how many tokens SHOULD have been added since the last refill
+         * call, and add them in one shot. This is O(1), cheap, and scales to
+         * millions of clients.
+         */
         private void refill() {
+            // a) Take a fresh timestamp.
             long now = System.nanoTime();
+
+            // b) How much time has passed (in seconds) since we last refilled?
             double elapsedSeconds = (now - lastRefillNanos) / 1_000_000_000.0;
+
+            // c) tokens earned = elapsed seconds * refill rate (e.g. 2 sec * 5/sec = 10 tokens).
             double newTokens = elapsedSeconds * config.getRefillRatePerSecond();
+
             if (newTokens > 0) {
+                // d) Add them, but never exceed `capacity` (bucket overflow is discarded).
                 tokens = Math.min(config.getCapacity(), tokens + newTokens);
+                // e) Remember "now" so the NEXT refill only counts time after this point.
                 lastRefillNanos = now;
             }
         }
@@ -210,7 +227,19 @@ public class TokenBucketRateLimiter implements RateLimiter {
 }
 ```
 
-**Why lazy refill?** No background timer thread → cheap and simpler — refill is computed on each request from `now − lastRefill`.
+#### How `refill()` works — line by line
+
+| Step | Code | What it does |
+|---|---|---|
+| a | `long now = System.nanoTime();` | Grab a precise monotonic timestamp (immune to wall-clock changes / NTP jumps). |
+| b | `elapsedSeconds = (now - lastRefillNanos) / 1e9` | Convert nanoseconds → seconds since the previous refill. |
+| c | `newTokens = elapsedSeconds * refillRate` | Compute how many tokens should have accrued. E.g., 2 sec idle × 5 tokens/sec = 10 tokens. |
+| d | `tokens = min(capacity, tokens + newTokens)` | Add them, but cap at `capacity` (extra "overflow" tokens are simply discarded — that's the bucket metaphor). |
+| e | `lastRefillNanos = now` | Reset the marker so the **next** call only counts time after this point — no double counting. |
+
+**Why lazy refill?** No background timer thread → cheap and simpler — refill is computed on each request from `now − lastRefill`. Bucket idle for 10 seconds at 2 tokens/sec gets +20 tokens (capped at capacity) on the **next** request. Mathematically identical to a running timer.
+
+**Why refill BEFORE checking tokens?** If we checked first, a user idle for 10 minutes would get rejected on their first new request because the count is still stale. Refilling first lets the user benefit from accumulated time.
 
 ---
 
