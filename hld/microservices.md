@@ -12,7 +12,6 @@
 
 ### Part II — Design Principles & Patterns
 3. [SOLID Principles](#3-solid-principles)
-4. [Design Patterns](#4-design-patterns) → *Moved to [DESIGN_PATTERNS.md](DESIGN_PATTERNS.md)*
 
 ### Part III — Microservices Architecture
 5. [Microservices Architecture — Complete Guide](#5-microservices-architecture--complete-guide)
