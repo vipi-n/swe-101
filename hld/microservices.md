@@ -398,6 +398,14 @@ Now you can swap `MySQLDatabase` for `MongoDatabase` without touching `UserServi
 
 **Use cases:** Database connection pools, configuration managers, logging, caches.
 
+**Rules to implement:**
+1. Make constructor `private` — prevents `new Singleton()` from outside
+2. Create a `private static volatile` field to hold the single instance
+3. Provide a `public static` method (`getInstance()`) — only way to get the object
+4. Use **double-checked locking** — first `if` avoids lock overhead, second `if` inside `synchronized` ensures only one creation
+5. `volatile` keyword — prevents thread seeing a half-constructed object (instruction reordering)
+6. `synchronized` on the **class** (`Singleton.class`), not `this` — because method is static
+
 ```java
 public class DatabaseConnection {
     private static volatile DatabaseConnection instance;
@@ -444,6 +452,13 @@ public enum DatabaseConnection {
 **Purpose:** Define an interface for creating objects, but let subclasses decide which class to instantiate.
 
 **Use cases:** When the exact type of object isn't known until runtime.
+
+**Rules to implement:**
+1. Create a **product interface** — the common type all objects share (e.g., `Notification`)
+2. Create **concrete product classes** — each implements the product interface (`EmailNotification`, `SMSNotification`)
+3. Create a **factory class** with a `static` creation method — takes a type/parameter and returns the correct product
+4. Factory method return type is the **interface**, not concrete class — caller doesn't know which class was instantiated
+5. Use `switch`/`if` inside factory to decide which concrete class to create
 
 ```java
 // Product interface
@@ -495,6 +510,15 @@ n.send("Hello World!");
 
 **Use cases:** Objects with many optional parameters (HTTP requests, query builders, configuration).
 
+**Rules to implement:**
+1. Make the target class constructor `private` — only the Builder can create it
+2. Create a `public static class Builder` inside the target class
+3. Builder holds the **same fields** as the target class
+4. Required fields → pass in Builder's constructor; Optional fields → set defaults
+5. Each setter method in Builder **returns `this`** — enables method chaining (`.method().header().body()`)
+6. Add a `build()` method that calls the private constructor and returns the final object
+7. Target class fields should be `final` — object is immutable once built
+
 ```java
 public class HttpRequest {
     private final String url;
@@ -544,6 +568,14 @@ HttpRequest request = new HttpRequest.Builder("https://api.example.com/users")
 #### Abstract Factory Pattern
 
 **Purpose:** Provide an interface for creating **families of related objects** without specifying their concrete classes.
+
+**Rules to implement:**
+1. Define **abstract product interfaces** — one for each product type (`Button`, `Checkbox`)
+2. Create **concrete product classes** for each family (Windows family: `WindowsButton`, `WindowsCheckbox`; Mac family: `MacButton`, `MacCheckbox`)
+3. Define an **abstract factory interface** — declares creation methods for each product (`createButton()`, `createCheckbox()`)
+4. Create **concrete factory classes** — one per family, each returns its own family's products
+5. Client code works with **factory interface + product interfaces only** — never references concrete classes directly
+6. Factory selection happens at runtime (config, OS detection, etc.)
 
 ```java
 // Abstract products
@@ -596,6 +628,14 @@ btn.render();
 **Purpose:** Create new objects by **cloning an existing object** (the prototype) instead of creating from scratch.
 
 **Use cases:** When object creation is expensive (DB calls, network requests), or when you need many similar objects with slight variations.
+
+**Rules to implement:**
+1. Add a `clone()` or `copy()` method to the class — returns a **new object** with same field values
+2. **Deep copy** all mutable fields (Maps, Lists, arrays) — `new HashMap<>(this.map)` — otherwise clones share references
+3. Primitive fields (`int`, `boolean`) and immutable fields (`String`) are safe to copy directly
+4. Do NOT rely on Java's `Cloneable` — write your own method instead
+5. (Optional) Create a `Prototype<T>` interface if multiple classes need cloning — enforces contract via compiler
+6. (Optional) Use a **prototype registry** (`Map<String, Prototype>`) to cache pre-built objects for fast lookup + clone
 
 > **"But `copy()` still calls `new` — how is it cheaper?"**
 >
@@ -785,6 +825,14 @@ prod.setHost("prod.example.com");
 
 **Real-world analogy:** A power adapter lets a US plug fit into a European socket.
 
+**Rules to implement:**
+1. Identify the **target interface** — what your code expects (e.g., `MediaPlayer`)
+2. Identify the **adaptee** — the incompatible class you want to use (e.g., `VLCPlayer`)
+3. Create an **adapter class** that `implements` the target interface
+4. Adapter holds a reference to the adaptee (composition)
+5. In each method, **delegate** to the adaptee's equivalent method
+6. Client code only depends on the target interface — never knows about the adaptee
+
 ```java
 // Existing interface your code expects
 public interface MediaPlayer {
@@ -820,6 +868,14 @@ player.play("movie.avi");
 **Purpose:** Add responsibilities to objects **dynamically** without modifying their class. Uses composition instead of inheritance.
 
 **Real-world analogy:** Adding toppings to a pizza — each topping "wraps" the base pizza.
+
+**Rules to implement:**
+1. Define a **component interface** — the common type (`Coffee`)
+2. Create a **concrete component** — the base object (`SimpleCoffee`)
+3. Create an **abstract decorator class** that `implements` the same interface and holds a reference to a component
+4. Each **concrete decorator** extends the abstract decorator, calls `super`/wrapped object's method + adds its own behavior
+5. Decorators are **stackable** — you can wrap a decorator inside another decorator
+6. Each decorator method must call the **wrapped object's method** first, then add/modify behavior
 
 ```java
 public interface Coffee {
@@ -864,6 +920,14 @@ System.out.println(order.cost());        // 3.2
 **Purpose:** Provide a surrogate or placeholder to control access to another object.
 
 **Types:** Virtual proxy (lazy loading), protection proxy (access control), remote proxy (network call).
+
+**Rules to implement:**
+1. Define a **subject interface** — the common type both real object and proxy share (`Image`)
+2. Create the **real subject** — the heavy/protected object (`RealImage`)
+3. Create the **proxy class** that `implements` the same interface
+4. Proxy holds a reference to the real subject (initially `null` for lazy loading)
+5. Proxy **controls access** — creates real subject only when needed, or checks permissions before delegating
+6. Proxy must have the **same interface** as real subject — so client can't tell the difference
 
 ```java
 public interface Image {
@@ -922,6 +986,14 @@ img.display(); // uses cached RealImage
 
 **Use cases:** Event systems, pub/sub, UI frameworks, notification services.
 
+**Rules to implement:**
+1. Define an **observer interface** with a notification method (`onEvent()`)
+2. Create **concrete observers** — each implements the interface with its own reaction logic
+3. Create a **subject** (publisher) that maintains a `List` of observers
+4. Subject provides `subscribe()` and `unsubscribe()` methods to add/remove observers
+5. Subject's `publish()`/`notify()` method **loops through all observers** and calls their notification method
+6. Observers are **loosely coupled** — subject only knows the interface, not concrete classes
+
 ```java
 import java.util.*;
 
@@ -975,6 +1047,14 @@ bus.publish("USER_REGISTERED", "john@example.com");
 
 **Purpose:** Define a family of algorithms, encapsulate each one, and make them interchangeable at runtime.
 
+**Rules to implement:**
+1. Define a **strategy interface** — declares the algorithm method (`compress()`)
+2. Create **concrete strategy classes** — each implements the interface with a different algorithm
+3. Create a **context class** that holds a reference to a strategy (composition, not inheritance)
+4. Context accepts strategy via **constructor** or **setter** — allows swapping at runtime
+5. Context **delegates** the work to the strategy object — doesn't contain algorithm logic itself
+6. Client picks the strategy and injects it into the context
+
 ```java
 public interface CompressionStrategy {
     void compress(String file);
@@ -1022,6 +1102,15 @@ compressor.compressFile("data.txt");      // GZIP — swapped at runtime
 **Purpose:** Pass a request along a chain of handlers. Each handler decides to process or pass it to the next.
 
 **Use cases:** Middleware pipelines, logging levels, approval workflows.
+
+**Rules to implement:**
+1. Define an **abstract handler** with a `next` reference (to the next handler in chain)
+2. Handler has a `setNext()` method that returns `next` — enables fluent chaining
+3. Handler's `handle()` method: if it **can handle** → process; else → pass to `next`
+4. Create **concrete handlers** — each overrides `canHandle()` and `process()` with its own logic
+5. **Build the chain** by linking handlers: `auth.setNext(rateLimit).setNext(business)`
+6. Client sends request to the **first handler** — doesn't know which handler will actually process it
+7. Last handler in chain should be a **fallback/default** handler
 
 ```java
 public abstract class Handler {
