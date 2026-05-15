@@ -681,52 +681,68 @@ img.display(); // uses cached RealImage
 5. Subject's `publish()`/`notify()` method **loops through all observers** and calls their notification method
 6. Observers are **loosely coupled** — subject only knows the interface, not concrete classes
 
-```java
-import java.util.*;
+**Real-world analogy:** YouTube subscription — you subscribe to a channel, and you get notified when a new video is posted. The channel doesn't need to know who you are.
 
-// Subject
-public class EventBus {
-    private Map<String, List<EventListener>> listeners = new HashMap<>();
-    
-    public void subscribe(String event, EventListener listener) {
-        listeners.computeIfAbsent(event, k -> new ArrayList<>()).add(listener);
+```java
+// Step 1: Observer interface — "what subscribers look like"
+interface EventListener {
+    void update(String event, String data);
+}
+
+// Step 2: Concrete observers — "subscribers who react differently"
+class EmailService implements EventListener {
+    public void update(String event, String data) {
+        System.out.println("Sending email for " + event + ": " + data);
     }
-    
-    public void publish(String event, String data) {
-        List<EventListener> eventListeners = listeners.getOrDefault(event, List.of());
-        for (EventListener listener : eventListeners) {
-            listener.onEvent(event, data);
+}
+
+class SMSService implements EventListener {
+    public void update(String event, String data) {
+        System.out.println("Sending SMS for " + event + ": " + data);
+    }
+}
+
+// Step 3: Subject (Publisher) — "the thing that fires events"
+class OrderService {
+    private List<EventListener> listeners = new ArrayList<>();
+
+    public void subscribe(EventListener listener) {
+        listeners.add(listener);
+    }
+
+    public void unsubscribe(EventListener listener) {
+        listeners.remove(listener);
+    }
+
+    // When something happens, notify ALL subscribers
+    private void notifyAll(String event, String data) {
+        for (EventListener listener : listeners) {
+            listener.update(event, data);
         }
     }
-}
 
-// Observer
-public interface EventListener {
-    void onEvent(String event, String data);
-}
-
-// Concrete observers
-public class EmailService implements EventListener {
-    public void onEvent(String event, String data) {
-        System.out.println("Email sent for " + event + ": " + data);
-    }
-}
-
-public class LoggingService implements EventListener {
-    public void onEvent(String event, String data) {
-        System.out.println("LOG [" + event + "]: " + data);
+    public void placeOrder(String orderId) {
+        System.out.println("Order placed: " + orderId);
+        notifyAll("ORDER_PLACED", orderId);  // fire event!
     }
 }
 
 // Usage
-EventBus bus = new EventBus();
-bus.subscribe("USER_REGISTERED", new EmailService());
-bus.subscribe("USER_REGISTERED", new LoggingService());
-bus.publish("USER_REGISTERED", "john@example.com");
+OrderService orderService = new OrderService();
+orderService.subscribe(new EmailService());   // subscribe
+orderService.subscribe(new SMSService());     // subscribe
+
+orderService.placeOrder("ORD-123");
 // Output:
-// Email sent for USER_REGISTERED: john@example.com
-// LOG [USER_REGISTERED]: john@example.com
+// Order placed: ORD-123
+// Sending email for ORDER_PLACED: ORD-123
+// Sending SMS for ORDER_PLACED: ORD-123
 ```
+
+**Key points:**
+- `OrderService` doesn't know about `EmailService` or `SMSService` — only knows the interface
+- Adding a new listener (e.g., `PushNotificationService`) = just `subscribe()` it, **no code change** in OrderService
+- Listeners can be added/removed **at runtime**
 
 ---
 
@@ -748,44 +764,82 @@ bus.publish("USER_REGISTERED", "john@example.com");
 5. Context **delegates** the work to the strategy object — doesn't contain algorithm logic itself
 6. Client picks the strategy and injects it into the context
 
+**Real-world analogy:** Google Maps — you choose "driving", "walking", or "transit". The map app doesn't contain all route logic — it delegates to a strategy. You can **switch** strategy without restarting the app.
+
 ```java
-public interface CompressionStrategy {
-    void compress(String file);
+// Step 1: Strategy interface — "what algorithms look like"
+interface PricingStrategy {
+    double calculatePrice(double basePrice);
 }
 
-public class ZipCompression implements CompressionStrategy {
-    public void compress(String file) {
-        System.out.println("Compressing " + file + " using ZIP");
+// Step 2: Concrete strategies — "different algorithms"
+class RegularPricing implements PricingStrategy {
+    public double calculatePrice(double basePrice) {
+        return basePrice;  // no discount
     }
 }
 
-public class GzipCompression implements CompressionStrategy {
-    public void compress(String file) {
-        System.out.println("Compressing " + file + " using GZIP");
+class PremiumPricing implements PricingStrategy {
+    public double calculatePrice(double basePrice) {
+        return basePrice * 0.8;  // 20% discount
     }
 }
 
-public class FileCompressor {
-    private CompressionStrategy strategy;
-    
-    public FileCompressor(CompressionStrategy strategy) {
+class HappyHourPricing implements PricingStrategy {
+    public double calculatePrice(double basePrice) {
+        return basePrice * 0.5;  // 50% off
+    }
+}
+
+// Step 3: Context — "the class that uses a strategy"
+class OrderBilling {
+    private PricingStrategy strategy;
+
+    public OrderBilling(PricingStrategy strategy) {
         this.strategy = strategy;
     }
-    
-    public void setStrategy(CompressionStrategy strategy) {
-        this.strategy = strategy; // swap at runtime
+
+    public void setStrategy(PricingStrategy strategy) {
+        this.strategy = strategy;  // swap at runtime!
     }
-    
-    public void compressFile(String file) {
-        strategy.compress(file);
+
+    public double getTotal(double basePrice) {
+        return strategy.calculatePrice(basePrice);  // delegates
     }
 }
 
 // Usage
-FileCompressor compressor = new FileCompressor(new ZipCompression());
-compressor.compressFile("data.txt");      // ZIP
-compressor.setStrategy(new GzipCompression());
-compressor.compressFile("data.txt");      // GZIP — swapped at runtime
+OrderBilling billing = new OrderBilling(new RegularPricing());
+System.out.println(billing.getTotal(100));  // 100.0
+
+billing.setStrategy(new HappyHourPricing());  // swap!
+System.out.println(billing.getTotal(100));  // 50.0
+
+billing.setStrategy(new PremiumPricing());   // swap again!
+System.out.println(billing.getTotal(100));  // 80.0
+```
+
+**Key points:**
+- `OrderBilling` has **zero knowledge** of pricing logic — just calls `strategy.calculatePrice()`
+- New pricing model? Just create a new class implementing `PricingStrategy` — **no changes** to existing code
+- Can swap algorithm **at runtime** via `setStrategy()`
+
+---
+
+### Observer vs Strategy — when to use which
+
+| Question | If yes → |
+|----------|----------|
+| Does something happen and **multiple things need to react**? | Observer |
+| Do you have **one task** but **multiple ways to do it**? | Strategy |
+| Need to **notify** others? | Observer |
+| Need to **swap behavior** at runtime? | Strategy |
+
+**They often go together:**
+```java
+// Uber example
+// Strategy → decide HOW to calculate fare (regular, surge, pool)
+// Observer → notify rider, driver, analytics WHEN ride completes
 ```
 
 ---
