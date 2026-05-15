@@ -591,6 +591,143 @@ btn.render();
 
 ---
 
+#### Prototype Pattern
+
+**Purpose:** Create new objects by **cloning an existing object** (the prototype) instead of creating from scratch.
+
+**Use cases:** When object creation is expensive (DB calls, network requests), or when you need many similar objects with slight variations.
+
+> **"But `copy()` still calls `new` — how is it cheaper?"**
+>
+> The cost isn't the `new` keyword — it's the **initialization logic** you skip. Example:
+> ```java
+> // EXPENSIVE: constructor fetches config from remote service + DB
+> public ServerConfig(String env) {
+>     this.host = RemoteConfigService.fetch(env);       // network call
+>     this.properties = database.loadDefaults(env);     // DB query
+>     this.certs = CertManager.generateCerts(host);    // CPU-heavy
+> }
+>
+> // CHEAP: copy() just copies already-computed values — no I/O, no computation
+> public ServerConfig copy() {
+>     return new ServerConfig(this.host, this.port, new HashMap<>(this.properties));
+> }
+> ```
+> The clone constructor only copies **in-memory fields** (O(n) memory copy). It skips all the expensive initialization (network, DB, CPU). That's the savings.
+
+> **Do we need `Cloneable` interface?** No. Java's `Cloneable` is a marker interface with known issues (shallow copy, checked exceptions). In practice, just define your own `copy()` method that does a deep copy — cleaner and more predictable.
+
+**Approach 1 — Custom `copy()` method (recommended):**
+
+```java
+public class ServerConfig {
+    private String host;
+    private int port;
+    private Map<String, String> properties;
+
+    public ServerConfig(String host, int port, Map<String, String> properties) {
+        this.host = host;
+        this.port = port;
+        this.properties = new HashMap<>(properties);
+    }
+
+    // Our own clone method — no Cloneable needed
+    public ServerConfig copy() {
+        return new ServerConfig(this.host, this.port, new HashMap<>(this.properties));
+    }
+
+    public void setHost(String host) { this.host = host; }
+    public void setPort(int port)    { this.port = port; }
+}
+
+// Usage
+ServerConfig base = new ServerConfig("localhost", 8080, Map.of("timeout", "30s"));
+ServerConfig prod = base.copy();
+prod.setHost("prod.example.com");
+```
+
+**Approach 2 — Copy constructor (also no Cloneable):**
+
+```java
+public class ServerConfig {
+    private String host;
+    private int port;
+    private Map<String, String> properties;
+
+    public ServerConfig(String host, int port, Map<String, String> properties) {
+        this.host = host;
+        this.port = port;
+        this.properties = new HashMap<>(properties);
+    }
+
+    // Copy constructor — takes an existing object and deep copies it
+    public ServerConfig(ServerConfig other) {
+        this.host = other.host;
+        this.port = other.port;
+        this.properties = new HashMap<>(other.properties);
+    }
+
+    public void setHost(String host) { this.host = host; }
+    public void setPort(int port)    { this.port = port; }
+}
+
+// Usage
+ServerConfig base = new ServerConfig("localhost", 8080, Map.of("timeout", "30s"));
+ServerConfig prod = new ServerConfig(base);  // copy via constructor
+prod.setHost("prod.example.com");
+```
+
+**Approach 3 — Java's `Cloneable` (not recommended but asked in interviews):**
+
+```java
+public class ServerConfig implements Cloneable {
+    private String host;
+    private int port;
+    private Map<String, String> properties;
+
+    public ServerConfig(String host, int port, Map<String, String> properties) {
+        this.host = host;
+        this.port = port;
+        this.properties = new HashMap<>(properties);
+    }
+
+    @Override
+    public ServerConfig clone() {
+        try {
+            ServerConfig cloned = (ServerConfig) super.clone(); // shallow copy
+            cloned.properties = new HashMap<>(this.properties); // deep copy mutable fields
+            return cloned;
+        } catch (CloneNotSupportedException e) {
+            throw new RuntimeException(e); // never happens if we implement Cloneable
+        }
+    }
+
+    public void setHost(String host) { this.host = host; }
+    public void setPort(int port)    { this.port = port; }
+}
+
+// Usage
+ServerConfig base = new ServerConfig("localhost", 8080, Map.of("timeout", "30s"));
+ServerConfig prod = base.clone();
+prod.setHost("prod.example.com");
+```
+
+> **Why avoid `Cloneable`?**
+> - `super.clone()` does a **shallow copy** — you still need to manually deep copy mutable fields
+> - Forces you to handle `CloneNotSupportedException` (checked exception)
+> - Joshua Bloch (Effective Java): *"The Cloneable interface is broken"*
+> - Custom `copy()` or copy constructor gives you full control with zero boilerplate
+
+**When to use Prototype over other creational patterns:**
+| Scenario | Pattern |
+|----------|---------|
+| One global instance | Singleton |
+| Choose subclass at runtime | Factory |
+| Complex object step-by-step | Builder |
+| Duplicate & tweak existing object | **Prototype** |
+
+---
+
 ### 4.2 Structural Patterns
 
 #### Adapter Pattern
