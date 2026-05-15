@@ -646,6 +646,55 @@ ServerConfig prod = base.copy();
 prod.setHost("prod.example.com");
 ```
 
+**Approach 1b — Custom interface for multiple classes (GoF style):**
+
+```java
+// Your own Prototype interface — not Java's broken Cloneable
+public interface Prototype<T> {
+    T clone();
+}
+
+// Any class that needs cloning implements it
+public class ServerConfig implements Prototype<ServerConfig> {
+    private String host;
+    private int port;
+
+    public ServerConfig(String host, int port) {
+        this.host = host;
+        this.port = port;
+    }
+
+    @Override
+    public ServerConfig clone() {
+        return new ServerConfig(this.host, this.port);
+    }
+}
+
+public class DatabaseConfig implements Prototype<DatabaseConfig> {
+    private String url;
+    private String username;
+
+    public DatabaseConfig(String url, String username) {
+        this.url = url;
+        this.username = username;
+    }
+
+    @Override
+    public DatabaseConfig clone() {
+        return new DatabaseConfig(this.url, this.username);
+    }
+}
+
+// Usage
+ServerConfig prodServer = new ServerConfig("prod.example.com", 443).clone();
+DatabaseConfig prodDb = new DatabaseConfig("jdbc:mysql://prod:3306/app", "admin").clone();
+```
+
+> **Why your own interface?**
+> - Compiler enforces that every prototype class has `clone()`
+> - Generics (`<T>`) give type-safe return — no casting
+> - No `CloneNotSupportedException`, no shallow copy surprises
+
 **Approach 2 — Copy constructor (also no Cloneable):**
 
 ```java
