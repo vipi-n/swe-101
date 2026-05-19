@@ -8,7 +8,7 @@
 
 1. [Creational Patterns](#1-creational-patterns)
     - [Singleton](#singleton-pattern)
-    - [Factory (Simple Factory + Factory Method)](#factory-pattern-simple-factory--factory-method)
+    - [Factory](#factory-pattern-simple-factory--factory-method)
     - [Builder](#builder-pattern)
     - [Abstract Factory](#abstract-factory-pattern)
     - [Prototype](#prototype-pattern)
