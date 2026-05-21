@@ -878,6 +878,38 @@ public final class Base62 {
 | Very fast generation | Counter is a single point of failure |
 | No DB check needed for uniqueness | Needs coordination in distributed setup |
 
+#### Diagram: Counter + Base62 Code Generation
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Shorten Service
+    participant R as Redis<br/>(counter)
+    participant DB as PostgreSQL
+
+    C->>S: POST /shorten { long_url }
+    S->>R: INCR url_counter
+    R-->>S: 1,000,000
+    S->>S: Base62.encode(1,000,000) → "4c92"
+    S->>DB: INSERT (short_code="4c92", original_url=...)
+    DB-->>S: OK (UNIQUE never fires — counter guarantees uniqueness)
+    S-->>C: 201 Created<br/>{ short_url: "https://short.ly/4c92" }
+```
+
+```mermaid
+flowchart LR
+    A[POST /shorten] --> B[Atomically fetch<br/>next counter value]
+    B --> C[counter = 1,000,000]
+    C --> D[Base62.encode →<br/>'4c92']
+    D --> E[INSERT into urls table]
+    E --> F[Return https://short.ly/4c92 ✅]
+
+    style B fill:#e3f2fd
+    style D fill:#e8f5e9
+```
+
+> **Note**: In a distributed setup, the counter lives in Redis (`INCR`/`INCRBY`) or a dedicated ID service. See [Distributed Counter section](#wait-but-how-does-the-counter-work-in-a-distributed-system) below for the batching optimization.
+
 **Custom Alias Handling:** To prevent custom aliases from colliding with counter-generated codes:
 - Option A: Prefix generated codes with a reserved character (e.g., `_abc123`)
 - Option B: Store custom aliases in a separate namespace
