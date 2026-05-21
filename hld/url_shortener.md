@@ -522,11 +522,54 @@ This is a critical design decision that interviewers love to probe. Both redirec
 
 ### Cleanup Strategy
 
-For expired URLs, we use two mechanisms:
-1. **Real-time check**: On every redirect, compare `expires_at` to current time
-2. **Background job**: A periodic CRON job that batch-deletes expired rows from the database
+**We use all three layers together — they each solve a different problem.** No single one is enough on its own.
 
-Set the **cache TTL** to match or be shorter than URL expiration times, so stale entries are automatically evicted from Redis.
+| # | Mechanism | Where | What it does | Why we need it |
+|---|-----------|-------|--------------|----------------|
+| 1 | **Real-time check** | App server (on every redirect) | Compare `expires_at` vs `now()`. If expired → return `410 Gone` and `DEL` from Redis | **Correctness.** Guarantees users never get a stale redirect, even if the cache or cron hasn't cleaned up yet |
+| 2 | **Redis TTL (`SETEX`)** | Cache layer | Auto-evicts the key from Redis when TTL elapses | **Cache hygiene.** Prevents Redis from serving expired entries and saves memory. Set TTL ≤ URL's remaining lifetime |
+| 3 | **Cron / background job** | DB layer | Periodically `DELETE FROM urls WHERE expires_at < now()` in batches | **Storage reclaim.** Redis TTL doesn't touch Postgres. Without this, the DB grows forever with dead rows |
+
+**Why not just one?**
+
+- **Cron only** → DB stays clean, but Redis can still serve an expired URL until its TTL fires, and a user could hit a redirect *between* cron runs. Bad UX.
+- **Redis TTL only** → Cache is clean, but Postgres bloats indefinitely. Also doesn't help on a cache miss that hits an expired DB row.
+- **Real-time check only** → Correct, but Redis and DB both keep growing with dead data.
+
+**So the rule of thumb:**
+
+> Real-time check = *correctness*. Redis TTL = *cache cleanup*. Cron = *storage cleanup*. Use all three.
+
+#### What the cache entry looks like
+
+We use the simplest possible shape: **a plain string keyed by the short code**.
+
+```
+KEY:    url:abc123
+VALUE:  "https://www.example.com/some/very/long/path?utm=foo"
+TTL:    2592000     # 30 days, in seconds
+```
+
+Redis commands:
+
+```bash
+# On write (after creating the short URL)
+SETEX url:abc123 2592000 "https://www.example.com/some/very/long/path?utm=foo"
+
+# On read (the hot path)
+GET url:abc123
+# → "https://www.example.com/some/very/long/path?utm=foo"
+```
+
+**Why a plain string and not a hash/JSON?**
+
+- 99% of reads just need the long URL — one `GET`, one network round-trip, microsecond latency.
+- Tiny memory footprint (~160 bytes per entry including Redis overhead).
+- Expiration is handled by Redis TTL; we don't need `expires_at` in the cache.
+
+**Memory math:** ~100M hot URLs × ~160 bytes ≈ **16 GB** — fits on a single beefy Redis node or a small cluster.
+
+> If you later need `expires_at` or `user_id` available without a DB hit (e.g., for analytics on the redirect path), upgrade the value to a Redis Hash or a small JSON blob. Don't do it preemptively.
 
 #### Diagram: URL Redirect Flow (with Cache)
 
@@ -2111,4 +2154,4 @@ Base62 is the standard choice because every character is URL-safe without encodi
 
 ---
 
-
+*Reference: [Hello Interview — Bit.ly System Design](https://www.hellointerview.com/learn/system-design/problem-breakdowns/bitly)*
