@@ -298,6 +298,25 @@ Dropbox is split into two physically separate pieces:
 
 So **"the file on my device"** literally means a file sitting on the user's laptop disk, inside the folder the Dropbox client is watching. The Dropbox client app is the bridge between that local file and our cloud.
 
+```
+┌────────────────────────────────────┐          ┌──────────────────────────────────────────┐
+│         YOUR DEVICE                │          │       DROPBOX'S CLOUD (AWS)              │
+│  (your laptop / phone)             │          │                                          │
+│                                    │          │   ┌──────────────────────────────────┐   │
+│  ┌─────────────────────────────┐   │          │   │ API Gateway + File Service       │   │
+│  │ Dropbox Client App          │   │  HTTPS   │   │ (the backend code we designed)   │   │
+│  │  - Native desktop/mobile app│◀──┼─────────▶│   └──────────────────────────────────┘   │
+│  │  - Written in C++/Swift/…   │   │          │                                          │
+│  │  - Has a special folder     │   │          │   ┌──────────────────────────────────┐   │
+│  │    on your filesystem       │   │          │   │ Metadata DB (DynamoDB / Postgres)│   │
+│  │  - Watches for file changes │   │          │   └──────────────────────────────────┘   │
+│  │  - Has a SYNC ENGINE        │   │          │                                          │
+│  │    (background process)     │   │          │   ┌──────────────────────────────────┐   │
+│  └─────────────────────────────┘   │          │   │ S3 Blob Storage                  │   │
+│                                    │          │   └──────────────────────────────────┘   │
+└────────────────────────────────────┘          └──────────────────────────────────────────┘
+```
+
 #### How does the device upload via a presigned URL? (There's no magic)
 
 A **presigned URL is just a normal HTTPS URL** with a signature in the query string — e.g.:
@@ -411,11 +430,16 @@ Implementation is similar to Google Drive — enter the email of the user you wa
 
 | Column | Description |
 |--------|-------------|
-| `userId` (PK) | The user the file is shared with |
-| `fileId` | The shared file |
+| `userId` | The user the file is shared with — **part of composite PK** |
+| `fileId` | The shared file — **part of composite PK** |
+| `sharedAt` *(optional)* | Timestamp the share was granted |
+| `sharedBy` *(optional)* | The user who granted access (file owner) |
 
-- Efficiently query: "Get all files shared with user X" → simple partition key lookup.
-- Enforce permissions: when a user tries to download, check the share table.
+**Primary key = `(userId, fileId)` composite.** Using `userId` alone would limit each user to one shared file row — we need the pair to be unique, so a single user can have many shared files (one row per file).
+
+- Query "Get all files shared with user X" → `WHERE userId = X` — fast because `userId` is the leading column of the PK index.
+- Permission check "Can user X access file Y?" → `WHERE userId = X AND fileId = Y` — O(1) on the full PK.
+- The composite PK also automatically blocks accidental duplicate share rows.
 
 ```mermaid
 %%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
@@ -592,7 +616,7 @@ classDiagram
 
     class SharedFiles {
         +String userId PK
-        +String fileId
+        +String fileId PK
     }
 
     class User {
