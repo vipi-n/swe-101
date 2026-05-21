@@ -2024,7 +2024,19 @@ GET /metrics         → Prometheus-format metrics export
 │              Primary (Writes) + Read Replicas (Reads)                │
 │                                                                      │
 │  urls: short_code | original_url | created_at | expires_at | ...     │
-└──────────────────────────────────────────────────────────────────────┘
+└──────────────────────▲───────────────────────────────────────────────┘
+                       │
+                       │ DELETE WHERE expires_at < NOW()
+                       │ LIMIT 10,000  (batched)
+                       │
+          ┌────────────┴────────────┐
+          │   Cleanup CRON Job      │
+          │   (runs hourly)         │
+          │                         │
+          │ - Deletes expired rows  │
+          │ - Reclaims storage      │
+          │ - Independent worker    │
+          └─────────────────────────┘
 ```
 
 #### Diagram: Final Architecture (Mermaid)
@@ -2059,6 +2071,10 @@ flowchart TD
         PG_R2[(Replica 2<br/>Reads)]
     end
 
+    subgraph Background
+        Cron[Cleanup CRON Job<br/>runs hourly<br/><br/>DELETE FROM urls<br/>WHERE expires_at &lt; NOW&#40;&#41;<br/>LIMIT 10,000]
+    end
+
     Browser --> CDN
     CDN --> LB
     Browser --> LB
@@ -2073,6 +2089,7 @@ flowchart TD
     RedisCache -.->|Cache miss| PG_R1 & PG_R2
 
     PG_Primary -->|Streaming<br/>replication| PG_R1 & PG_R2
+    Cron -->|Batch DELETE| PG_Primary
 
     CDN -.->|Cache miss| RS
 ```
