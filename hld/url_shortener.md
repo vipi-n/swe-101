@@ -369,8 +369,8 @@ If the user specified a custom alias (e.g., "my-brand"):
 
 For now, we'll abstract this away as *some magic function* that takes in the long URL and returns a unique short code. We'll dive deep into exactly how this works in [Deep Dive 1](#deep-dive-1-short-code-generation-strategies).
 
-```python
-short_code = generate_short_code()  # Magic! We'll explain later.
+```java
+String shortCode = generateShortCode(); // Magic! We'll explain later.
 ```
 
 **Step 5: Optionally check for deduplication**
@@ -655,8 +655,9 @@ Step 1: Take the long URL
 Step 2: Hash it with MD5 (or SHA-256)
   MD5 → "e4d909c290d0fb1ca068ffaddf22cbd0" (128-bit hex string)
 
-Step 3: Take the first 43 bits of the hash
-  (43 bits gives us ~8.8 trillion combinations in base62)
+Step 3: Take the first 41 bits of the hash
+  (41 bits gives us ~2.2 trillion values, which fits
+   cleanly inside 62^7 ≈ 3.52 trillion — i.e. 7 Base62 chars)
 
 Step 4: Base62 encode those bits
   → "kA9f3Bc" (7 characters)
@@ -665,7 +666,7 @@ Step 5: Use this as the short code
   → https://short.ly/kA9f3Bc
 ```
 
-**Why 43 bits?** Because 62^7 = 3.52 trillion. We need at least ceil(log2(62^7)) = 42 bits to represent all 7-character Base62 strings. Using 43 bits gives us enough entropy.
+**Why 41 bits?** Each Base62 character carries log₂(62) ≈ 5.954 bits, so 7 chars hold up to floor(7 × 5.954) = **41 bits** without overflow (62^7 = 3.52T, and 2^41 = 2.2T fits inside it). If we took 43 bits (≈ 8.8T) the value could exceed 62^7 and require **8** chars to encode — inconsistent with our 7-char target.
 
 **The Collision Problem:**
 
@@ -700,46 +701,65 @@ Since we're truncating a 128-bit hash to ~43 bits, we lose entropy. Different lo
                                    └────────────────┘   └─────────────────┘
 ```
 
-**Collision handling in pseudocode:**
+**Collision handling in Java:**
 
-```python
-import hashlib
+```java
+import java.security.MessageDigest;
+import java.math.BigInteger;
 
-def shorten_url_with_hash(long_url: str, max_retries: int = 5) -> str:
-    url_to_hash = long_url
-    
-    for attempt in range(max_retries):
-        # Step 1: Hash the URL
-        hash_hex = hashlib.md5(url_to_hash.encode()).hexdigest()
-        
-        # Step 2: Take first 43 bits, convert to integer
-        hash_int = int(hash_hex[:11], 16) >> 1  # ~43 bits
-        
-        # Step 3: Base62 encode to 7 chars
-        short_code = encode_base62(hash_int)[:7]
-        
-        # Step 4: Check database for collision
-        existing = db.query(
-            "SELECT original_url FROM urls WHERE short_code = ?", short_code
-        )
-        
-        if not existing:
-            # No collision — insert and return
-            db.execute(
-                "INSERT INTO urls (short_code, original_url) VALUES (?, ?)", 
-                short_code, long_url
-            )
-            return short_code
-        
-        if existing.original_url == long_url:
-            # Same URL — dedup, return existing
-            return short_code
-        
-        # Collision! Different URL with same hash
-        # Append attempt number as salt and retry
-        url_to_hash = long_url + str(attempt)
-    
-    raise Exception("Failed to generate unique short code after max retries")
+public class UrlShortener {
+
+    private static final int MAX_RETRIES = 5;
+    private final JdbcTemplate db;
+    private final RedisTemplate<String, String> redis;
+
+    public String shortenUrlWithHash(String longUrl) throws Exception {
+        String urlToHash = longUrl;
+
+        for (int attempt = 0; attempt < MAX_RETRIES; attempt++) {
+            // Step 1: Hash the URL with MD5
+            byte[] digest = MessageDigest.getInstance("MD5")
+                .digest(urlToHash.getBytes(StandardCharsets.UTF_8));
+
+            // Step 2: Take first 41 bits as a long
+            // (Use the first 6 bytes = 48 bits, then shift right by 7 to keep 41 bits)
+            long hashInt = (new BigInteger(1, Arrays.copyOf(digest, 6))
+                .longValueExact()) >> 7;
+
+            // Step 3: Base62 encode and left-pad to exactly 7 chars
+            String shortCode = padLeft(Base62.encode(hashInt), 7, '0');
+
+            // Step 4: Try to insert; UNIQUE constraint detects collisions atomically
+            try {
+                db.update(
+                    "INSERT INTO urls (short_code, original_url) VALUES (?, ?)",
+                    shortCode, longUrl
+                );
+                return shortCode; // Success — no collision
+            } catch (DuplicateKeyException e) {
+                // Collision: short_code already exists. Is it the same URL (dedup)?
+                String existing = db.queryForObject(
+                    "SELECT original_url FROM urls WHERE short_code = ?",
+                    String.class, shortCode
+                );
+                if (longUrl.equals(existing)) {
+                    return shortCode; // Same URL — return existing code
+                }
+                // Different URL produced same code — salt and retry
+                urlToHash = longUrl + attempt;
+            }
+        }
+        throw new RuntimeException("Failed to generate unique short code after "
+            + MAX_RETRIES + " retries");
+    }
+
+    private static String padLeft(String s, int len, char pad) {
+        if (s.length() >= len) return s;
+        StringBuilder sb = new StringBuilder(len);
+        for (int i = s.length(); i < len; i++) sb.append(pad);
+        return sb.append(s).toString();
+    }
+}
 ```
 
 **Collision probability math (Birthday Problem):**
@@ -761,7 +781,7 @@ At 1B URLs, ~13% of insertions would collide. Each collision requires a retry (r
 ```mermaid
 flowchart TD
     A[Receive long URL] --> B[Hash URL with MD5/SHA-256]
-    B --> C[Take first 43 bits]
+    B --> C[Take first 41 bits]
     C --> D[Base62 encode → 7-char short_code]
     D --> E{Does short_code<br/>exist in DB?}
 
@@ -824,23 +844,31 @@ Counter    Base62     Short URL
 
 **Base62 Encoding Algorithm:**
 
-```python
-CHARSET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+```java
+public final class Base62 {
 
-def encode_base62(num: int) -> str:
-    if num == 0:
-        return CHARSET[0]
-    result = []
-    while num > 0:
-        result.append(CHARSET[num % 62])
-        num //= 62
-    return ''.join(reversed(result))
+    private static final String CHARSET =
+        "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    private static final int BASE = 62;
 
-def decode_base62(s: str) -> int:
-    num = 0
-    for ch in s:
-        num = num * 62 + CHARSET.index(ch)
-    return num
+    public static String encode(long num) {
+        if (num == 0) return String.valueOf(CHARSET.charAt(0));
+        StringBuilder sb = new StringBuilder();
+        while (num > 0) {
+            sb.append(CHARSET.charAt((int) (num % BASE)));
+            num /= BASE;
+        }
+        return sb.reverse().toString();
+    }
+
+    public static long decode(String s) {
+        long num = 0;
+        for (char c : s.toCharArray()) {
+            num = num * BASE + CHARSET.indexOf(c);
+        }
+        return num;
+    }
+}
 ```
 
 | Pros | Cons |
@@ -861,17 +889,32 @@ def decode_base62(s: str) -> int:
 
 **Core idea**: Generate a cryptographically random number, Base62-encode it, and check if it already exists.
 
-```python
-import secrets
+```java
+import java.security.SecureRandom;
 
-def generate_random_code(length=7):
-    CHARSET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    while True:
-        code = ''.join(secrets.choice(CHARSET) for _ in range(length))
-        # Must check DB every time to ensure uniqueness
-        if not db.exists("SELECT 1 FROM urls WHERE short_code = ?", code):
-            return code
-        # Collision — retry with new random code
+public class RandomCodeGenerator {
+
+    private static final String CHARSET =
+        "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    private static final SecureRandom RNG = new SecureRandom();
+
+    public String generateRandomCode(int length) {
+        while (true) {
+            StringBuilder sb = new StringBuilder(length);
+            for (int i = 0; i < length; i++) {
+                sb.append(CHARSET.charAt(RNG.nextInt(CHARSET.length())));
+            }
+            String code = sb.toString();
+            // Must check DB every time to ensure uniqueness
+            Integer exists = db.queryForObject(
+                "SELECT 1 FROM urls WHERE short_code = ?",
+                Integer.class, code
+            );
+            if (exists == null) return code;
+            // Collision — retry with a new random code
+        }
+    }
+}
 ```
 
 | Pros | Cons |
@@ -1080,49 +1123,65 @@ This is the standard pattern for URL shortener caching:
 
 **Detailed Redis Cache Implementation:**
 
-```python
-import redis
-import time
+```java
+import org.springframework.data.redis.core.StringRedisTemplate;
+import java.time.Duration;
+import java.time.Instant;
 
-redis_client = redis.Redis(host='cache.internal', port=6379)
-MAX_CACHE_TTL = 86400  # 24 hours
+@Service
+public class RedirectService {
 
-def redirect(short_code: str):
-    """Full redirect flow with caching."""
-    
-    # ─── Step 1: Check Redis cache ───
-    cached_url = redis_client.get(f"url:{short_code}")
-    if cached_url:
-        # Cache HIT — serve directly (sub-millisecond)
-        return http_redirect_302(cached_url.decode())
-    
-    # ─── Step 2: Cache MISS — query database ───
-    row = db.query(
-        "SELECT original_url, expires_at FROM urls WHERE short_code = %s",
-        (short_code,)
-    )
-    
-    if not row:
-        return http_response(404, "Short URL not found")
-    
-    # ─── Step 3: Check expiration ───
-    if row.expires_at and row.expires_at < datetime.utcnow():
-        # URL has expired — clean up cache and return 410
-        redis_client.delete(f"url:{short_code}")
-        return http_response(410, "This URL has expired")
-    
-    # ─── Step 4: Populate cache with smart TTL ───
-    if row.expires_at:
-        # TTL = time until URL expires, capped at MAX_CACHE_TTL
-        remaining = (row.expires_at - datetime.utcnow()).total_seconds()
-        ttl = int(min(remaining, MAX_CACHE_TTL))
-    else:
-        ttl = MAX_CACHE_TTL
-    
-    redis_client.setex(f"url:{short_code}", ttl, row.original_url)
-    
-    # ─── Step 5: Redirect ───
-    return http_redirect_302(row.original_url)
+    private static final Duration MAX_CACHE_TTL = Duration.ofHours(24);
+    private final StringRedisTemplate redis;
+    private final JdbcTemplate db;
+
+    public ResponseEntity<Void> redirect(String shortCode) {
+        String key = "url:" + shortCode;
+
+        // ─── Step 1: Check Redis cache ───
+        String cachedUrl = redis.opsForValue().get(key);
+        if (cachedUrl != null) {
+            // Cache HIT — serve directly (sub-millisecond)
+            return ResponseEntity.status(HttpStatus.FOUND)
+                .location(URI.create(cachedUrl)).build();
+        }
+
+        // ─── Step 2: Cache MISS — query database ───
+        UrlRow row = db.query(
+            "SELECT original_url, expires_at FROM urls WHERE short_code = ?",
+            new Object[]{shortCode},
+            rs -> rs.next()
+                ? new UrlRow(rs.getString("original_url"), rs.getTimestamp("expires_at"))
+                : null
+        );
+        if (row == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+        }
+
+        // ─── Step 3: Check expiration ───
+        Instant now = Instant.now();
+        if (row.expiresAt != null && row.expiresAt.toInstant().isBefore(now)) {
+            redis.delete(key); // clean stale cache entry
+            return ResponseEntity.status(HttpStatus.GONE).build();
+        }
+
+        // ─── Step 4: Populate cache with smart TTL ───
+        Duration ttl;
+        if (row.expiresAt != null) {
+            Duration remaining = Duration.between(now, row.expiresAt.toInstant());
+            ttl = remaining.compareTo(MAX_CACHE_TTL) < 0 ? remaining : MAX_CACHE_TTL;
+        } else {
+            ttl = MAX_CACHE_TTL;
+        }
+        redis.opsForValue().set(key, row.originalUrl, ttl);
+
+        // ─── Step 5: Redirect ───
+        return ResponseEntity.status(HttpStatus.FOUND)
+            .location(URI.create(row.originalUrl)).build();
+    }
+
+    private record UrlRow(String originalUrl, java.sql.Timestamp expiresAt) {}
+}
 ```
 
 **Cache Design Decisions:**
@@ -1496,50 +1555,56 @@ Instead of asking Redis for one counter value per URL, each Write Service reques
 └─────────────────┘
 ```
 
-**Counter batching in code:**
+**Counter batching in Java:**
 
-```python
-import redis
-import threading
+```java
+import org.springframework.data.redis.core.StringRedisTemplate;
 
-class CounterBatchAllocator:
-    """Allocates unique IDs using Redis counter with batching."""
-    
-    def __init__(self, redis_client, batch_size=1000):
-        self.redis = redis_client
-        self.batch_size = batch_size
-        self.current_id = 0
-        self.max_id = 0
-        self.lock = threading.Lock()
-    
-    def get_next_id(self) -> int:
-        with self.lock:
-            if self.current_id >= self.max_id:
-                # Batch exhausted — request new batch from Redis
-                self._fetch_new_batch()
-            
-            next_id = self.current_id
-            self.current_id += 1
-            return next_id
-    
-    def _fetch_new_batch(self):
-        """Atomically claim a batch of IDs from Redis."""
-        # INCRBY is atomic — returns the NEW value after increment
-        new_max = self.redis.incrby("url_counter", self.batch_size)
-        self.current_id = new_max - self.batch_size + 1
-        self.max_id = new_max + 1
+/** Allocates unique IDs using a Redis counter with client-side batching. */
+public class CounterBatchAllocator {
 
-# Usage in Write Service:
-allocator = CounterBatchAllocator(redis.Redis(), batch_size=1000)
+    private final StringRedisTemplate redis;
+    private final long batchSize;
+    private long currentId = 0;
+    private long maxId = 0;
 
-def shorten_url(long_url: str) -> str:
-    counter_value = allocator.get_next_id()
-    short_code = encode_base62(counter_value)
-    db.execute(
-        "INSERT INTO urls (short_code, original_url) VALUES (%s, %s)",
-        (short_code, long_url)
-    )
-    return f"https://short.ly/{short_code}"
+    public CounterBatchAllocator(StringRedisTemplate redis, long batchSize) {
+        this.redis = redis;
+        this.batchSize = batchSize;
+    }
+
+    public synchronized long getNextId() {
+        if (currentId >= maxId) {
+            fetchNewBatch(); // batch exhausted — request another from Redis
+        }
+        return currentId++;
+    }
+
+    /** Atomically claim a batch of IDs from Redis. */
+    private void fetchNewBatch() {
+        // INCRBY is atomic — returns the NEW value after increment
+        Long newMax = redis.opsForValue().increment("url_counter", batchSize);
+        this.currentId = newMax - batchSize + 1;
+        this.maxId = newMax + 1;
+    }
+}
+
+// Usage in Write Service:
+@Service
+public class ShortenService {
+    private final CounterBatchAllocator allocator;   // batchSize = 1000
+    private final JdbcTemplate db;
+
+    public String shortenUrl(String longUrl) {
+        long counterValue = allocator.getNextId();
+        String shortCode = Base62.encode(counterValue);
+        db.update(
+            "INSERT INTO urls (short_code, original_url) VALUES (?, ?)",
+            shortCode, longUrl
+        );
+        return "https://short.ly/" + shortCode;
+    }
+}
 ```
 
 **Benefits of batching:**
@@ -1646,10 +1711,11 @@ Cache-Control: no-store
 
 On every redirect, compare `expires_at` to current time:
 
-```python
-if row.expires_at and row.expires_at < datetime.utcnow():
-    redis.delete(short_code)  # Remove stale cache entry
-    return Response(status=410)  # Gone
+```java
+if (row.expiresAt != null && row.expiresAt.toInstant().isBefore(Instant.now())) {
+    redis.delete("url:" + shortCode);                       // remove stale cache entry
+    return ResponseEntity.status(HttpStatus.GONE).build();  // 410 Gone
+}
 ```
 
 ### Background Cleanup Job
@@ -1668,13 +1734,16 @@ LIMIT 10000;  -- Batch to avoid long-running transactions
 
 Set the Redis TTL to match (or be shorter than) the URL's expiration:
 
-```python
-if row.expires_at:
-    ttl_seconds = (row.expires_at - datetime.utcnow()).total_seconds()
-    ttl_seconds = min(ttl_seconds, 86400)  # Cap at 24 hours
-    redis.setex(short_code, int(ttl_seconds), row.original_url)
-else:
-    redis.setex(short_code, 86400, row.original_url)  # Default 24h TTL
+```java
+Duration cap = Duration.ofHours(24);
+Duration ttl;
+if (row.expiresAt != null) {
+    Duration remaining = Duration.between(Instant.now(), row.expiresAt.toInstant());
+    ttl = remaining.compareTo(cap) < 0 ? remaining : cap; // cap at 24 hours
+} else {
+    ttl = cap; // default 24h TTL
+}
+redis.opsForValue().set("url:" + shortCode, row.originalUrl, ttl);
 ```
 
 ---
