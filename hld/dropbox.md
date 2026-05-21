@@ -460,10 +460,8 @@ sequenceDiagram
 
     B->>GW: GET /files/shared-with-me
     GW->>FS: Forward request
-    FS->>DB: Query SharedFiles WHERE userId = B
-    DB-->>FS: List of fileIds
-    FS->>DB: Fetch FileMetadata for each fileId
-    DB-->>FS: File details
+    FS->>DB: JOIN SharedFiles + FileMetadata<br/>WHERE SharedFiles.userId = B
+    DB-->>FS: List of {fileId, name, size, ...}
     FS-->>B: Return list of shared files
 ```
 
