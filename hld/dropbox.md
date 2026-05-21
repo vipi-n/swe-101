@@ -441,6 +441,17 @@ Implementation is similar to Google Drive — enter the email of the user you wa
 - Permission check "Can user X access file Y?" → `WHERE userId = X AND fileId = Y` — O(1) on the full PK.
 - The composite PK also automatically blocks accidental duplicate share rows.
 
+**Example query** — "list all files shared with user B" in a single round trip (avoids the N+1 problem of fetching metadata one fileId at a time):
+
+```sql
+SELECT fm.*
+FROM SharedFiles s
+JOIN FileMetadata fm ON s.fileId = fm.fileId
+WHERE s.userId = 'B';
+```
+
+> For a NoSQL store like DynamoDB (no JOINs), the equivalent is: `Query` on `SharedFiles` by `userId` to get fileIds, then a single `BatchGetItem` on `FileMetadata` — still 2 calls, not N.
+
 ```mermaid
 %%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
 sequenceDiagram
@@ -483,6 +494,53 @@ When a user updates a file on their local machine, we sync changes to the remote
 4. Conflicts are resolved using a **"last write wins"** strategy — the most recent edit is saved.
 
 > **Note on Versioning:** While out of scope, in practice you wouldn't overwrite the only file. Instead, you'd add a new file (or new chunks) and update a version number and pointer on the metadata.
+
+#### File Versioning (out of scope — what it would take)
+
+Versioning is marked **below the line** in our NFRs, but it's a common follow-up question. Here's a sketch of what we'd add **without** redesigning the rest of the system:
+
+**Why bother?** Users overwrite files by mistake, ransomware encrypts everything, or you want to compare an old draft. Versioning = every save is preserved as a separate, restorable copy.
+
+**Schema changes**
+
+```
+Version table  (new)
+─────────────────────────────────────────
+versionId    PK   (UUID)
+fileId       FK → FileMetadata.fileId
+s3Key        (path to this version's bytes in S3, or list of chunk fingerprints)
+sizeBytes
+createdAt
+createdBy    FK → User.userId
+
+FileMetadata  (add one column)
+─────────────────────────────────────────
+currentVersionId  FK → Version.versionId
+```
+
+**Storage strategy — two options**
+
+| Approach | How | Storage cost |
+|---|---|---|
+| **Full copy per version** | Each save writes a brand-new S3 object | High — duplicates the whole file each time |
+| **Chunk-level versioning** (Dropbox's real approach) | Reuse the CDC chunks from the [perf deep dive](#content-defined-chunking-cdc); a new version only stores the **changed** chunks and references the rest | Low — pays only for the delta |
+
+**New APIs**
+
+```
+GET    /files/{id}/versions          → list all versions
+GET    /files/{id}?version=<vid>     → download a specific version
+POST   /files/{id}/restore?version=  → make an old version "current"
+```
+
+**Retention / GC** — you can't keep versions forever. Typical policies:
+- Keep all versions for N days (e.g., 30 for free, 180+ for paid).
+- After that, prune to one version per day, then one per week, etc.
+- A background job walks the `Version` table and deletes orphaned chunks no longer referenced by any version.
+
+**S3 shortcut** — instead of building this yourself, enable **S3 Object Versioning** on the bucket. S3 automatically keeps every `PUT` as a new version and gives each one a `versionId`. You'd still need the `Version` table for fast listing / restore UX, but S3 handles the durability of every version for free.
+
+> So: **versioning is a 1-table + 3-API addition** that plugs neatly into the existing CDC chunk store. The reason it's "out of scope" isn't complexity — it's just that the core upload/download/share/sync flows already give a complete answer, and versioning would burn interview time on retention policies and GC.
 
 #### Remote → Local
 
