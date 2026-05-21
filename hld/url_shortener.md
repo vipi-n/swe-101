@@ -233,7 +233,8 @@ CREATE TABLE urls (
     custom_alias  VARCHAR(50)  UNIQUE,
     created_at    TIMESTAMP    NOT NULL DEFAULT NOW(),
     expires_at    TIMESTAMP    NULL,
-    created_by    UUID         NULL,
+    -- FK to users(user_id); NULL = anonymous link
+    created_by    UUID         NULL REFERENCES users(user_id),
 
     CONSTRAINT unique_short_code UNIQUE (short_code)
 );
@@ -243,7 +244,25 @@ CREATE INDEX idx_original_url ON urls(original_url);
 
 -- Index for expiration cleanup
 CREATE INDEX idx_expires_at ON urls(expires_at) WHERE expires_at IS NOT NULL;
+
+-- Index for "show me my URLs"
+CREATE INDEX idx_urls_user ON urls(created_by) WHERE created_by IS NOT NULL;
 ```
+
+> **Where does `created_by` (UUID) come from?**
+> It's a foreign key to the `users` table. The UUID is generated **once at signup** (e.g. Postgres `gen_random_uuid()` or Java `UUID.randomUUID()`), stored in `users(user_id)`, and embedded in the JWT issued at login. The API Gateway extracts it from the JWT on each authenticated request and the Write Service writes it into `urls.created_by`. For **anonymous shortening** (no login required), this column is left `NULL`.
+>
+> ```sql
+> CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+>
+> CREATE TABLE users (
+>     user_id       UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+>     email         VARCHAR(255) UNIQUE NOT NULL,
+>     password_hash VARCHAR(72)  NOT NULL,   -- bcrypt
+>     plan          VARCHAR(16)  DEFAULT 'free',
+>     created_at    TIMESTAMPTZ  DEFAULT NOW()
+> );
+> ```
 
 ### Why These Indexes?
 
@@ -252,6 +271,7 @@ CREATE INDEX idx_expires_at ON urls(expires_at) WHERE expires_at IS NOT NULL;
 | Primary key on `short_code` | O(log n) lookup for redirects — the hot path |
 | Index on `original_url` | Fast dedup check if same URL was already shortened |
 | Partial index on `expires_at` | Efficient cleanup of expired URLs by background job |
+| Partial index on `created_by` | Fast `SELECT … WHERE created_by = ?` for "my URLs" page |
 
 ---
 
