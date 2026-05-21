@@ -97,6 +97,12 @@ Start with a broad overview of the primary entities. At this stage you don't nee
 | 2 | **FileMetadata** | Metadata associated with the file: name, size, MIME type, uploader, etc. |
 | 3 | **User** | The user of the system. |
 
+> **Note on the ER diagram below:**
+> - The **`File`** entity (raw bytes) is **not** a database table — it lives in **S3 / blob storage**, so it doesn't appear in the ER diagram. Only its *metadata* is in the DB.
+> - **`SHARED_FILES`** in the diagram is **not** a fourth core entity — it's a **join table** (many-to-many) introduced later in the [Share a File](#3-users-should-be-able-to-share-a-file-with-other-users) section to model which users have access to which files.
+>
+> So: **3 conceptual entities** (File, FileMetadata, User) → **3 DB tables** (User, FileMetadata, SharedFiles) + **S3** (for the actual File bytes).
+
 > In an actual interview, a short list like this is sufficient. Talk through the entities with your interviewer to ensure alignment.
 
 ```mermaid
@@ -280,6 +286,54 @@ sequenceDiagram
 - Presigned URLs are time-limited and secure.
 
 > **Pattern: Handling Large Blobs** — The direct upload approach using presigned URLs is a classic pattern for handling large file transfers efficiently. This pattern of bypassing application servers for data transfer, using signed URLs for security, and implementing chunked uploads for reliability appears across many distributed systems.
+
+#### Where does the code actually run? (Client vs Backend)
+
+Dropbox is split into two physically separate pieces:
+
+| Piece | Where it runs | What it contains |
+|-------|---------------|------------------|
+| **Client app** | On the **user's own device** (macOS / Windows / iOS / Android native app, or a browser tab for the web app). Installed by the user. | UI, the local "Dropbox folder" watcher (`FSEvents` / `FileSystemWatcher`), and an **HTTP client** that talks to our backend and to S3. |
+| **Backend (File Service, DB, etc.)** | In **our cloud** (e.g., AWS — EC2 / ECS / Lambda + RDS/DynamoDB + S3). The user never sees these machines. | Control plane: auth, metadata DB, presigned URL generation, permission checks, sync notifications. |
+
+So **"the file on my device"** literally means a file sitting on the user's laptop disk, inside the folder the Dropbox client is watching. The Dropbox client app is the bridge between that local file and our cloud.
+
+#### How does the device upload via a presigned URL? (There's no magic)
+
+A **presigned URL is just a normal HTTPS URL** with a signature in the query string — e.g.:
+
+```
+https://my-bucket.s3.amazonaws.com/files/abc.txt
+    ?X-Amz-Algorithm=AWS4-HMAC-SHA256
+    &X-Amz-Expires=300
+    &X-Amz-Signature=<hash>
+```
+
+The URL itself doesn't move bytes. The **client app** (running on the user's device) still has to do the HTTP `PUT` using a regular HTTP library. The signature only tells S3: *"this request is pre-authorized, accept it without an AWS login."*
+
+```mermaid
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
+sequenceDiagram
+    participant Disk as Local Disk<br/>(user's device)
+    participant App as Dropbox Client App<br/>(on user's device)
+    participant FS as File Service<br/>(our cloud)
+    participant S3 as S3<br/>(AWS)
+
+    App->>Disk: Read file bytes
+    App->>FS: POST /files (ask for upload URL)
+    FS-->>App: Presigned URL (valid ~5 min)
+    App->>S3: HTTP PUT <presigned URL><br/>body = raw file bytes
+    S3-->>App: 200 OK + ETag
+    S3->>FS: S3 Event Notification (upload done)
+    FS->>FS: Mark metadata "uploaded"
+
+    Note over App,S3: The client app does the actual byte transfer.<br/>The presigned URL only handles AUTH, not data movement.
+```
+
+Key takeaways:
+- The **client app** owns the HTTP code that streams bytes from disk → S3.
+- The **backend** never touches the file body — it only hands out a pre-authorized target.
+- Presigned URL ≠ a tunnel; it's just **"a URL S3 will trust for the next 5 minutes."**
 
 ---
 
