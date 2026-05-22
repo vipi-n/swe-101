@@ -321,35 +321,37 @@ Since the rate limiter lives in the API Gateway, it only has access to informati
 
 **How the Gateway extracts client identity:**
 
-```python
-# Pseudocode for client identification at the API Gateway
-def extract_client_id(request):
-    # Priority 1: Try authenticated user ID from JWT
-    auth_header = request.headers.get('Authorization')
-    if auth_header and auth_header.startswith('Bearer '):
-        token = auth_header[7:]  # Remove 'Bearer ' prefix
-        claims = jwt_decode(token)  # Decode JWT (already verified by gateway)
-        return f"user:{claims['user_id']}"  # e.g., "user:alice123"
-    
-    # Priority 2: Try API Key
-    api_key = request.headers.get('X-API-Key')
-    if api_key:
-        return f"apikey:{api_key}"  # e.g., "apikey:dk_abc123"
-    
-    # Priority 3: Fall back to IP address
-    ip = get_client_ip(request)  # Parse X-Forwarded-For chain
-    return f"ip:{ip}"  # e.g., "ip:203.0.113.42"
+```java
+// Pseudocode for client identification at the API Gateway
+public String extractClientId(HttpServletRequest request) {
+    // Priority 1: Try authenticated user ID from JWT
+    String authHeader = request.getHeader("Authorization");
+    if (authHeader != null && authHeader.startsWith("Bearer ")) {
+        String token = authHeader.substring(7);          // strip "Bearer "
+        Claims claims = jwtDecoder.decode(token);          // already verified by gateway
+        return "user:" + claims.getSubject();              // e.g., "user:alice123"
+    }
 
-def get_client_ip(request):
-    # X-Forwarded-For: client, proxy1, proxy2
-    # Only trust the LAST entry added by our own load balancer
-    forwarded_for = request.headers.get('X-Forwarded-For', '')
-    if forwarded_for:
-        # Take the leftmost IP (original client)
-        # BUT only if our infrastructure added the header
-        ips = [ip.strip() for ip in forwarded_for.split(',')]
-        return ips[0]
-    return request.remote_addr
+    // Priority 2: Try API Key
+    String apiKey = request.getHeader("X-API-Key");
+    if (apiKey != null) {
+        return "apikey:" + apiKey;                         // e.g., "apikey:dk_abc123"
+    }
+
+    // Priority 3: Fall back to IP address
+    return "ip:" + getClientIp(request);                   // e.g., "ip:203.0.113.42"
+}
+
+private String getClientIp(HttpServletRequest request) {
+    // X-Forwarded-For: client, proxy1, proxy2
+    // Only trust the chain added by our own load balancer.
+    String forwardedFor = request.getHeader("X-Forwarded-For");
+    if (forwardedFor != null && !forwardedFor.isBlank()) {
+        // Take the leftmost IP (original client)
+        return forwardedFor.split(",")[0].trim();
+    }
+    return request.getRemoteAddr();
+}
 ```
 
 **Composite Key Examples:**
@@ -437,36 +439,39 @@ Bob:     |      20      |     75       |      10      |
 
 **Pseudocode Implementation:**
 
-```python
-# NOTE: This shows the algorithm LOGIC conceptually.
-# In production, `self.counters` is NOT a local dict — it's Redis.
-# The logic below would be a Lua script running inside Redis.
+```java
+// NOTE: This shows the algorithm LOGIC conceptually.
+// In production, `counters` is NOT a local map — it's Redis.
+// The logic below would be a Lua script running inside Redis.
 
-class FixedWindowCounter:
-    def __init__(self, max_requests, window_size_seconds):
-        self.max_requests = max_requests          # e.g., 100
-        self.window_size = window_size_seconds     # e.g., 60
-        self.counters = {}  # {"client:window_start": count}
-    
-    def is_allowed(self, client_id):
-        # Determine the current window start
-        now = current_timestamp()
-        window_start = now - (now % self.window_size)  # Floor to window boundary
-        key = f"{client_id}:{window_start}"
-        
-        # Get or initialize counter
-        current_count = self.counters.get(key, 0)
-        
-        if current_count >= self.max_requests:
-            return False  # Rate limited!
-        
-        # Increment counter
-        self.counters[key] = current_count + 1
-        
-        # Cleanup old windows (optional, or use TTL)
-        self._cleanup_old_windows(window_start)
-        
-        return True
+public class FixedWindowCounter {
+    private final int maxRequests;        // e.g., 100
+    private final long windowSizeSeconds; // e.g., 60
+    private final Map<String, Integer> counters = new ConcurrentHashMap<>(); // "client:windowStart" -> count
+
+    public FixedWindowCounter(int maxRequests, long windowSizeSeconds) {
+        this.maxRequests = maxRequests;
+        this.windowSizeSeconds = windowSizeSeconds;
+    }
+
+    public boolean isAllowed(String clientId) {
+        // Determine the current window start
+        long now = Instant.now().getEpochSecond();
+        long windowStart = now - (now % windowSizeSeconds); // floor to window boundary
+        String key = clientId + ":" + windowStart;
+
+        // Atomic get-or-init and increment-if-below-limit
+        Integer updated = counters.compute(key, (k, count) -> {
+            int current = (count == null) ? 0 : count;
+            return (current >= maxRequests) ? current : current + 1;
+        });
+
+        // Cleanup old windows (optional, or rely on TTL in Redis)
+        cleanupOldWindows(windowStart);
+
+        return updated < maxRequests || updated == maxRequests; // allowed iff we actually incremented
+    }
+}
 ```
 
 **Redis Implementation:**
@@ -513,38 +518,42 @@ Alice's log (limit: 8/minute):
 
 **Pseudocode Implementation:**
 
-```python
-# NOTE: In production, self.logs is a Redis Sorted Set (ZSET), not a local list.
-# The logic below runs as a Lua script inside Redis for atomicity.
+```java
+// NOTE: In production, `logs` is a Redis Sorted Set (ZSET), not a local Deque.
+// The logic below runs as a Lua script inside Redis for atomicity.
 
-class SlidingWindowLog:
-    def __init__(self, max_requests, window_size_seconds):
-        self.max_requests = max_requests
-        self.window_size = window_size_seconds
-        self.logs = {}  # {client_id: sorted_list_of_timestamps}
-    
-    def is_allowed(self, client_id):
-        now = current_timestamp()
-        window_start = now - self.window_size
-        
-        # Get or initialize the timestamp log
-        if client_id not in self.logs:
-            self.logs[client_id] = []
-        
-        log = self.logs[client_id]
-        
-        # Remove all timestamps outside the current window
-        # (older than window_start)
-        while log and log[0] <= window_start:
-            log.pop(0)  # Remove oldest
-        
-        # Check if adding this request would exceed the limit
-        if len(log) >= self.max_requests:
-            return False  # Rate limited!
-        
-        # Allow the request and record the timestamp
-        log.append(now)
-        return True
+public class SlidingWindowLog {
+    private final int maxRequests;
+    private final long windowSizeSeconds;
+    // clientId -> sorted timestamps (oldest first)
+    private final Map<String, Deque<Long>> logs = new ConcurrentHashMap<>();
+
+    public SlidingWindowLog(int maxRequests, long windowSizeSeconds) {
+        this.maxRequests = maxRequests;
+        this.windowSizeSeconds = windowSizeSeconds;
+    }
+
+    public synchronized boolean isAllowed(String clientId) {
+        long now = Instant.now().getEpochSecond();
+        long windowStart = now - windowSizeSeconds;
+
+        Deque<Long> log = logs.computeIfAbsent(clientId, k -> new ArrayDeque<>());
+
+        // Remove timestamps outside the current window
+        while (!log.isEmpty() && log.peekFirst() <= windowStart) {
+            log.pollFirst();
+        }
+
+        // Reject if adding this request would exceed the limit
+        if (log.size() >= maxRequests) {
+            return false;
+        }
+
+        // Allow and record the timestamp
+        log.addLast(now);
+        return true;
+    }
+}
 ```
 
 **Redis Implementation (using Sorted Sets):**
@@ -610,42 +619,45 @@ Weighted count = (84 × 74.7%) + 37 = 62.7 + 37 = 99.7 → rounds to 100 → REJ
 
 **Pseudocode Implementation:**
 
-```python
-# NOTE: In production, self.windows is stored as Redis keys with TTL.
-# The logic below runs as a Lua script inside Redis for atomicity.
+```java
+// NOTE: In production, `windows` is stored as Redis keys with TTL.
+// The logic below runs as a Lua script inside Redis for atomicity.
 
-class SlidingWindowCounter:
-    def __init__(self, max_requests, window_size_seconds):
-        self.max_requests = max_requests
-        self.window_size = window_size_seconds
-        self.windows = {}  # {client_id: {window_start: count}}
-    
-    def is_allowed(self, client_id):
-        now = current_timestamp()
-        current_window = now - (now % self.window_size)
-        previous_window = current_window - self.window_size
-        
-        # How far are we into the current window? (0.0 to 1.0)
-        elapsed_in_window = (now - current_window) / self.window_size
-        
-        # Get counters
-        client_windows = self.windows.get(client_id, {})
-        prev_count = client_windows.get(previous_window, 0)
-        curr_count = client_windows.get(current_window, 0)
-        
-        # Weighted estimate
-        overlap_fraction = 1.0 - elapsed_in_window  # How much of prev window overlaps
-        estimated_count = (prev_count * overlap_fraction) + curr_count
-        
-        if estimated_count >= self.max_requests:
-            return False  # Rate limited!
-        
-        # Increment current window counter
-        if client_id not in self.windows:
-            self.windows[client_id] = {}
-        self.windows[client_id][current_window] = curr_count + 1
-        
-        return True
+public class SlidingWindowCounter {
+    private final int maxRequests;
+    private final long windowSizeSeconds;
+    // clientId -> (windowStart -> count)
+    private final Map<String, Map<Long, Integer>> windows = new ConcurrentHashMap<>();
+
+    public SlidingWindowCounter(int maxRequests, long windowSizeSeconds) {
+        this.maxRequests = maxRequests;
+        this.windowSizeSeconds = windowSizeSeconds;
+    }
+
+    public synchronized boolean isAllowed(String clientId) {
+        long now = Instant.now().getEpochSecond();
+        long currentWindow = now - (now % windowSizeSeconds);
+        long previousWindow = currentWindow - windowSizeSeconds;
+
+        // How far are we into the current window? (0.0 to 1.0)
+        double elapsedInWindow = (now - currentWindow) / (double) windowSizeSeconds;
+
+        Map<Long, Integer> clientWindows = windows.computeIfAbsent(clientId, k -> new HashMap<>());
+        int prevCount = clientWindows.getOrDefault(previousWindow, 0);
+        int currCount = clientWindows.getOrDefault(currentWindow, 0);
+
+        // Weighted estimate
+        double overlapFraction = 1.0 - elapsedInWindow;
+        double estimatedCount = (prevCount * overlapFraction) + currCount;
+
+        if (estimatedCount >= maxRequests) {
+            return false; // rate limited
+        }
+
+        clientWindows.put(currentWindow, currCount + 1);
+        return true;
+    }
+}
 ```
 
 **Why the approximation is acceptable:**
@@ -683,42 +695,50 @@ Each client has a **bucket** that holds tokens up to a **burst capacity**. Token
 
 **Pseudocode Implementation:**
 
-```python
-# NOTE: In production, self.buckets is a Redis Hash (HMSET/HMGET).
-# This entire is_allowed() method runs as a Lua script inside Redis.
-# See Section 3.6 for the actual Lua script.
+```java
+// NOTE: In production, `buckets` is a Redis Hash (HMSET/HMGET).
+// This entire isAllowed() method runs as a Lua script inside Redis.
+// See Section 3.6 for the actual Lua script.
 
-class TokenBucket:
-    def __init__(self, max_tokens, refill_rate_per_second):
-        self.max_tokens = max_tokens                    # Burst capacity (e.g., 100)
-        self.refill_rate = refill_rate_per_second        # Steady rate (e.g., 10/sec)
-        self.buckets = {}  # {client_id: {tokens, last_refill}}
-    
-    def is_allowed(self, client_id):
-        now = current_timestamp()
-        
-        # Initialize bucket if first request
-        if client_id not in self.buckets:
-            self.buckets[client_id] = {
-                'tokens': self.max_tokens,  # Start with full bucket
-                'last_refill': now
+public class TokenBucket {
+    private final double maxTokens;       // Burst capacity (e.g., 100)
+    private final double refillRatePerSec; // Steady rate (e.g., 10/sec)
+    private final Map<String, Bucket> buckets = new ConcurrentHashMap<>();
+
+    private static class Bucket {
+        double tokens;
+        double lastRefill;
+        Bucket(double tokens, double lastRefill) { this.tokens = tokens; this.lastRefill = lastRefill; }
+    }
+
+    public TokenBucket(double maxTokens, double refillRatePerSec) {
+        this.maxTokens = maxTokens;
+        this.refillRatePerSec = refillRatePerSec;
+    }
+
+    public Result isAllowed(String clientId) {
+        double now = System.currentTimeMillis() / 1000.0;
+
+        // Initialize bucket if first request (start full)
+        Bucket bucket = buckets.computeIfAbsent(clientId, k -> new Bucket(maxTokens, now));
+
+        synchronized (bucket) {
+            // Step 1: Calculate token refill
+            double elapsed = now - bucket.lastRefill;
+            bucket.tokens = Math.min(maxTokens, bucket.tokens + elapsed * refillRatePerSec);
+            bucket.lastRefill = now;
+
+            // Step 2: Try to consume a token
+            if (bucket.tokens >= 1.0) {
+                bucket.tokens -= 1.0;
+                return new Result(true, (int) bucket.tokens);
             }
-        
-        bucket = self.buckets[client_id]
-        
-        # Step 1: Calculate token refill
-        elapsed = now - bucket['last_refill']
-        tokens_to_add = elapsed * self.refill_rate
-        bucket['tokens'] = min(self.max_tokens, bucket['tokens'] + tokens_to_add)
-        bucket['last_refill'] = now
-        
-        # Step 2: Try to consume a token
-        if bucket['tokens'] >= 1:
-            bucket['tokens'] -= 1
-            remaining = int(bucket['tokens'])
-            return True, remaining  # Allowed
-        else:
-            return False, 0  # Rejected
+            return new Result(false, 0);
+        }
+    }
+
+    public record Result(boolean allowed, int remaining) {}
+}
 ```
 
 **Token Bucket Behavior Over Time:**
@@ -770,38 +790,44 @@ Requests enter the bucket (a FIFO queue). The bucket processes requests at a fix
 
 **Pseudocode Implementation:**
 
-```python
-# NOTE: Same pattern — self.buckets is Redis, logic runs as Lua script.
+```java
+// NOTE: Same pattern — `buckets` is Redis, logic runs as a Lua script.
 
-class LeakyBucket:
-    def __init__(self, capacity, leak_rate_per_second):
-        self.capacity = capacity            # Max queue size
-        self.leak_rate = leak_rate_per_second  # Constant output rate
-        self.buckets = {}  # {client_id: {water_level, last_leak_time}}
-    
-    def is_allowed(self, client_id):
-        now = current_timestamp()
-        
-        if client_id not in self.buckets:
-            self.buckets[client_id] = {
-                'water_level': 0,
-                'last_leak_time': now
+public class LeakyBucket {
+    private final double capacity;        // Max queue size
+    private final double leakRatePerSec;  // Constant output rate
+    private final Map<String, Bucket> buckets = new ConcurrentHashMap<>();
+
+    private static class Bucket {
+        double waterLevel;
+        double lastLeakTime;
+        Bucket(double waterLevel, double lastLeakTime) { this.waterLevel = waterLevel; this.lastLeakTime = lastLeakTime; }
+    }
+
+    public LeakyBucket(double capacity, double leakRatePerSec) {
+        this.capacity = capacity;
+        this.leakRatePerSec = leakRatePerSec;
+    }
+
+    public boolean isAllowed(String clientId) {
+        double now = System.currentTimeMillis() / 1000.0;
+        Bucket bucket = buckets.computeIfAbsent(clientId, k -> new Bucket(0, now));
+
+        synchronized (bucket) {
+            // Step 1: Leak water based on time elapsed
+            double elapsed = now - bucket.lastLeakTime;
+            bucket.waterLevel = Math.max(0, bucket.waterLevel - elapsed * leakRatePerSec);
+            bucket.lastLeakTime = now;
+
+            // Step 2: Try to add water (incoming request)
+            if (bucket.waterLevel < capacity) {
+                bucket.waterLevel += 1;
+                return true;  // Allowed (added to queue)
             }
-        
-        bucket = self.buckets[client_id]
-        
-        # Step 1: Leak water based on time elapsed
-        elapsed = now - bucket['last_leak_time']
-        leaked = elapsed * self.leak_rate
-        bucket['water_level'] = max(0, bucket['water_level'] - leaked)
-        bucket['last_leak_time'] = now
-        
-        # Step 2: Try to add water (incoming request)
-        if bucket['water_level'] < self.capacity:
-            bucket['water_level'] += 1
-            return True  # Allowed (added to queue)
-        else:
-            return False  # Rejected (bucket overflow)
+            return false;     // Rejected (bucket overflow)
+        }
+    }
+}
 ```
 
 > **Interview Tip:** Most interviewers are happy with Token Bucket. Only bring up Leaky Bucket if asked about smoothing bursty traffic or if the interviewer specifically mentions constant-rate processing.
@@ -870,40 +896,38 @@ flowchart TD
 
 **What the API Gateway holds in memory (NOT in Redis):**
 
-```python
-# These are cached in the gateway's local memory (from ZooKeeper/config DB)
-rules = {
-    "rule_default": {
-        "max_tokens": 1000,
-        "refill_rate": 0.278,   # tokens per second (≈1000/hour)
-        "applies_to": "user:*",
-        "endpoints": ["*"]
-    },
-    "rule_search": {
-        "max_tokens": 10,
-        "refill_rate": 0.167,   # ≈10/minute
-        "applies_to": "user:*",
-        "endpoints": ["/api/search"]
-    }
-}
+```java
+// These are cached in the gateway's local memory (from ZooKeeper/config DB)
+record Rule(String id, int maxTokens, double refillRate, String appliesTo, List<String> endpoints) {}
 
-# The gateway's rate limit check:
-def check_rate_limit(client_id, endpoint):
-    # 1. Find matching rules (from local memory — NO Redis call)
-    matching_rules = find_rules_for(client_id, endpoint)
-    
-    # 2. For each rule, call Redis Lua script (THIS is the Redis call)
-    for rule in matching_rules:
-        result = redis.evalsha(
-            LUA_SCRIPT_SHA,           # Pre-loaded Lua script hash
-            keys=[f"bucket:{client_id}:{rule.id}"],
-            args=[rule.max_tokens, rule.refill_rate, current_time()]
-        )
-        if not result.allowed:
-            return REJECT_429
-    
-    # 3. All rules passed
-    return ALLOW
+Map<String, Rule> rules = Map.of(
+    "rule_default", new Rule("rule_default", 1000, 0.278, "user:*", List.of("*")),           // ≈1000/hour
+    "rule_search",  new Rule("rule_search",    10, 0.167, "user:*", List.of("/api/search")) // ≈10/minute
+);
+
+// The gateway's rate limit check:
+public Decision checkRateLimit(String clientId, String endpoint) {
+    // 1. Find matching rules (from local memory — NO Redis call)
+    List<Rule> matchingRules = findRulesFor(clientId, endpoint);
+
+    // 2. For each rule, call Redis Lua script (THIS is the Redis call)
+    for (Rule rule : matchingRules) {
+        List<Long> result = stringRedisTemplate.execute(
+            new DefaultRedisScript<>(LUA_SCRIPT_SHA, List.class),
+            List.of("bucket:" + clientId + ":" + rule.id()),
+            String.valueOf(rule.maxTokens()),
+            String.valueOf(rule.refillRate()),
+            String.valueOf(Instant.now().getEpochSecond())
+        );
+        boolean allowed = result.get(0) == 1L;
+        if (!allowed) {
+            return Decision.REJECT_429;
+        }
+    }
+
+    // 3. All rules passed
+    return Decision.ALLOW;
+}
 ```
 
 Each token bucket tracks `(current_tokens, last_refill_time)`. This state must be **shared across all API gateway instances** — otherwise each gateway only sees a fraction of a client's traffic.
@@ -1030,16 +1054,20 @@ your-api-gateway/
       └── test_rate_limiter.py    ← Tests for rate limiting logic
 ```
 
-```python
-# rate_limiter.py — loads the Lua script from file and registers it with Redis
+```java
+// RateLimiter.java — loads the Lua script from file and registers it with Redis
 
-# Read the Lua script from your codebase
-with open("scripts/rate_limiter.lua", "r") as f:
-    LUA_SCRIPT = f.read()
+// Read the Lua script from your codebase (classpath resource)
+String luaScript = new String(
+    getClass().getResourceAsStream("/scripts/rate_limiter.lua").readAllBytes(),
+    StandardCharsets.UTF_8
+);
 
-# Redis hashes the script and returns a SHA1 identifier
-SCRIPT_SHA = redis.script_load(LUA_SCRIPT)   # → "a1b2c3d4e5f6..."
-# This SHA is reused for ALL subsequent calls — the full script is NOT sent each time
+// Redis hashes the script and returns a SHA1 identifier
+String scriptSha = stringRedisTemplate.execute(
+    (RedisCallback<String>) conn -> conn.scriptingCommands().scriptLoad(luaScript.getBytes())
+);   // → "a1b2c3d4e5f6..."
+// This SHA is reused for ALL subsequent calls — the full script is NOT sent each time
 ```
 
 **The actual Lua script file (`scripts/rate_limiter.lua`):**
@@ -1075,25 +1103,32 @@ end
 
 **Step 2: Per request — call by SHA hash (one Redis round-trip):**
 
-```python
-# On every incoming request, the gateway calls EVALSHA (NOT EVAL)
-# EVALSHA sends only the tiny SHA hash, not the entire script text
+```java
+// On every incoming request, the gateway calls EVALSHA (NOT EVAL).
+// EVALSHA sends only the tiny SHA hash, not the entire script text.
 
-import time
+public record RateLimitResult(boolean allowed, long remaining) {}
 
-def check_rate_limit(client_id, rule):
-    result = redis.evalsha(
-        SCRIPT_SHA,                                         # Pre-loaded script hash
-        keys=[f"bucket:{client_id}:{rule.id}"],            # Which user's bucket
-        args=[rule.max_tokens, rule.refill_rate, time.time()]  # Rule params + current time
-    )
-    return {"allowed": result[0] == 1, "remaining": result[1]}
+public RateLimitResult checkRateLimit(String clientId, Rule rule) {
+    List<Long> result = stringRedisTemplate.execute(
+        (RedisCallback<List<Long>>) conn -> conn.scriptingCommands().evalSha(
+            scriptSha,                                              // Pre-loaded script hash
+            ReturnType.MULTI,
+            1,                                                       // numKeys
+            ("bucket:" + clientId + ":" + rule.id()).getBytes(),    // KEYS[1] — which user's bucket
+            String.valueOf(rule.maxTokens()).getBytes(),             // ARGV[1]
+            String.valueOf(rule.refillRate()).getBytes(),            // ARGV[2]
+            String.valueOf(Instant.now().getEpochSecond()).getBytes()// ARGV[3]
+        )
+    );
+    return new RateLimitResult(result.get(0) == 1L, result.get(1));
+}
 
-# Same script, called with different keys:
-check_rate_limit("user:alice123",    default_rule)    # Alice's request
-check_rate_limit("user:bob456",      default_rule)    # Bob's request
-check_rate_limit("ip:203.0.113.42",  ip_rule)         # Anonymous IP
-check_rate_limit("apikey:dk_abc123", developer_rule)  # Developer API key
+// Same script, called with different keys:
+checkRateLimit("user:alice123",    defaultRule);    // Alice's request
+checkRateLimit("user:bob456",      defaultRule);    // Bob's request
+checkRateLimit("ip:203.0.113.42",  ipRule);         // Anonymous IP
+checkRateLimit("apikey:dk_abc123", developerRule);  // Developer API key
 ```
 
 **Summary:**
@@ -1391,44 +1426,52 @@ Rate limiting failures often coincide with traffic spikes (e.g., viral events). 
 
 Instead of making failing Redis calls repeatedly, implement a circuit breaker:
 
-```python
-class RateLimiterWithCircuitBreaker:
-    def __init__(self):
-        self.failure_count = 0
-        self.failure_threshold = 5       # Open circuit after 5 failures
-        self.recovery_timeout = 30       # Try again after 30 seconds
-        self.circuit_state = 'CLOSED'    # CLOSED, OPEN, HALF_OPEN
-        self.last_failure_time = None
-    
-    def check_rate_limit(self, client_id, rule_id):
-        # Circuit is OPEN: don't even try Redis
-        if self.circuit_state == 'OPEN':
-            if time_since(self.last_failure_time) > self.recovery_timeout:
-                self.circuit_state = 'HALF_OPEN'  # Try one request
-            else:
-                return self._fail_closed()  # Reject (fail-closed)
-        
-        try:
-            result = self.redis_check(client_id, rule_id)
-            
-            # Success! Reset circuit
-            if self.circuit_state == 'HALF_OPEN':
-                self.circuit_state = 'CLOSED'
-            self.failure_count = 0
-            return result
-            
-        except RedisConnectionError:
-            self.failure_count += 1
-            self.last_failure_time = now()
-            
-            if self.failure_count >= self.failure_threshold:
-                self.circuit_state = 'OPEN'
-                log.alert("Circuit breaker OPENED - Redis unavailable")
-            
-            return self._fail_closed()
-    
-    def _fail_closed(self):
-        return {'passes': False, 'remaining': 0, 'resetTime': now() + 60}
+```java
+public class RateLimiterWithCircuitBreaker {
+    private enum State { CLOSED, OPEN, HALF_OPEN }
+
+    private int failureCount = 0;
+    private final int failureThreshold = 5;       // Open circuit after 5 failures
+    private final long recoveryTimeoutSec = 30;   // Try again after 30 seconds
+    private volatile State circuitState = State.CLOSED;
+    private volatile Instant lastFailureTime = null;
+
+    public RateLimitResult checkRateLimit(String clientId, String ruleId) {
+        // Circuit is OPEN: don't even try Redis
+        if (circuitState == State.OPEN) {
+            if (Duration.between(lastFailureTime, Instant.now()).getSeconds() > recoveryTimeoutSec) {
+                circuitState = State.HALF_OPEN;   // Try one request
+            } else {
+                return failClosed();              // Reject (fail-closed)
+            }
+        }
+
+        try {
+            RateLimitResult result = redisCheck(clientId, ruleId);
+
+            // Success! Reset circuit
+            if (circuitState == State.HALF_OPEN) {
+                circuitState = State.CLOSED;
+            }
+            failureCount = 0;
+            return result;
+
+        } catch (RedisConnectionFailureException ex) {
+            failureCount++;
+            lastFailureTime = Instant.now();
+
+            if (failureCount >= failureThreshold) {
+                circuitState = State.OPEN;
+                log.error("Circuit breaker OPENED — Redis unavailable");
+            }
+            return failClosed();
+        }
+    }
+
+    private RateLimitResult failClosed() {
+        return new RateLimitResult(false, 0, Instant.now().getEpochSecond() + 60);
+    }
+}
 ```
 
 ```
