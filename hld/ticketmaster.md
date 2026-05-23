@@ -158,12 +158,78 @@ GET /events/{eventId}
   -> { event, venue, performer, tickets[] }
 ```
 
+**Example response:**
+```json
+200 OK
+{
+  "event": {
+    "eventId": "evt_42",
+    "name": "Taylor Swift — Eras Tour",
+    "description": "The record-breaking tour comes to NJ.",
+    "eventDate": "2026-08-14T20:00:00Z",
+    "type": "concert"
+  },
+  "venue": {
+    "venueId": "ven_7",
+    "address": "MetLife Stadium, East Rutherford, NJ",
+    "capacity": 82500,
+    "seatMap": {
+      "sections": [
+        { "id": "A", "rows": 30, "seatsPerRow": 20, "x": 0, "y": 0 }
+      ]
+    }
+  },
+  "performer": {
+    "performerId": "prf_taylor",
+    "name": "Taylor Swift",
+    "description": "American singer-songwriter."
+  },
+  "tickets": [
+    { "ticketId": "t_001", "seat": "A-12", "price": 450.00, "status": "available" },
+    { "ticketId": "t_002", "seat": "A-13", "price": 450.00, "status": "sold" },
+    { "ticketId": "t_003", "seat": "A-14", "price": 450.00, "status": "reserved" }
+  ]
+}
+```
+
 #### 2. Search events
 ```
 GET /events/search?keyword={kw}&start={startDate}&end={endDate}
                   &location={loc}&type={type}&page={n}&pageSize={s}
   -> Event[]
 ```
+
+**Example response:**
+```json
+200 OK
+{
+  "page": 1,
+  "pageSize": 20,
+  "total": 137,
+  "results": [
+    {
+      "eventId": "evt_42",
+      "name": "Taylor Swift — Eras Tour",
+      "eventDate": "2026-08-14T20:00:00Z",
+      "type": "concert",
+      "venue":     { "venueId": "ven_7",     "name": "MetLife Stadium",  "city": "East Rutherford, NJ" },
+      "performer": { "performerId": "prf_taylor", "name": "Taylor Swift" },
+      "minPrice": 89.00
+    },
+    {
+      "eventId": "evt_51",
+      "name": "Taylor Swift — Eras Tour",
+      "eventDate": "2026-08-15T20:00:00Z",
+      "type": "concert",
+      "venue":     { "venueId": "ven_7",     "name": "MetLife Stadium",  "city": "East Rutherford, NJ" },
+      "performer": { "performerId": "prf_taylor", "name": "Taylor Swift" },
+      "minPrice": 89.00
+    }
+  ]
+}
+```
+
+> 💡 Search returns a **lightweight projection** of each event (no `seatMap`, no per-seat `tickets[]`) — just enough to render search result cards. The client calls `GET /events/{eventId}` for the full payload when the user clicks one.
 
 #### 3. Book tickets (v1 — will evolve into reserve + confirm)
 ```
@@ -175,7 +241,44 @@ POST /bookings/{eventId}
   -> { bookingId }
 ```
 
-> Start simple. Tell the interviewer: *"This will evolve as we deal with contention."*
+**Example request:**
+```json
+POST /bookings/evt_42
+{
+  "ticketIds": ["t_001", "t_004"],
+  "paymentDetails": {
+    "stripeToken": "tok_visa_4242",
+    "billingZip": "10001"
+  }
+}
+```
+
+**Example response:**
+```json
+201 Created
+{
+  "bookingId": "bk_9f3a",
+  "status": "confirmed",
+  "totalPrice": 900.00,
+  "tickets": [
+    { "ticketId": "t_001", "seat": "A-12", "price": 450.00 },
+    { "ticketId": "t_004", "seat": "A-15", "price": 450.00 }
+  ],
+  "confirmedAt": "2026-05-23T18:42:11Z"
+}
+```
+
+**Example error (seat already sold):**
+```json
+409 Conflict
+{
+  "error": "seat_unavailable",
+  "message": "Ticket t_001 is no longer available.",
+  "unavailableTicketIds": ["t_001"]
+}
+```
+
+> Start simple. Tell the interviewer: *"This will evolve as we deal with contention."* In [DD1](#dd1-improve-the-booking-experience-by-reserving-tickets) this splits into `POST /bookings` (reserve → `{ bookingId, expiresAt }`) and a Stripe webhook that confirms.
 
 ---
 
