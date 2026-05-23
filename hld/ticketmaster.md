@@ -137,6 +137,41 @@ erDiagram
     PERFORMER ||--o{ EVENT : "performs at"
 ```
 
+#### Table relationships (how the FKs wire everything together)
+
+| From (child / many side) | FK column | Points to (parent / one side) | Cardinality | Plain English |
+|---|---|---|---|---|
+| `bookings` | `user_id` | `users.user_id` | N : 1 | A user places many bookings; each booking belongs to one user. |
+| `tickets` | `booking_id` *(nullable)* | `bookings.booking_id` | N : 1 | A booking groups many tickets; each ticket belongs to at most one booking (null until purchased). |
+| `tickets` | `event_id` | `events.event_id` | N : 1 | An event has many tickets (one per seat); each ticket belongs to exactly one event. |
+| `events` | `venue_id` | `venues.venue_id` | N : 1 | A venue hosts many events over time; each event happens at one venue. |
+| `events` | `performer_id` | `performers.performer_id` | N : 1 | A performer headlines many events; each event has one headline performer. |
+
+> 🔑 **Rule of thumb:** the foreign key always lives on the **"many" side** of a 1-to-many relationship. To go from the *one* to the *many*, filter that FK (`SELECT * FROM tickets WHERE event_id = ?`). To go from the *many* to the *one*, JOIN on it (`tickets JOIN events ON tickets.event_id = events.event_id`).
+
+**Walking the graph (typical traversal paths):**
+
+```
+                                  ┌──────────────┐
+                                  │  performers  │
+                                  └──────┬───────┘
+                                         │ performer_id
+                                         ▼
+┌────────┐         ┌──────────┐   ┌────────────┐         ┌────────┐
+│ users  │──┐  ┌──▶│ bookings │   │   events   │◀────────│ venues │
+└────────┘  │  │   └────┬─────┘   └──────┬─────┘ venue_id└────────┘
+            │  │        │ booking_id     │ event_id
+   user_id  │  │        │ (nullable)     │
+            ▼  │        ▼                ▼
+        ┌──────┴───┐  ┌───────────────────┐
+        │ bookings │  │      tickets      │   ← join table between
+        └──────────┘  └───────────────────┘     bookings & events
+```
+
+Two common queries this enables:
+- **"Show me my orders"** → `bookings` filtered by `user_id`, then `tickets` joined on `booking_id`.
+- **"Show me this event's seat map status"** → `tickets` filtered by `event_id`.
+
 > 💡 **Why a separate `Booking` entity?**
 > A user often buys **multiple tickets in one purchase** (e.g., 4 seats for the family). All 4 tickets share **one payment, one total price, one purchase timestamp**.
 >
