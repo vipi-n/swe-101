@@ -322,6 +322,51 @@ sequenceDiagram
     ES-->>C: { event, venue, performer, tickets[] }
 ```
 
+#### Actual queries the Event Service runs
+
+For `GET /events/evt_42`, the service issues 2 SQL queries (one for the event + its venue + performer via joins, one for the tickets):
+
+```sql
+-- 1. Event + Venue + Performer (single row, joined)
+SELECT
+    e.event_id,        e.name,        e.description,
+    e.event_date,      e.type,
+    v.venue_id,        v.address,     v.capacity,     v.seat_map,
+    p.performer_id,    p.name AS performer_name, p.description AS performer_description
+FROM events e
+JOIN venues     v ON v.venue_id     = e.venue_id
+JOIN performers p ON p.performer_id = e.performer_id
+WHERE e.event_id = 'evt_42';
+
+-- 2. All tickets for that event (N rows)
+SELECT ticket_id, seat, price, status
+FROM tickets
+WHERE event_id = 'evt_42'
+ORDER BY seat;
+```
+
+> 💡 **Why two queries instead of one big join?** A single `events JOIN tickets` would multiply the event/venue/performer columns across every ticket row (60K duplicates for MetLife Stadium). Two queries are cleaner, cheaper, and let the Event Service shape the response object directly.
+
+The service then assembles the JSON response:
+
+```js
+// pseudocode in the Event Service handler
+const [eventRow] = await db.query(eventSql, [eventId]);
+const ticketRows = await db.query(ticketSql, [eventId]);
+
+return {
+  event:     { eventId: eventRow.event_id, name: eventRow.name, /* ... */ },
+  venue:     { venueId: eventRow.venue_id, address: eventRow.address, seatMap: eventRow.seat_map, /* ... */ },
+  performer: { performerId: eventRow.performer_id, name: eventRow.performer_name, /* ... */ },
+  tickets:   ticketRows.map(t => ({ ticketId: t.ticket_id, seat: t.seat, price: t.price, status: t.status }))
+};
+```
+
+**Indexes that make these queries fast:**
+- `events.event_id` — primary key (B-tree, automatic).
+- `events.venue_id`, `events.performer_id` — FK indexes for the joins.
+- `tickets (event_id, seat)` — composite index; the `WHERE event_id = ?` is the hot lookup, `seat` lets the `ORDER BY` use the index.
+
 ---
 
 ### 3.2 Users can search for events
