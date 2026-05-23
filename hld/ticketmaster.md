@@ -401,6 +401,67 @@ sequenceDiagram
 
 > ⚠️ `LIKE '%keyword%'` is a **full table scan** — slow as the catalog grows. Acknowledged here, fixed in [DD4](#dd4-low-latency-search).
 
+#### Actual queries the Search Service runs
+
+For `GET /events/search?keyword=taylor&start=2026-08-01&end=2026-08-31&location=NJ&type=concert&page=1&pageSize=20`, the service runs **2 queries** — one for the page of results, one for the total count (for pagination UI):
+
+```sql
+-- 1. Page of matching events (joined with venue + performer for the card UI)
+SELECT
+    e.event_id,        e.name,        e.event_date,    e.type,
+    v.venue_id,        v.name AS venue_name,  v.city,
+    p.performer_id,    p.name AS performer_name,
+    (SELECT MIN(price) FROM tickets t
+        WHERE t.event_id = e.event_id AND t.status = 'available') AS min_price
+FROM events e
+JOIN venues     v ON v.venue_id     = e.venue_id
+JOIN performers p ON p.performer_id = e.performer_id
+WHERE  (e.name ILIKE '%taylor%' OR p.name ILIKE '%taylor%')
+  AND  e.event_date BETWEEN '2026-08-01' AND '2026-08-31'
+  AND  v.city ILIKE '%NJ%'
+  AND  e.type = 'concert'
+ORDER BY e.event_date ASC
+LIMIT  20 OFFSET 0;
+
+-- 2. Total count (for "137 results, page 1 of 7")
+SELECT COUNT(*)
+FROM events e
+JOIN venues v ON v.venue_id = e.venue_id
+JOIN performers p ON p.performer_id = e.performer_id
+WHERE  (e.name ILIKE '%taylor%' OR p.name ILIKE '%taylor%')
+  AND  e.event_date BETWEEN '2026-08-01' AND '2026-08-31'
+  AND  v.city ILIKE '%NJ%'
+  AND  e.type = 'concert';
+```
+
+> ⚠️ **Why this is slow at scale:** `ILIKE '%taylor%'` can't use a B-tree index (leading wildcard → full table scan). The `MIN(price)` subquery also scans tickets per event row. At 10M events this query is hundreds of milliseconds — way over our 500 ms p99 budget. [DD4](#dd4-low-latency-search) replaces this entire block with Elasticsearch.
+
+The service then shapes the response:
+
+```js
+// pseudocode in the Search Service handler
+const rows  = await db.query(pageSql,  [keyword, start, end, location, type, pageSize, offset]);
+const total = await db.query(countSql, [keyword, start, end, location, type]);
+
+return {
+  page, pageSize, total: total[0].count,
+  results: rows.map(r => ({
+    eventId: r.event_id, name: r.name, eventDate: r.event_date, type: r.type,
+    venue:     { venueId: r.venue_id, name: r.venue_name, city: r.city },
+    performer: { performerId: r.performer_id, name: r.performer_name },
+    minPrice:  r.min_price
+  }))
+};
+```
+
+**Indexes that *would* help (within Postgres limits):**
+- `events (event_date)` — supports the date-range filter and `ORDER BY`.
+- `events (type, event_date)` — composite for type + date.
+- `events USING GIN (to_tsvector('english', name))` — Postgres full-text on `name` (handles word-level search but not arbitrary substrings).
+- `tickets (event_id, status, price)` — makes the `MIN(price) WHERE status='available'` cheap per event.
+
+Even with all of these, the **substring keyword search across name + performer** is the limiter — hence DD4 moves search to Elasticsearch.
+
 ---
 
 ### 3.3 Users can book tickets
@@ -447,6 +508,82 @@ sequenceDiagram
 
     Note over C,BS: ❌ Problem: user fills payment for 5 min,<br/>then finds the seat is gone.<br/>Awful UX → fixed in DD1.
 ```
+
+#### Actual queries the Booking Service runs
+
+For `POST /bookings/evt_42 { ticketIds: ["t_001", "t_004"], paymentDetails: {...} }`, the service runs everything inside **one ACID transaction**:
+
+```sql
+BEGIN;
+
+-- 1. Lock the requested ticket rows and verify they're still available.
+--    FOR UPDATE = pessimistic row lock; blocks any other TX trying the same rows.
+SELECT ticket_id, price, status
+FROM tickets
+WHERE  ticket_id IN ('t_001', 't_004')
+  AND  event_id  = 'evt_42'
+FOR UPDATE;
+--    → application checks all rows have status = 'available'.
+--    If any are 'sold' or 'reserved' → ROLLBACK and return 409.
+
+-- 2. Create the booking row (status = 'confirmed' in the naive v1).
+INSERT INTO bookings (booking_id, user_id, total_price, status, created_at)
+VALUES ('bk_9f3a', 'u_7', 900.00, 'confirmed', NOW());
+
+-- 3. Mark the tickets as sold and attach them to the booking.
+UPDATE tickets
+SET    status     = 'sold',
+       booking_id = 'bk_9f3a'
+WHERE  ticket_id IN ('t_001', 't_004');
+
+-- 4. Charge the card via Stripe (external call, NOT a SQL statement).
+--    If Stripe declines → ROLLBACK; the SELECT FOR UPDATE lock is released
+--    and the seats are still 'available' for the next user.
+
+COMMIT;
+```
+
+> 🔑 **The critical line is `SELECT ... FOR UPDATE`.** Without it, two concurrent transactions could both read `status = 'available'` and both `UPDATE` to `'sold'` — a double booking. The row lock forces them to serialize: the second TX waits, then sees `status = 'sold'` after the first commits and aborts cleanly.
+
+The service then shapes the response:
+
+```js
+// pseudocode in the Booking Service handler
+const tx = await db.beginTransaction();
+try {
+  const tickets = await tx.query(selectForUpdateSql, [ticketIds, eventId]);
+  if (tickets.some(t => t.status !== 'available')) {
+    await tx.rollback();
+    return res.status(409).json({
+      error: 'seat_unavailable',
+      unavailableTicketIds: tickets.filter(t => t.status !== 'available').map(t => t.ticket_id)
+    });
+  }
+  const totalPrice = tickets.reduce((sum, t) => sum + t.price, 0);
+  const bookingId  = generateId();
+
+  await tx.query(insertBookingSql, [bookingId, userId, totalPrice]);
+  await tx.query(updateTicketsSql, [bookingId, ticketIds]);
+  await stripe.charge(paymentDetails, totalPrice);   // ← if this throws, we rollback
+  await tx.commit();
+
+  return res.status(201).json({ bookingId, status: 'confirmed', totalPrice, /* ... */ });
+} catch (err) {
+  await tx.rollback();
+  throw err;
+}
+```
+
+**Indexes that make these queries fast:**
+- `tickets.ticket_id` — primary key (lookup in `SELECT ... FOR UPDATE` is O(log N)).
+- `tickets (booking_id)` — for the reverse lookup "what tickets are in booking X?" used by the response and by refunds.
+- `bookings.booking_id` — primary key.
+- `bookings (user_id, created_at DESC)` — powers "show me my orders".
+
+**Concurrency notes:**
+- **Isolation level:** default `READ COMMITTED` is fine because we use explicit `FOR UPDATE` locks on the contended rows.
+- **Locks held for milliseconds**, not minutes — the whole TX should finish in <100 ms (the Stripe call is the slowest part; in DD1 we move it *out* of the lock by splitting into reserve + confirm).
+- **Deadlock avoidance:** always lock ticket rows in a deterministic order (e.g., sorted by `ticket_id`) so concurrent bookings of overlapping seats can't deadlock each other.
 
 ---
 
