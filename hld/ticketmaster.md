@@ -349,17 +349,22 @@ ORDER BY seat;
 
 The service then assembles the JSON response:
 
-```js
-// pseudocode in the Event Service handler
-const [eventRow] = await db.query(eventSql, [eventId]);
-const ticketRows = await db.query(ticketSql, [eventId]);
+```java
+// pseudocode in the Event Service handler (Spring Boot style)
+@GetMapping("/events/{eventId}")
+public EventDetailsResponse getEvent(@PathVariable String eventId) {
+    EventRow eventRow = jdbc.queryForObject(EVENT_SQL, eventRowMapper, eventId);
+    List<TicketRow> ticketRows = jdbc.query(TICKETS_SQL, ticketRowMapper, eventId);
 
-return {
-  event:     { eventId: eventRow.event_id, name: eventRow.name, /* ... */ },
-  venue:     { venueId: eventRow.venue_id, address: eventRow.address, seatMap: eventRow.seat_map, /* ... */ },
-  performer: { performerId: eventRow.performer_id, name: eventRow.performer_name, /* ... */ },
-  tickets:   ticketRows.map(t => ({ ticketId: t.ticket_id, seat: t.seat, price: t.price, status: t.status }))
-};
+    return EventDetailsResponse.builder()
+        .event(new EventDto(eventRow.getEventId(), eventRow.getName(), /* ... */))
+        .venue(new VenueDto(eventRow.getVenueId(), eventRow.getAddress(), eventRow.getSeatMap(), /* ... */))
+        .performer(new PerformerDto(eventRow.getPerformerId(), eventRow.getPerformerName(), /* ... */))
+        .tickets(ticketRows.stream()
+            .map(t -> new TicketDto(t.getTicketId(), t.getSeat(), t.getPrice(), t.getStatus()))
+            .toList())
+        .build();
+}
 ```
 
 **Indexes that make these queries fast:**
@@ -438,20 +443,38 @@ WHERE  (e.name ILIKE '%taylor%' OR p.name ILIKE '%taylor%')
 
 The service then shapes the response:
 
-```js
-// pseudocode in the Search Service handler
-const rows  = await db.query(pageSql,  [keyword, start, end, location, type, pageSize, offset]);
-const total = await db.query(countSql, [keyword, start, end, location, type]);
+```java
+// pseudocode in the Search Service handler (Spring Boot style)
+@GetMapping("/events/search")
+public SearchResponse search(@RequestParam String keyword,
+                             @RequestParam LocalDate start,
+                             @RequestParam LocalDate end,
+                             @RequestParam String location,
+                             @RequestParam String type,
+                             @RequestParam(defaultValue = "1")  int page,
+                             @RequestParam(defaultValue = "20") int pageSize) {
 
-return {
-  page, pageSize, total: total[0].count,
-  results: rows.map(r => ({
-    eventId: r.event_id, name: r.name, eventDate: r.event_date, type: r.type,
-    venue:     { venueId: r.venue_id, name: r.venue_name, city: r.city },
-    performer: { performerId: r.performer_id, name: r.performer_name },
-    minPrice:  r.min_price
-  }))
-};
+    int offset = (page - 1) * pageSize;
+    Object[] pageParams  = { keyword, keyword, start, end, location, type, pageSize, offset };
+    Object[] countParams = { keyword, keyword, start, end, location, type };
+
+    List<EventSearchRow> rows = jdbc.query(PAGE_SQL, eventSearchRowMapper, pageParams);
+    long total = jdbc.queryForObject(COUNT_SQL, Long.class, countParams);
+
+    List<EventSearchDto> results = rows.stream()
+        .map(r -> EventSearchDto.builder()
+            .eventId(r.getEventId())
+            .name(r.getName())
+            .eventDate(r.getEventDate())
+            .type(r.getType())
+            .venue(new VenueSummary(r.getVenueId(), r.getVenueName(), r.getCity()))
+            .performer(new PerformerSummary(r.getPerformerId(), r.getPerformerName()))
+            .minPrice(r.getMinPrice())
+            .build())
+        .toList();
+
+    return new SearchResponse(page, pageSize, total, results);
+}
 ```
 
 **Indexes that *would* help (within Postgres limits):**
@@ -547,30 +570,51 @@ COMMIT;
 
 The service then shapes the response:
 
-```js
-// pseudocode in the Booking Service handler
-const tx = await db.beginTransaction();
-try {
-  const tickets = await tx.query(selectForUpdateSql, [ticketIds, eventId]);
-  if (tickets.some(t => t.status !== 'available')) {
-    await tx.rollback();
-    return res.status(409).json({
-      error: 'seat_unavailable',
-      unavailableTicketIds: tickets.filter(t => t.status !== 'available').map(t => t.ticket_id)
-    });
-  }
-  const totalPrice = tickets.reduce((sum, t) => sum + t.price, 0);
-  const bookingId  = generateId();
+```java
+// pseudocode in the Booking Service handler (Spring Boot + @Transactional)
+@PostMapping("/bookings/{eventId}")
+@Transactional   // BEGIN ... COMMIT/ROLLBACK is managed by Spring
+public ResponseEntity<?> book(@PathVariable String eventId,
+                              @RequestBody BookingRequest req,
+                              @AuthenticationPrincipal String userId) {
 
-  await tx.query(insertBookingSql, [bookingId, userId, totalPrice]);
-  await tx.query(updateTicketsSql, [bookingId, ticketIds]);
-  await stripe.charge(paymentDetails, totalPrice);   // ← if this throws, we rollback
-  await tx.commit();
+    // 1. SELECT ... FOR UPDATE — lock + verify availability.
+    List<TicketRow> tickets = jdbc.query(
+        SELECT_FOR_UPDATE_SQL, ticketRowMapper, req.getTicketIds(), eventId);
 
-  return res.status(201).json({ bookingId, status: 'confirmed', totalPrice, /* ... */ });
-} catch (err) {
-  await tx.rollback();
-  throw err;
+    List<String> unavailable = tickets.stream()
+        .filter(t -> !"available".equals(t.getStatus()))
+        .map(TicketRow::getTicketId)
+        .toList();
+
+    if (!unavailable.isEmpty()) {
+        // Throwing rolls back the @Transactional method automatically.
+        throw new SeatUnavailableException(unavailable);
+    }
+
+    BigDecimal totalPrice = tickets.stream()
+        .map(TicketRow::getPrice)
+        .reduce(BigDecimal.ZERO, BigDecimal::add);
+    String bookingId = idGenerator.next();
+
+    // 2. INSERT booking row.
+    jdbc.update(INSERT_BOOKING_SQL, bookingId, userId, totalPrice, "confirmed", Instant.now());
+
+    // 3. UPDATE tickets → sold + attach bookingId.
+    jdbc.update(UPDATE_TICKETS_SQL, bookingId, req.getTicketIds());
+
+    // 4. Charge via Stripe. If this throws, @Transactional rolls everything back
+    //    and the FOR UPDATE locks are released — seats stay 'available'.
+    stripe.charge(req.getPaymentDetails(), totalPrice);
+
+    return ResponseEntity.status(HttpStatus.CREATED)
+        .body(new BookingResponse(bookingId, "confirmed", totalPrice, /* ... */));
+}
+
+@ExceptionHandler(SeatUnavailableException.class)
+public ResponseEntity<ErrorResponse> handleConflict(SeatUnavailableException ex) {
+    return ResponseEntity.status(HttpStatus.CONFLICT)
+        .body(new ErrorResponse("seat_unavailable", ex.getUnavailableTicketIds()));
 }
 ```
 
