@@ -186,6 +186,54 @@ erDiagram
     MESSAGE ||--o{ ATTACHMENT : "references"
 ```
 
+#### Table relationships (how the FKs wire everything together)
+
+| From (child / many side) | FK column | Points to (parent / one side) | Cardinality | Plain English |
+|---|---|---|---|---|
+| `clients` | `user_id` | `users.user_id` | N : 1 | A user owns many devices; each device belongs to one user. |
+| `chat_participants` | `chat_id` | `chats.chat_id` | N : 1 | A chat has many participant rows; each row points to one chat. |
+| `chat_participants` | `user_id` | `users.user_id` | N : 1 | A user is in many chats; each row links one user to one chat. |
+| `messages` | `chat_id` | `chats.chat_id` | N : 1 | A chat has many messages; each message belongs to exactly one chat. |
+| `messages` | `creator_id` | `users.user_id` | N : 1 | A user sends many messages; each message has one sender. |
+| `inbox` | `recipient_client_id` | `clients.client_id` | N : 1 | A client has many undelivered messages queued; each Inbox row targets one client. |
+| `inbox` | `message_id` | `messages.message_id` | N : 1 | One message can be queued in many clients' Inboxes (group chat fan-out); each Inbox row references one message. |
+| `attachments` | `message_id` *(optional)* | `messages.message_id` | N : 1 | A message can carry multiple attachments; each attachment belongs to one message. |
+
+> 🔑 **Rule of thumb:** the foreign key always lives on the **"many" side** of a 1-to-many relationship. To go from the *one* to the *many*, filter that FK (`Query inbox WHERE recipient_client_id = ?`). To go from the *many* to the *one*, do a point lookup on the parent's PK (`GET messages WHERE message_id = ?`).
+
+**Walking the graph (typical traversal paths):**
+
+```
+                ┌────────┐
+                │ users  │
+                └───┬────┘
+        ┌───────────┼───────────┐
+        │           │           │
+        ▼           ▼           ▼
+   ┌────────┐  ┌────────────────────┐  ┌──────────┐
+   │clients │  │  chat_participants │  │ messages │
+   └───┬────┘  └────────┬───────────┘  └────┬─────┘
+       │                │                   │
+       ▼                ▼                   │
+   ┌────────┐      ┌─────────┐              │
+   │ inbox  │◀─────┤  chats  │◀─────────────┘
+   └────────┘      └─────────┘            chat_id
+       ▲ message_id
+       │
+       └────── points back to messages
+```
+
+**Three queries this enables:**
+
+| Question | Traversal |
+|---|---|
+| "What chats is user U in?" | `chat_participants` filtered by `user_id` → JOIN `chats` on `chat_id`. (Uses the `ChatParticipant-GSI` on DynamoDB.) |
+| "Who's in chat C?" | `chat_participants` filtered by `chat_id` → JOIN `users` on `user_id`. |
+| "What undelivered messages does device D have?" | `inbox` filtered by `recipient_client_id` → for each row, GET `messages` by `message_id`. |
+| "Where do I push a new message?" | `messages.chat_id` → `chat_participants` (fan out to user_ids) → `clients` (fan out to client_ids, write Inbox + publish Pub/Sub `channel:user:<userId>`). |
+
+**Why no FK from `users` directly to `chats`?** Because users and chats are an **M:N relationship** (one user is in many chats, one chat has many users). The `chat_participants` join table breaks the M:N into two 1:N relationships — the standard relational pattern. It also gives us a natural place to store per-participant metadata later (mute status, join timestamp, role, etc.).
+
 #### Why `Inbox` is per-client, not per-user
 A user may be online on their phone but offline on their laptop. The phone gets the message immediately; the laptop needs it queued. If `Inbox` were per-user we'd delete the entry on the phone's ack and the laptop would never get it. **One Inbox row per (clientId, messageId)** — delete only when *that* client acks.
 
@@ -194,6 +242,23 @@ A user may be online on their phone but offline on their laptop. The phone gets 
 Unlike most products, chat uses a **bi-directional persistent connection (WebSocket over TLS)** because both client and server need to push events with low latency. REST would force constant polling.
 
 > 🔁 **Pattern: Real-Time Updates.** WebSockets give us: 1 TCP connection per client, server-initiated pushes, low overhead, auto-reconnect at the client lib level.
+
+#### Quick aside — what is `WSS`?
+
+`WSS` = **WebSocket Secure** — the WebSocket protocol running over TLS, the same way `HTTPS` is HTTP over TLS. You'll see `-- WSS -->` on every client→server edge in the diagrams below; it's just the encrypted version of `ws://`.
+
+| Scheme | Protocol | Default port |
+|---|---|---|
+| `ws://`  | WebSocket (plaintext) | 80 |
+| `wss://` | WebSocket over TLS    | 443 |
+
+Why we always use WSS (never plain WS) in production chat:
+
+1. **Encryption in transit** — auth tokens, message metadata, and bodies aren't readable on the wire (this is on top of any end-to-end encryption applied to message contents themselves).
+2. **Firewall / proxy friendly** — port 443 + TLS handshake looks like HTTPS to corporate proxies, mobile carriers, and middleboxes, so it gets through where custom TCP protocols would be blocked.
+3. **One long-lived encrypted TCP socket per client** — the handshake cost (one TLS setup) is amortized over the entire session of pushes, acks, heartbeats, etc.
+
+So whenever a diagram shows `client -- WSS --> chat server`, read it as: "one persistent, TLS-encrypted TCP connection carrying bi-directional JSON frames."
 
 #### Why WebSockets here (and not REST / SSE / long polling)?
 
