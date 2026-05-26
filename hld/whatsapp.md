@@ -115,15 +115,24 @@ Design **sequentially through the functional requirements first** (single-host, 
 
 ### 2.2 Core Entities
 
+We keep this list minimal — just the **nouns we need to reason about the problem**. Supporting tables (`ChatParticipant`, `Inbox`, `Attachment`) come later in the data model as implementation details.
+
 | # | Entity | Description |
 |---|--------|-------------|
 | 1 | **User** | Owner of an account. Identified by `userId`. |
-| 2 | **Client** | A specific device (phone / laptop / tablet) bound to a user. A user can have multiple clients. |
-| 3 | **Chat** | A conversation between 2–100 participants. Has metadata (name, createdAt). |
-| 4 | **ChatParticipant** | Join row linking a `chatId` to a `userId`. |
-| 5 | **Message** | Single message: contents, creator, chatId, server-stamped timestamp. |
-| 6 | **Inbox** | Per-client queue of *undelivered* `messageId`s — drained on ack. |
-| 7 | **Attachment** | Media blob (image/video/etc.) stored in blob storage; referenced by URL in a message. |
+| 2 | **Chat** | A conversation between 2–100 users. 1:1 chats are just the N=2 case. |
+| 3 | **Message** | A single message in a chat: contents, sender, server-stamped timestamp. |
+| 4 | **Client** | A specific device (phone / laptop / tablet) belonging to a user. A user can have multiple clients. |
+
+> 💡 **Why call out `Client` separately from `User`?** Because delivery is per-device. The same user might be online on their phone and offline on their laptop — the system has to deliver to both independently. This shapes the `Inbox` design later.
+
+#### Supporting tables introduced later (not core entities)
+
+| Table | Why it exists | Introduced in |
+|---|---|---|
+| `ChatParticipant` | Join table — who is in which chat | [3.1](#31-users-can-start-group-chats-with-multiple-participants-limit-100) |
+| `Inbox` | Per-client queue of undelivered `messageId`s | [3.3](#33-users-can-receive-messages-sent-while-they-are-not-online-30-days) |
+| `Attachment` | Media metadata + S3 pointer | [3.4](#34-users-can-sendreceive-media) |
 
 ```mermaid
 %%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
