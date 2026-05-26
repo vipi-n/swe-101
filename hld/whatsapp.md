@@ -403,6 +403,19 @@ flowchart LR
     CS --> DB[(DynamoDB<br/>Chat · ChatParticipant)]
 ```
 
+#### Step-by-step flow (what happens when the user creates a group)
+
+1. **User taps "New group"** in the app, picks contacts (≤ 100), types a name, hits *Create*.
+2. The client sends `createChat { participants: [...], name: "Family" }` over its already-open **WSS** connection to whichever **Chat Server** the L4 LB pinned it to.
+3. The Chat Server validates: caller is authenticated, every `userId` exists, participant count ≤ 100, caller is in the participant list.
+4. It generates a `chatId` (UUID) and issues a **single DynamoDB `transactWrite`** that inserts:
+   - 1 row in `Chat` (id, name, createdAt, creator)
+   - N rows in `ChatParticipant` (one per member)
+   This is atomic — either the whole chat exists or none of it does (no half-created groups).
+5. On success, the Chat Server replies on the same WSS frame: `{ chatId: "c_42" }`. The sender's UI flips to the new chat screen.
+6. The Chat Server then iterates the participant list and, for any participant whose WebSocket it currently holds, pushes a `chatUpdate { chatId, participants }` event — their app shows "You were added to *Family*" instantly.
+7. Participants who are **offline** or **on a different chat server** don't get the push now. They'll learn about the chat on next reconnect (their login sync reads `ChatParticipant-GSI` by `userId` and pulls all chats they belong to). Cross-server live notification comes later in [DD1](#dd1-scaling-to-billions-of-concurrent-users) via Redis Pub/Sub.
+
 #### Flow
 ```mermaid
 %%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
@@ -442,6 +455,24 @@ The Chat Server keeps an in-memory map:
 ```
 HashMap<userId, WebSocketConnection>
 ```
+
+#### Step-by-step flow (what happens when User A types "hello" and hits send)
+
+1. **User A types "hello"** in chat `c_42` and taps send. The client immediately renders the message locally with a "sending" tick (optimistic UI).
+2. The client serializes `sendMessage { chatId: "c_42", message: "hello", clientMsgId: "tmp_77" }` and writes it to the **already-open WSS frame** — no new TCP handshake.
+3. The L4 LB routes the frame to the Chat Server holding A's WebSocket (same one as always — L4 5-tuple hashing keeps the connection sticky).
+4. The Chat Server:
+   1. Looks up `ChatParticipant` for `chatId` → `[A, B, C]`.
+   2. Generates `messageId`, stamps `serverTs = now()` (NTP-synced).
+   3. Returns `{ messageId, serverTs, status: SUCCESS }` to A → A's UI flips the tick from "sending" to "sent".
+5. For each recipient (B, C), the Chat Server consults its in-memory `userId → WS` map:
+   - **B is connected here** → push `newMessage { messageId, chatId, creatorId: A, message, serverTs }` directly over B's WSS.
+   - **C is connected here too** (naive single-host assumption) → same push.
+6. B's and C's clients render the message and immediately send back `ack { messageId }` on their own WSS frames.
+7. The Chat Server receives the acks. In the naive design there's nothing to clean up because we haven't introduced the Inbox yet — but in [3.3](#33-users-can-receive-messages-sent-while-they-are-not-online-30-days) this is where we'd `DELETE Inbox(client, messageId)`.
+8. If an ack doesn't come back within ~30s, the server treats the socket as suspect → the message will be redelivered after reconnect (see [ack protocol](#the-ack-protocol--foundation-of-guaranteed-delivery)).
+
+> 💡 The whole happy-path round trip (A → server → B render → ack) typically takes **80–200 ms** on a healthy mobile network — well under our < 500 ms p99 target.
 
 ```mermaid
 %%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
@@ -494,6 +525,30 @@ flowchart LR
     CS --> I[(Inbox table<br/>TTL 30 days)]
     CS --> P[(ChatParticipant)]
 ```
+
+#### Step-by-step flow (what happens when A sends a message and C is offline)
+
+**Send-time (C is asleep, phone in a drawer):**
+
+1. **User A** types and sends as in [3.2](#32-users-can-sendreceive-messages). A's client sends `sendMessage` over WSS.
+2. The Chat Server looks up `ChatParticipant(chatId)` → `[A, B, C]`.
+3. Before doing anything visible, it **durably persists**:
+   - 1 row in `Message { messageId, chatId, contents, serverTs, expiresAt = now + 30d }`
+   - 1 `Inbox` row per recipient client: `Inbox(B_phone, messageId)`, `Inbox(C_phone, messageId)`, etc.
+   *Durability first* — even if the server dies the next millisecond, the message is safe.
+4. Server replies `SUCCESS` to A. A sees the single-tick "sent".
+5. The server pushes `newMessage` to B (who's online), B acks, server **deletes the `Inbox(B, messageId)` row**.
+6. C is offline — no WS to push to. The `Inbox(C, messageId)` row simply *stays put*, protected by the 30-day TTL.
+
+**Catch-up time (C unlocks their phone hours later):**
+
+1. The WhatsApp app on C's phone opens → its client library does a WSS handshake to the L4 LB, lands on some Chat Server (probably a different one — doesn't matter).
+2. After auth, the Chat Server immediately runs `Query Inbox WHERE recipientClientId = C_phone` → gets back `[m1, m2, m3, ...]` (every message C missed, oldest first).
+3. For each missing message: `GET Message(mX)` → push `newMessage` to C → wait for ack → `DELETE Inbox(C, mX)`.
+4. C's app renders the backlog in `serverTs` order. From the user's perspective: "opened phone, all my messages arrived."
+5. If C never comes back (phone lost, uninstall), the Inbox rows expire after 30 days via DynamoDB TTL — satisfying the "stored no longer than necessary" NFR automatically, no cron job needed.
+
+> 💡 Notice the **per-client** Inbox: if C has both a phone and a laptop, there are two separate Inbox rows for the same message. The phone's row gets deleted when the phone acks; the laptop's row survives until the laptop comes online and acks separately. This is why [DD2](#dd2-multiple-clients-per-user-multi-device) makes per-client (not per-user) Inbox a hard requirement.
 
 #### Send flow (mixed online + offline recipients)
 ```mermaid
@@ -555,6 +610,23 @@ sequenceDiagram
 Media is **bandwidth- and storage-heavy** — terrible fit for the Chat Server (it would saturate the WebSocket and crush DynamoDB write costs). Use **purpose-built blob storage** instead.
 
 > 🔁 **Pattern: Out-of-Band Uploads** — control plane (Chat Server) coordinates; data plane (S3 + CDN) carries the bytes.
+
+#### Step-by-step flow (what happens when A sends a photo to B)
+
+1. **User A picks a photo** from their gallery. The client computes a **SHA-256 hash** locally and reads the file size + MIME type.
+2. Client calls `createAttachment { hash, sizeBytes: 524288, mimeType: "image/jpeg" }` over WSS.
+3. Chat Server:
+   1. Checks dedup: is any existing `Attachment` row already pointing at this hash? If yes → reuse its `blobUrl`, skip the upload (saves bandwidth + storage for forwarded memes).
+   2. Otherwise creates `attachmentId`, writes an `Attachment` row with `status = pending`, generates a **pre-signed S3 PUT URL** (valid ~15 min, restricted to this exact key + content-length + hash).
+4. Server replies `{ attachmentId, uploadUrl, downloadUrl }`.
+5. **Client A uploads the bytes directly to S3** with an HTTP PUT to `uploadUrl`. The Chat Server is not in the data path — its CPU and bandwidth are untouched. S3 verifies the hash matches what was pre-signed.
+6. On upload success, A's client calls `sendMessage { chatId, message: "check this out", attachmentIds: [attachmentId] }`.
+7. Chat Server writes `Message` + `Inbox` rows as in [3.3](#33-users-can-receive-messages-sent-while-they-are-not-online-30-days). The `Message` row carries the `attachmentIds` array; it does *not* carry the bytes.
+8. Push `newMessage` to B with the `downloadUrl` embedded. B's client receives the JSON frame instantly (~few KB).
+9. **B's client fetches the image from the CDN** (`downloadUrl`), not from our infrastructure. The CDN caches it at the edge — when B's groupmates open the same chat, they hit the cache (huge win for forwarded media).
+10. B's UI shows a thumbnail/loading placeholder while the CDN fetch is in flight, then the full image. Acks the `newMessage` over WSS as usual; Chat Server deletes `Inbox(B, messageId)`.
+
+> 💡 **Why split into two calls (`createAttachment` then `sendMessage`)?** Because the upload might take seconds (large video on a slow network) while we want `sendMessage` to be instant. The user might also cancel mid-upload — easier to clean up an orphan `Attachment` row (a background job sweeps `status = pending` older than 1 hour) than to roll back a half-sent message.
 
 ```mermaid
 %%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
