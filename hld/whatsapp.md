@@ -435,15 +435,53 @@ sequenceDiagram
 
 #### DynamoDB table design
 
-| Table | Partition key | Sort key | Notes |
+For FR1 we only need two tables (a third — a GSI — is just an index on the second). Here's exactly what each row looks like:
+
+**`Chat` — one row per chat (the chat's "header")**
+
+| Attribute | Type | Example | Why |
 |---|---|---|---|
-| `Chat` | `chatId` | — | Simple K/V; lookup by id. |
-| `ChatParticipant` | `chatId` | `userId` | `Query(chatId)` → all participants in the chat. |
-| `ChatParticipant-GSI` | `userId` | `chatId` | GSI for "all chats this user is in" (login sync). |
+| `chatId` *(PK)* | string | `"c_42"` | UUID we generate. Partition key → fast point lookup. |
+| `name` | string | `"Family"` | Group name (null for 1:1 chats). |
+| `createdAt` | timestamp | `1716700000` | For sorting / audit. |
+| `creatorId` | string | `"u_1"` | Who started the chat. |
+| `metadata` | JSON | `{ "icon": "...", "isGroup": true }` | Free-form: avatar, settings, mute defaults, etc. |
+
+> 💬 You can think of this row as "everything about the chat *except* who's in it and what's been said." One row total per chat.
+
+**`ChatParticipant` — one row per (chat, member) pair (the membership list)**
+
+| Attribute | Type | Example | Why |
+|---|---|---|---|
+| `chatId` *(PK)* | string | `"c_42"` | Partition key — all rows for one chat live together. |
+| `userId` *(SK)* | string | `"u_7"` | Sort key — uniqueness inside the chat + range scans. |
+| `joinedAt` | timestamp | `1716700050` | Useful for "joined the group" system messages. |
+| `role` | string | `"member"` \| `"admin"` | Permissions inside the chat. |
+
+So a 5-person group = 1 row in `Chat` + 5 rows in `ChatParticipant`.
+
+**`ChatParticipant-GSI` — same data, indexed the other way**
+
+A GSI (Global Secondary Index) is a *re-indexed copy* of the table maintained by DynamoDB automatically. We need to answer two opposite questions, both fast:
+
+| Question | Direction | Table that serves it |
+|---|---|---|
+| "Who is in chat `c_42`?" | chatId → userIds | base `ChatParticipant` table (`Query(chatId)`) |
+| "What chats is user `u_7` in?" | userId → chatIds | the GSI (`Query(userId)`) |
+
+Without the GSI, the second query would be a full table scan over hundreds of millions of rows.
+
+| Index | Partition key | Sort key |
+|---|---|---|
+| `ChatParticipant-GSI` | `userId` | `chatId` |
+
+#### Why "key/value" and why DynamoDB?
+
+> 💡 **What "key/value" means here:** every query is a **point lookup or a range scan on a single partition key**. We never do JOINs, aggregations, or `WHERE x AND y AND z`. Everything is "give me chat `c_42`" or "give me all participants where `chatId = c_42`". That access pattern is the cleanest possible fit for a K/V store.
+
+> 💡 **Why DynamoDB specifically?** Predictable single-digit-ms reads/writes, horizontal scale via consistent hashing on the PK, on-demand capacity, TTL built in (needed for Inbox cleanup in [3.3](#33-users-can-receive-messages-sent-while-they-are-not-online-30-days)), and `transactWrite` up to 100 items — perfect for our 100-participant cap (the entire chat + all members commit atomically in one transaction). Cassandra, ScyllaDB, or sharded MySQL would also work; we just don't need anything more sophisticated.
 
 > 💡 **Why L4 not L7?** L7 LBs are great when you need path/header-based routing, body inspection, or HTTP-level features. We need none of that for raw WebSocket frames — L4 is faster, simpler, and supports orders of magnitude more concurrent connections.
-
-> 💡 **Why DynamoDB?** Predictable single-digit-ms K/V latency, horizontal scale via consistent hashing, on-demand capacity, TTL built in (needed for inbox cleanup), and `transactWrite` up to 100 items (perfect for our 100-participant limit). Cassandra, ScyllaDB, or sharded MySQL would also work.
 
 ---
 
