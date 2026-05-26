@@ -63,6 +63,14 @@
 
 **Core (in scope):**
 
+1. **Messages should be delivered to available users with low latency, < 500 ms.**
+2. **We should guarantee deliverability of messages** — they should make their way to users (at-least-once, no silent drops).
+3. **The system should be able to handle billions of users with high throughput** (we'll estimate this below — ~200M concurrent, ~140K msg/s peak).
+4. **Messages should be stored on centralized servers no longer than necessary** (TTL ≤ 30 days; delete on ack ASAP).
+5. **The system should be resilient against failures of individual components** (no SPOF — any single chat server, Redis node, or DB shard can die without losing messages).
+
+Tabular form for quick reference:
+
 | # | Requirement | Target |
 |---|-------------|--------|
 | 1 | **Low latency** delivery for online users | **p99 < 500 ms** end-to-end |
