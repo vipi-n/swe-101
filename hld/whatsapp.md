@@ -195,6 +195,29 @@ Unlike most products, chat uses a **bi-directional persistent connection (WebSoc
 
 > 🔁 **Pattern: Real-Time Updates.** WebSockets give us: 1 TCP connection per client, server-initiated pushes, low overhead, auto-reconnect at the client lib level.
 
+#### Why WebSockets here (and not REST / SSE / long polling)?
+
+The killer requirement is **server → client push** with **< 500 ms latency**. The recipient's app needs to receive a message *the instant* the sender hits send — without the client having to ask "any new messages?" every few seconds. Let's compare the realistic options:
+
+| Option | How it works | Why it loses for chat |
+|---|---|---|
+| ❌ **REST + short polling** | Client calls `GET /messages` every N seconds. | Tradeoff between latency (poll often → server load + battery drain) and freshness (poll rarely → slow delivery). With 200M users polling every 5s = 40M req/s of mostly-empty responses. |
+| ❌ **Long polling** | Client opens an HTTP request; server holds it open until a message arrives, then responds. Client immediately reopens. | Better latency, but every message = new TCP/TLS handshake (~3 round-trips). High overhead, complex on mobile networks with NAT timeouts. |
+| ⚠️ **SSE (Server-Sent Events)** | One-way HTTP stream server → client. | Push works! But it's **one-way** — client still needs a *second* channel (REST) to send messages. Two protocols to manage, no built-in client→server back-pressure. |
+| ✅✅✅ **WebSocket (chosen)** | One TCP+TLS connection upgraded from HTTP, then **bi-directional binary/text frames**. Stays open for the user's whole session. | One connection carries both directions. ~2 bytes of framing overhead per message (vs. ~500B HTTP headers). Server can push to millions of clients without polling. |
+
+**Concrete wins for our problem:**
+
+1. **Latency**: Server can deliver in ~one RTT (the message frame). No "is there anything new?" round trips.
+2. **Battery / data**: Mobile radios burn power waking up for HTTP polls. A kept-alive WebSocket lets the radio sleep between events.
+3. **Scale**: One TCP socket per user instead of N requests/sec per user × 200M users.
+4. **Symmetric**: Same channel for `sendMessage` (client → server) and `newMessage` (server → client) — including acks, heartbeats, typing indicators, presence — all on one connection.
+5. **Firewall friendly**: WSS is on port 443 (looks like HTTPS to corporate proxies / mobile carriers), so it gets through where custom TCP protocols would be blocked.
+
+**What we give up:** WebSocket connections are **stateful** (the chat server holds the socket in memory). That means horizontal scaling is harder than for stateless REST — which is exactly why we need Redis Pub/Sub later in [DD1](#dd1-scaling-to-billions-of-concurrent-users) to route messages between servers.
+
+> 💡 **Real-world note:** WhatsApp actually uses a custom binary protocol over a raw TLS TCP connection (lighter than WebSocket framing), but WebSocket is the standard interview-grade answer and gives the same architectural properties.
+
 #### Commands the client sends to the server
 
 ```
@@ -237,7 +260,59 @@ Unlike most products, chat uses a **bi-directional persistent connection (WebSoc
 { "userId": "u_2", "online": true, "lastSeen": "..." }
 ```
 
-> 💡 Every server-pushed event requires a **client `ack`**. The server keeps it in the Inbox until the ack arrives, otherwise it could be lost in a dropped socket. This is the foundation of "guaranteed delivery."
+#### The ack protocol — foundation of "guaranteed delivery"
+
+This is the single most important rule in the whole system, so it deserves its own deep look.
+
+**The problem:** When the server pushes `newMessage` over a WebSocket, it has *no way to know* the client actually received it. The TCP layer says "delivered to the OS buffer" — but the client app might have crashed, the user might have just yanked their phone off Wi-Fi, the OS might have killed the process to free memory. The bytes are gone, and we've already deleted them from our side. **Message lost.**
+
+**The rule:** Every server → client push (`newMessage`, `chatUpdate`, etc.) must be **explicitly acknowledged** by the client. The server only deletes the message from its `Inbox` *after* receiving the ack. Until then, the message stays in the durable Inbox table and will be redelivered after reconnect.
+
+```mermaid
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}}}%%
+sequenceDiagram
+    participant CS as Chat Server
+    participant DB as Inbox table
+    participant C as Client
+
+    Note over CS: Step 1: message is in Inbox<br/>(written before delivery attempt)
+    CS->>C: newMessage { messageId: m_991, ... }
+
+    alt happy path
+        C-->>CS: ack { m_991 }
+        CS->>DB: DELETE Inbox(client, m_991)
+        Note over CS,DB: ✅ safely delivered → row removed
+    else client crashes / network dies before ack
+        Note over CS,C: ❌ no ack arrives
+        Note over CS: After ack timeout (e.g. 30s):<br/>1. Mark socket suspect<br/>2. On next reconnect,<br/>   redrain Inbox<br/>3. Re-push m_991
+        C->>CS: (reconnect later)
+        CS->>C: newMessage { m_991, ... } (redelivery)
+        C-->>CS: ack { m_991 }
+        CS->>DB: DELETE Inbox(client, m_991)
+    end
+```
+
+**Why this works (the invariants):**
+
+1. **Inbox first, then push.** The server *always* writes to Inbox before attempting the WebSocket push. That way, even if the server crashes between writing and pushing, the message survives — a fresh chat server will redeliver after reconnect.
+2. **Delete only on ack.** Without an ack, the row stays. TTL (30 days) is the absolute cap.
+3. **Client dedupes by `messageId`.** Because we may redeliver, the same `messageId` can arrive twice — the client just drops duplicates silently. This is the standard **at-least-once delivery** pattern.
+
+**Failure scenarios this protects against:**
+
+| Scenario | What happens |
+|---|---|
+| WebSocket suddenly drops mid-push | TCP layer might have buffered the frame, but no ack arrived → Inbox keeps row → redeliver on reconnect. |
+| Client app force-quit by OS | Server gets no ack → redeliver next time client opens app. |
+| Client received the message but crashed before processing | Same — server has no ack, redelivers. Client dedupes by `messageId` so the user doesn't see it twice. |
+| Phone goes offline for a week | All messages accumulate in Inbox. On reconnect, server drains the Inbox in order. |
+| Server holding the WS crashes before push | Inbox row already exists (we wrote it first). New chat server picks up on client reconnect and delivers. |
+
+**What this *doesn't* solve:** If the client never reconnects (uninstall, lost phone), the Inbox row sits until the 30-day TTL expires. That's fine — it's the "stored no longer than necessary" non-functional requirement.
+
+> 💡 **Why not use TCP's own delivery guarantee?** TCP only guarantees bytes reach the *kernel* of the receiving machine. It says nothing about whether the application read them, whether the app crashed mid-parse, or whether the user actually saw the message. **App-level acks are the only way to know the client truly received and processed the message.** This is the same reason Kafka has consumer commits, why HTTP has 2xx status codes, and why every reliable messaging system in existence works this way.
+
+> 💡 **Why this is the foundation of "guaranteed delivery":** Combined with the durable Inbox table (NFR #2) and the dedupe-by-`messageId` rule, the ack protocol gives us **at-least-once delivery** — every message reaches every intended client at least once, even through arbitrary network failures, server crashes, and OS-level process kills. Without acks, the best we could do is at-most-once, and chat would be a lot more frustrating.
 
 ---
 
