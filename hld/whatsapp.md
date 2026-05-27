@@ -449,6 +449,14 @@ For FR1 we only need two tables (a third — a GSI — is just an index on the s
 
 > 💬 You can think of this row as "everything about the chat *except* who's in it and what's been said." One row total per chat.
 
+*Sample rows in `Chat`:*
+
+| chatId | name | createdAt | creatorId | metadata |
+|---|---|---|---|---|
+| `c_42` | `"Family"` | `1716700000` | `u_1` | `{ "icon": "family.png", "isGroup": true }` |
+| `c_77` | `"Work Squad"` | `1716701234` | `u_3` | `{ "icon": "work.png", "isGroup": true }` |
+| `c_88` | `null` | `1716702000` | `u_1` | `{ "isGroup": false }` *(1:1 chat between u_1 and u_2)* |
+
 **`ChatParticipant` — one row per (chat, member) pair (the membership list)**
 
 | Attribute | Type | Example | Why |
@@ -459,6 +467,18 @@ For FR1 we only need two tables (a third — a GSI — is just an index on the s
 | `role` | string | `"member"` \| `"admin"` | Permissions inside the chat. |
 
 So a 5-person group = 1 row in `Chat` + 5 rows in `ChatParticipant`.
+
+*Sample rows in `ChatParticipant` (the 3-person "Family" chat + a 1:1):*
+
+| chatId (PK) | userId (SK) | joinedAt | role |
+|---|---|---|---|
+| `c_42` | `u_1` | `1716700000` | `admin` |
+| `c_42` | `u_2` | `1716700000` | `member` |
+| `c_42` | `u_3` | `1716700000` | `member` |
+| `c_77` | `u_3` | `1716701234` | `admin` |
+| `c_77` | `u_5` | `1716701240` | `member` |
+| `c_88` | `u_1` | `1716702000` | `member` |
+| `c_88` | `u_2` | `1716702000` | `member` |
 
 **`ChatParticipant-GSI` — same data, indexed the other way**
 
@@ -474,6 +494,20 @@ Without the GSI, the second query would be a full table scan over hundreds of mi
 | Index | Partition key | Sort key |
 |---|---|---|
 | `ChatParticipant-GSI` | `userId` | `chatId` |
+
+*Sample rows in `ChatParticipant-GSI` (re-indexed view of the same data — answers "what chats is u_1 in?"):*
+
+| userId (PK) | chatId (SK) | joinedAt | role |
+|---|---|---|---|
+| `u_1` | `c_42` | `1716700000` | `admin` |
+| `u_1` | `c_88` | `1716702000` | `member` |
+| `u_2` | `c_42` | `1716700000` | `member` |
+| `u_2` | `c_88` | `1716702000` | `member` |
+| `u_3` | `c_42` | `1716700000` | `member` |
+| `u_3` | `c_77` | `1716701234` | `admin` |
+| `u_5` | `c_77` | `1716701240` | `member` |
+
+> 💡 `Query(userId=u_1)` on the GSI instantly returns `[c_42, c_88]` — exactly what we need on app launch to populate the user's chat list.
 
 #### Why "key/value" and why DynamoDB?
 
@@ -633,6 +667,26 @@ sequenceDiagram
 | `Message` | `messageId` | — | `expiresAt = serverTs + 30d` | Single row per message; durable. |
 | `Inbox`   | `recipientClientId` | `messageId` | `expiresAt` | One row per undelivered (client, msg). Deleted on ack. |
 
+*Sample rows in `Message` (A sent "hello" then a photo to the Family chat):*
+
+| messageId (PK) | chatId | creatorId | contents | attachmentIds | serverTs | expiresAt |
+|---|---|---|---|---|---|---|
+| `m_991` | `c_42` | `u_1` | `"hello"` | `[]` | `1716710000` | `1719302000` |
+| `m_992` | `c_42` | `u_2` | `"hey!"` | `[]` | `1716710005` | `1719302005` |
+| `m_993` | `c_42` | `u_1` | `"check this out"` | `["a_77"]` | `1716710020` | `1719302020` |
+
+*Sample rows in `Inbox` — assume `u_2` is online on phone, `u_3` is offline on both phone and laptop:*
+
+| recipientClientId (PK) | messageId (SK) | expiresAt | state |
+|---|---|---|---|
+| ~~`u_2_phone`~~ | ~~`m_991`~~ | — | *deleted after ack* |
+| `u_3_phone` | `m_991` | `1719302000` | waiting for u_3's phone to reconnect |
+| `u_3_laptop` | `m_991` | `1719302000` | waiting for u_3's laptop to reconnect |
+| `u_3_phone` | `m_993` | `1719302020` | waiting (same reason) |
+| `u_3_laptop` | `m_993` | `1719302020` | waiting (same reason) |
+
+> 💡 Notice there's **no `u_2_*` row left** for `m_991` — it was written, pushed, acked, and deleted in seconds. But `u_3` has **4 rows** (2 messages × 2 devices) sitting in the Inbox until each device comes online and acks independently.
+
 #### Write amplification check
 - 1:1 chat: 1 `Message` PUT + 1 `Inbox` PUT (recipient only) = **2 writes**.
 - 100-person group: 1 `Message` PUT + up to 100 `Inbox` PUTs = **up to 101 writes** (only for offline-on-some-client recipients; online ones never write Inbox… well, we *do* still write it, then ack immediately deletes — see optimization below).
@@ -658,6 +712,15 @@ Media is **bandwidth- and storage-heavy** — terrible fit for the Chat Server (
    2. Otherwise creates `attachmentId`, writes an `Attachment` row with `status = pending`, generates a **pre-signed S3 PUT URL** (valid ~15 min, restricted to this exact key + content-length + hash).
 4. Server replies `{ attachmentId, uploadUrl, downloadUrl }`.
 5. **Client A uploads the bytes directly to S3** with an HTTP PUT to `uploadUrl`. The Chat Server is not in the data path — its CPU and bandwidth are untouched. S3 verifies the hash matches what was pre-signed.
+
+*Sample rows in `Attachment`:*
+
+| attachmentId (PK) | messageId | hash | sizeBytes | mimeType | blobUrl | status |
+|---|---|---|---|---|---|---|
+| `a_77` | `m_993` | `sha256:9f1c…` | `524288` | `image/jpeg` | `s3://wa-media/a_77` | `uploaded` |
+| `a_78` | `m_994` | `sha256:9f1c…` | `524288` | `image/jpeg` | `s3://wa-media/a_77` | `uploaded` *(deduped — same hash as a_77, reuses blobUrl)* |
+| `a_79` | `null` | `sha256:33ab…` | `2097152` | `video/mp4` | `s3://wa-media/a_79` | `pending` *(upload in progress; swept after 1h if it stays pending)* |
+
 6. On upload success, A's client calls `sendMessage { chatId, message: "check this out", attachmentIds: [attachmentId] }`.
 7. Chat Server writes `Message` + `Inbox` rows as in [3.3](#33-users-can-receive-messages-sent-while-they-are-not-online-30-days). The `Message` row carries the `attachmentIds` array; it does *not* carry the bytes.
 8. Push `newMessage` to B with the `downloadUrl` embedded. B's client receives the JSON frame instantly (~few KB).
