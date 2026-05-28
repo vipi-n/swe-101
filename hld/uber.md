@@ -491,7 +491,7 @@ sequenceDiagram
     LDB-->>LS: [d_91, d_55, d_12, ...]
     LS->>DB: filter where status = AVAILABLE
     LS-->>MS: ranked candidates
-    Note over MS: pick top driver → offer (3.4)
+    Note over MS: pick top driver and send offer in step 3.4
 ```
 
 > ⚠️ **Problems with this naive sketch** (we'll fix in order):
@@ -617,11 +617,11 @@ sequenceDiagram
     loop every ~5s
         D->>GW: POST /drivers/location { lat, lon }
         GW->>LS: forward (auth, driverId from JWT)
-        LS->>RG: GEOADD driver:geo:<region> lon lat driverId
-        LS->>RG: ZADD driver:lastseen <ts> driverId
+        LS->>RG: GEOADD driver:geo:{region} lon lat driverId
+        LS->>RG: ZADD driver:lastseen {ts} driverId
     end
 
-    Note over RG: cleanup job removes ZSET entries older than 30s,<br/>then ZREM the matching geo members → drivers go offline cleanly.
+    Note over RG: cleanup job removes ZSET entries older than 30s<br/>and ZREMs matching geo members so drivers go offline cleanly
 ```
 
 #### How matching uses it
@@ -633,11 +633,11 @@ sequenceDiagram
     participant RG as Redis GEO
     participant DB as Postgres (Driver)
 
-    MS->>RG: GEOSEARCH driver:geo:<region><br/>FROMLONLAT lon lat<br/>BYRADIUS 5 km COUNT 50 ASC
+    MS->>RG: GEOSEARCH driver:geo:{region}<br/>FROMLONLAT lon lat<br/>BYRADIUS 5 km COUNT 50 ASC
     RG-->>MS: [d_91, d_55, d_12, ...]
     MS->>DB: SELECT driverId, rating, status, vehicle FROM driver WHERE driverId IN (...)
     DB-->>MS: filter status=AVAILABLE, rank
-    Note over MS: top driver → offer via Notification Service
+    Note over MS: top driver gets offer via Notification Service
 ```
 
 #### Why this works
@@ -758,7 +758,7 @@ sequenceDiagram
     alt driver accepts in time
         D->>MA: PATCH /rides/ride_A ACCEPT
         MA->>L: DEL lock:driver:d_91
-        Note over MA: ride status → ACCEPTED;<br/>Driver.status → ON_TRIP
+        Note over MA: ride status becomes ACCEPTED<br/>driver status becomes ON_TRIP
     else timeout
         Note over L: lock expires after 10s automatically
         Note over MA: pass driver d_91 back to candidate pool
@@ -862,7 +862,7 @@ sequenceDiagram
         M->>DB: UPDATE Ride status = 'NO_DRIVER_FOUND'
         M->>K: COMMIT offset N
     else matcher crash before commit
-        Note over K: offset stays uncommitted<br/>another consumer re-reads on rebalance
+        Note over K: offset stays uncommitted<br/>so a different consumer re-reads on rebalance
     end
 ```
 
@@ -1109,7 +1109,7 @@ sequenceDiagram
     K-->>W: consume (partition=us-west)
     W->>RG: GEOSEARCH driver:geo:sf-bay FROMLONLAT ... BYRADIUS 5km
     RG-->>W: [d_91, d_55, d_12, ...]
-    W->>DB: filter by status=AVAILABLE, rating; rank
+    W->>DB: filter by status=AVAILABLE then rank by rating
 
     Note over W,D: 4. Try top driver with lock + offer (DD3 + DD5)
     W->>L: SET lock:driver:d_91 ride_X NX EX 10
