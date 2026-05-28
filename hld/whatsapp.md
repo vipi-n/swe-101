@@ -763,12 +763,12 @@ flowchart LR
 
 #### Options considered
 
-| Option | Verdict |
-|---|---|
-| ❌ **Bad** — broadcast every message to every chat server | O(N²) chatter; melts the network. |
-| ❌ **Bad** — Kafka topic per user | Kafka tops out around tens of thousands of topics. 200M topics = no. |
-| ✅ **Good** — Consistent hashing + chat registry in etcd/ZooKeeper | Works; chat servers look up "who owns user X" then forward. Complex on rebalance / node failure. |
-| ✅✅✅ **Great (chosen)** — **Redis Pub/Sub channel per `userId`** | Redis treats channels as lightweight pointers in RAM → millions of channels are fine. Decoupling means chat servers don't need to know each other. |
+| Option | How it works | Verdict |
+|---|---|---|
+| ❌ **Broadcast every message to every chat server** | Sender's server floods the message to all ~130 peers over an internal mesh; each peer checks its own WS map and pushes if it holds the recipient. | O(N²) chatter; ~140K msg/s × 130 servers melts the internal network and wastes 99% of bandwidth. |
+| ❌ **Kafka topic per user** | Each user gets a dedicated topic. Sender produces to the recipient's topic; the chat server holding the recipient's WS consumes from that topic. | Kafka tops out around tens of thousands of topics per cluster (per-topic metadata, controller load). 200M topics = a non-starter. |
+| ✅ **Consistent hashing + chat registry in etcd/ZooKeeper** | On connect, write `userId → serverId` to etcd. To send, look up the target server in etcd and forward via direct gRPC. Hash ring rebalances on add/remove. | Works and is efficient. But the chat servers need to know each other (mesh of N² gRPC clients), and rebalancing on node failure shuffles millions of connections — lots of moving parts. |
+| ✅✅✅ **Redis Pub/Sub channel per `userId` (chosen)** | When a server accepts C's WS, it `SUBSCRIBE channel:user:C` on Redis. Senders `PUBLISH channel:user:C <payload>` and Redis fans out to whichever server is currently subscribed. | Redis treats channels as lightweight in-RAM pointers → millions of channels are fine. Senders and receivers don't need to know each other — Redis is the broker. Hiccups are covered by the durable Inbox. |
 
 #### Chosen design — Redis Pub/Sub fan-out
 
@@ -866,11 +866,11 @@ flowchart LR
 
 #### Options considered
 
-| Option | Verdict |
-|---|---|
-| ❌ **Bad** — rely on TCP timeouts | Minutes of latency before we detect death. |
-| ✅ **Good** — server-side retry with ack timeout (resend if no ack in N sec) | Improves delivery, doesn't detect dead conns. |
-| ✅✅✅ **Great (chosen)** — **Application-level heartbeats every ~30s** + ack timeouts + Inbox as backstop | Detects dead sockets in seconds; safe retries; nothing lost. |
+| Option | How it works | Verdict |
+|---|---|---|
+| ❌ **Rely on TCP keep-alive timeouts** | Let the kernel send keep-alive probes on idle sockets; when probes fail, the OS closes the socket and the server learns the connection is dead. | Linux defaults send the first probe after **2 hours** and tear down after ~11 more minutes. Even tuned aggressively, it can't reliably detect dead sockets in under a minute, and silently buffered writes vanish. |
+| ✅ **Server-side ack timeout + resend (no heartbeat)** | After pushing `newMessage`, start a 30s timer. If no `ack` arrives, resend; after N retries, give up and rely on Inbox redelivery on reconnect. | Improves *delivery* for active conversations, but doesn't *detect* dead sockets — the server keeps holding RAM for ghost WS connections and may keep pushing into a TCP buffer that no one reads. |
+| ✅✅✅ **Application-level heartbeats every ~30s + ack timeouts + Inbox backstop (chosen)** | Client pings every 30s on the WS; server replies with pong. 2 missed pings (~60s) → server declares socket dead, closes it, removes from in-memory map, unsubscribes the Redis channel. Undelivered messages survive in Inbox. | Detects dead sockets in **~60s**, frees server resources promptly, and the heartbeat doubles as a carrier for `lastSeqByChat` so we also solve missed-message detection (DD4) on the same round trip. |
 
 #### Heartbeat protocol
 ```mermaid
@@ -900,11 +900,11 @@ sequenceDiagram
 
 #### Options considered
 
-| Option | Verdict |
-|---|---|
-| ✅ **Good** — periodic polling of Inbox (every N seconds) | Simple backstop, adds latency. |
-| ✅ **Good** — sequence numbers per chat with client-side gap detection | Client notices gap, asks for missing. |
-| ✅✅✅ **Great (chosen)** — **piggyback last-seen seq on heartbeat** | No extra round-trips; server resends gaps in `pong`. |
+| Option | How it works | Verdict |
+|---|---|---|
+| ✅ **Periodic polling of Inbox (every N seconds)** | Each chat server runs a loop: every N seconds, for each connected client, `Query Inbox WHERE recipientClientId = ?` and re-push any rows that are still there. | Simple, dead reliable backstop, but adds up to N seconds of latency for messages that were dropped by Pub/Sub. Also generates a lot of empty queries in the common case. |
+| ✅ **Sequence numbers per chat with client-side gap detection** | Each message carries a monotonically increasing `seq` per chat. Client tracks `maxSeq` per chat; if it sees `seq=104` after `seq=102`, it knows `seq=103` is missing and explicitly asks the server to resend. | Catches gaps fast for *active* chats the client is currently looking at, but requires an extra client→server round trip per detected gap and doesn't help if the client receives nothing at all. |
+| ✅✅✅ **Piggyback last-seen `seq` on heartbeat (chosen)** | The 30s heartbeat ping already exists (DD3). Make it carry `lastSeqByChat: { c_42: 991, c_77: 124 }`. Server compares against its DB and stuffs any missing messages into the `pong` response. | Zero extra round-trips, zero new endpoints — reuses the heartbeat we're already sending. Worst-case 30s latency to recover a dropped Pub/Sub message, well within the < 500 ms SLO for the common (non-dropped) path. |
 
 #### Sequence-number scheme
 - Server stamps each message in a chat with a **monotonically increasing `seq`** (per chat).
@@ -938,10 +938,11 @@ sequenceDiagram
 
 #### Options considered
 
-| Option | Verdict |
-|---|---|
-| ❌ **Bad** — write `lastSeen` to DynamoDB on every heartbeat | 7M writes/sec for a cosmetic feature. No. |
-| ✅✅✅ **Great (chosen)** — **derive presence from live WS connections + Redis cache** | Source of truth = "is there an open WS?". Cached snapshot for offline queries. |
+| Option | How it works | Verdict |
+|---|---|---|
+| ❌ **Write `lastSeen` to DynamoDB on every heartbeat** | Each 30s heartbeat triggers a `PUT users SET lastSeen = now()` in DynamoDB. Presence queries simply read this column. | 200M users ÷ 30s = **~7M writes/sec** of pure overwrite for a *cosmetic* feature. Costs dwarf message-write traffic. No. |
+| ❌ **Write `lastSeen` to DynamoDB only on disconnect** | On WS close, server writes `lastSeen = now()`. "Online" is derived by checking if the WS is open. | Misses the case where the server crashes without a clean close — user appears "online" forever. Also doesn't answer "online now?" efficiently across millions of clients without a separate scan. |
+| ✅✅✅ **Derive presence from live WS connections + Redis cache (chosen)** | Source of truth = "some chat server holds an open WS for this user." Each chat server periodically (every 60s) writes the set of userIds it holds to `Redis SET presence:online`. On disconnect, server removes the entry and `HSET lastSeen` in Redis. Periodically flush Redis `lastSeen` hash to DynamoDB so data survives Redis restarts. | Hot path stays in RAM (sub-ms reads), DynamoDB writes are batched and rare, and presence query is a single `GET presence:user:<id>`. Trade-off: a chat server crash leaks "online" entries for up to 60s — acceptable for a cosmetic feature. |
 
 #### Design
 - A user is **online** iff at least one chat server holds an open WS for any of their clients.
@@ -966,6 +967,94 @@ flowchart LR
 ---
 
 ## 5. Final Architecture
+
+### End-to-end flow (everything together)
+
+This is the **single picture** that ties FR1–FR4 and DD1–DD6 into one story. Follow a message from User A on phone → User B on phone + laptop, with B's phone offline.
+
+```mermaid
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '16px'}}}%%
+sequenceDiagram
+    autonumber
+    participant A as A-phone (sender)
+    participant LB as L4 LB
+    participant S1 as Chat Server S1
+    participant DB as DynamoDB<br/>(Chat·Participant·Message·Inbox·Client)
+    participant S3 as S3 + CDN
+    participant R as Redis Pub/Sub
+    participant RP as Redis Presence
+    participant S2 as Chat Server S2
+    participant Bl as B-laptop (online)
+    participant Bp as B-phone (offline)
+
+    Note over A,LB: 0. Connect — done once per session
+    A->>LB: WSS handshake
+    LB->>S1: pin TCP (5-tuple hash)
+    S1->>R: SUBSCRIBE channel:user:A
+    S1->>RP: SADD presence:online A
+    Bl->>S2: (already connected, subscribed channel:user:B)
+
+    Note over A,S3: 1. Optional media upload (FR4)
+    A->>S1: createAttachment { hash, size, mime }
+    S1->>DB: PUT Attachment(status=pending) + dedup check
+    S1-->>A: { attachmentId, presigned PUT URL, CDN URL }
+    A->>S3: PUT bytes directly (out-of-band)
+
+    Note over A,DB: 2. Send message (FR2 + FR3 durability)
+    A->>S1: sendMessage { chatId, message, attachmentIds }
+    S1->>DB: Query ChatParticipant(chatId) → [A, B]
+    S1->>DB: Query Client(B) → [B-phone, B-laptop]
+    S1->>DB: PUT Message(serverTs, seq, TTL=30d)
+    S1->>DB: PUT Inbox(B-phone, msgId), Inbox(B-laptop, msgId)
+    S1-->>A: { messageId, serverTs, SUCCESS }  (single tick "sent")
+
+    Note over S1,R: 3. Fan-out across chat servers (DD1)
+    S1->>R: PUBLISH channel:user:B { newMessage }
+    R-->>S2: deliver to subscribed server
+    Note right of R: B-phone has no live WS<br/>→ no subscriber to push to,<br/>Inbox row keeps it safe.
+
+    Note over S2,Bl: 4. Deliver to online device + ack (FR2)
+    S2->>Bl: newMessage { ..., downloadUrl }
+    Bl->>S3: GET media via CDN (edge cache)
+    Bl-->>S2: ack { messageId }
+    S2->>DB: DELETE Inbox(B-laptop, msgId)
+
+    Note over Bp,S1: 5. Catch-up when offline device returns (FR3 + DD2)
+    Bp->>LB: WSS reconnect (hours later)
+    LB->>S1: pins to any server
+    S1->>DB: Query Inbox(B-phone) → [msgId, ...]
+    loop each undelivered
+        S1->>DB: GET Message(msgId)
+        S1->>Bp: newMessage { ... }
+        Bp-->>S1: ack
+        S1->>DB: DELETE Inbox(B-phone, msgId)
+    end
+
+    Note over Bl,S2: 6. Keepalive + gap recovery (DD3 + DD4)
+    loop every 30s
+        Bl->>S2: ping { lastSeqByChat }
+        S2-->>Bl: pong { missing: [...] }
+    end
+    Note right of S2: 2 missed pings → close WS,<br/>SREM presence:online,<br/>HSET lastSeen in Redis (DD6).
+```
+
+**Reading the diagram as a single story:**
+
+| Step | What's happening | Tied back to |
+|---|---|---|
+| 0 | Client connects via L4 LB to one chat server; server subscribes to its Pub/Sub channel and marks user online. | [2.3](#23-api--system-interface) · [DD1](#dd1-scaling-to-billions-of-concurrent-users) · [DD6](#dd6-last-seen--presence) |
+| 1 | Media (if any) is uploaded **out of band** to S3 — chat servers never touch the bytes. | [3.4](#34-users-can-sendreceive-media) |
+| 2 | Sender's `sendMessage` triggers participant + client expansion and **durable Message + per-client Inbox writes** *before* any push. | [3.2](#32-users-can-sendreceive-messages) · [3.3](#33-users-can-receive-messages-sent-while-they-are-not-online-30-days) · [DD2](#dd2-multiple-clients-per-user-multi-device) |
+| 3 | Server fans out by `PUBLISH channel:user:B`; Redis routes to whichever chat server holds B's WS. Offline devices simply have no subscriber. | [DD1](#dd1-scaling-to-billions-of-concurrent-users) |
+| 4 | Online device receives `newMessage`, fetches media from CDN, acks → Inbox row deleted. | [3.4](#34-users-can-sendreceive-media) · [ack protocol](#the-ack-protocol--foundation-of-guaranteed-delivery) |
+| 5 | Offline device's Inbox waits (TTL 30d); on reconnect, the server drains it oldest-first. | [3.3](#33-users-can-receive-messages-sent-while-they-are-not-online-30-days) |
+| 6 | 30s heartbeat detects dead sockets, piggybacks `lastSeqByChat` for gap recovery if Pub/Sub dropped, and feeds presence. | [DD3](#dd3-websocket-connection-failures) · [DD4](#dd4-redis-pubsub-drops-a-message) · [DD6](#dd6-last-seen--presence) |
+
+> 💡 **The whole design in one line:** *Stateful chat servers hold WebSockets; DynamoDB Inbox is the durable backstop; Redis Pub/Sub is the fast cross-server router; S3 + CDN handle bytes; heartbeats stitch reliability back together.*
+
+---
+
+### Component architecture (deployment view)
 
 ```mermaid
 %%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '17px'}}}%%
