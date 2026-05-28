@@ -417,87 +417,149 @@ HttpRequest request = new HttpRequest.Builder("https://api.example.com/users")
 **Purpose:** Create **families of related objects** together — so you never accidentally mix objects from different families.
 
 **Problem without it:**
-- Windows button + Mac checkbox in same UI = broken look
-- `if (isMac)` branching **scattered everywhere** for every UI element
-- New platform (Linux)? Modify every creation site
-- **TL;DR:** Related objects get mixed up, platform logic is all over the place
+- Stripe processor + Razorpay refund handler in same checkout = money lost
+- `if (gateway.equals("stripe"))` branching **scattered everywhere** for every payment operation
+- New gateway (PayPal)? Modify every creation site
+- **TL;DR:** Related objects get mixed up, gateway logic is all over the place
 
 **Rules to implement:**
-1. Define **abstract product interfaces** — one for each product type (`Button`, `Checkbox`)
-2. Create **concrete product classes** for each family (Windows family: `WindowsButton`, `WindowsCheckbox`; Mac family: `MacButton`, `MacCheckbox`)
-3. Define an **abstract factory interface** — declares creation methods for each product (`createButton()`, `createCheckbox()`)
+1. Define **abstract product interfaces** — one for each product type (`PaymentProcessor`, `RefundHandler`, `ReceiptGenerator`)
+2. Create **concrete product classes** for each family (Stripe family: `StripeProcessor`, `StripeRefundHandler`; Razorpay family: `RazorpayProcessor`, `RazorpayRefundHandler`)
+3. Define an **abstract factory interface** — declares creation methods for each product (`createProcessor()`, `createRefundHandler()`)
 4. Create **concrete factory classes** — one per family, each returns its own family's products
 5. Client code works with **factory interface + product interfaces only** — never references concrete classes directly
-6. Factory selection happens at runtime (config, OS detection, etc.)
+6. Factory selection happens at runtime (config, region detection, etc.)
 
-**❌ Without the pattern — easy to mix incompatible families:**
+**❌ Without the pattern — easy to mix incompatible gateway components:**
 
 ```java
-public void renderUI(boolean isMac) {
-    Button btn;
-    Checkbox cb;
-    if (isMac) {
-        btn = new MacButton();
-        cb  = new WindowsCheckbox();  // ❌ OOPS — Mac button + Windows checkbox in same UI!
-    } else {
-        btn = new WindowsButton();
-        cb  = new MacCheckbox();      // ❌ Same mistake, opposite direction
+public class OrderService {
+    public void checkout(Order order, String gateway) {
+        PaymentProcessor processor;
+        RefundHandler refund;
+        if (gateway.equals("stripe")) {
+            processor = new StripeProcessor();
+            refund = new RazorpayRefundHandler();  // ❌ OOPS — Stripe charge + Razorpay refund = money lost!
+        } else {
+            processor = new RazorpayProcessor();
+            refund = new StripeRefundHandler();    // ❌ Same mistake, opposite direction
+        }
+        // Same if/else scattered in 20 places. Add PayPal? Edit all 20.
     }
-    // Same if/else scattered in 50 places. Add Linux? Edit all 50.
 }
 ```
 
 **Problems with the above:**
-- 🔴 **No type-system protection** — nothing stops you from pairing `MacButton` with `WindowsCheckbox`.
-- 🔴 **Platform `if/else` everywhere** — every UI creation site repeats the same branching.
-- 🔴 **Adding a platform = N edits** — supporting Linux means editing every creation site.
-- 🔴 **Hard to test** — can't swap a "test family" in cleanly; have to mock OS detection.
+- 🔴 **No type-system protection** — nothing stops you from pairing `StripeProcessor` with `RazorpayRefundHandler`.
+- 🔴 **Gateway `if/else` everywhere** — every payment creation site repeats the same branching.
+- 🔴 **Adding a gateway = N edits** — supporting PayPal means editing every creation site.
+- 🔴 **Hard to test** — can't swap a "mock gateway family" in cleanly; have to mock config strings.
 
-**✅ With Abstract Factory — impossible to mix families:**
+**✅ With Abstract Factory — impossible to mix gateway families:**
 
 ```java
-// Abstract products
-public interface Button { void render(); }
-public interface Checkbox { void render(); }
-
-// Concrete products — Windows family
-public class WindowsButton implements Button {
-    public void render() { System.out.println("Windows Button"); }
+// --- Abstract Products ---
+public interface PaymentProcessor {
+    String charge(double amount, String currency);  // returns transactionId
 }
-public class WindowsCheckbox implements Checkbox {
-    public void render() { System.out.println("Windows Checkbox"); }
+public interface RefundHandler {
+    boolean refund(String transactionId, double amount);
 }
-
-// Concrete products — Mac family
-public class MacButton implements Button {
-    public void render() { System.out.println("Mac Button"); }
-}
-public class MacCheckbox implements Checkbox {
-    public void render() { System.out.println("Mac Checkbox"); }
+public interface ReceiptGenerator {
+    String generateReceipt(String transactionId);
 }
 
-// Abstract factory
-public interface UIFactory {
-    Button createButton();
-    Checkbox createCheckbox();
+// --- Stripe Family ---
+public class StripeProcessor implements PaymentProcessor {
+    public String charge(double amount, String currency) {
+        // calls Stripe API: POST /v1/charges
+        return "stripe_txn_" + UUID.randomUUID();
+    }
+}
+public class StripeRefundHandler implements RefundHandler {
+    public boolean refund(String transactionId, double amount) {
+        // calls Stripe API: POST /v1/refunds with stripe_txn_xxx
+        return true;
+    }
+}
+public class StripeReceiptGenerator implements ReceiptGenerator {
+    public String generateReceipt(String transactionId) {
+        return "https://pay.stripe.com/receipts/" + transactionId;
+    }
 }
 
-// Concrete factories
-public class WindowsUIFactory implements UIFactory {
-    public Button createButton()     { return new WindowsButton(); }
-    public Checkbox createCheckbox() { return new WindowsCheckbox(); }
+// --- Razorpay Family ---
+public class RazorpayProcessor implements PaymentProcessor {
+    public String charge(double amount, String currency) {
+        // calls Razorpay API: POST /v1/orders then /v1/payments/capture
+        return "rzp_pay_" + UUID.randomUUID();
+    }
+}
+public class RazorpayRefundHandler implements RefundHandler {
+    public boolean refund(String transactionId, double amount) {
+        // calls Razorpay API: POST /v1/payments/{id}/refund
+        return true;
+    }
+}
+public class RazorpayReceiptGenerator implements ReceiptGenerator {
+    public String generateReceipt(String transactionId) {
+        return "https://rzp.io/receipt/" + transactionId;
+    }
 }
 
-public class MacUIFactory implements UIFactory {
-    public Button createButton()     { return new MacButton(); }
-    public Checkbox createCheckbox() { return new MacCheckbox(); }
+// --- Abstract Factory ---
+public interface PaymentGatewayFactory {
+    PaymentProcessor createProcessor();
+    RefundHandler createRefundHandler();
+    ReceiptGenerator createReceiptGenerator();
 }
 
-// Usage
-UIFactory factory = isMac ? new MacUIFactory() : new WindowsUIFactory();
-Button btn = factory.createButton();    // creates OS-specific button
-btn.render();
+// --- Concrete Factories ---
+public class StripeFactory implements PaymentGatewayFactory {
+    public PaymentProcessor createProcessor()       { return new StripeProcessor(); }
+    public RefundHandler createRefundHandler()      { return new StripeRefundHandler(); }
+    public ReceiptGenerator createReceiptGenerator() { return new StripeReceiptGenerator(); }
+}
+
+public class RazorpayFactory implements PaymentGatewayFactory {
+    public PaymentProcessor createProcessor()       { return new RazorpayProcessor(); }
+    public RefundHandler createRefundHandler()      { return new RazorpayRefundHandler(); }
+    public ReceiptGenerator createReceiptGenerator() { return new RazorpayReceiptGenerator(); }
+}
+
+// --- Usage (OrderService never knows which gateway) ---
+public class OrderService {
+    private final PaymentProcessor processor;
+    private final RefundHandler refundHandler;
+    private final ReceiptGenerator receiptGenerator;
+
+    public OrderService(PaymentGatewayFactory factory) {
+        this.processor = factory.createProcessor();
+        this.refundHandler = factory.createRefundHandler();
+        this.receiptGenerator = factory.createReceiptGenerator();
+    }
+
+    public String checkout(Order order) {
+        String txnId = processor.charge(order.getAmount(), "INR");
+        String receipt = receiptGenerator.generateReceipt(txnId);
+        return receipt;
+    }
+
+    public boolean cancelOrder(String txnId, double amount) {
+        return refundHandler.refund(txnId, amount);  // always calls the correct gateway's refund
+    }
+}
+
+// --- At startup (pick factory based on config) ---
+PaymentGatewayFactory factory = country.equals("IN")
+    ? new RazorpayFactory()
+    : new StripeFactory();
+
+OrderService orderService = new OrderService(factory);
+orderService.checkout(order);  // guaranteed: processor + refund + receipt all from same gateway
 ```
+
+> 💡 **Mental model:** Abstract Factory = **"a kit that guarantees all parts work together."** Like buying a phone charger — the factory (Apple/Samsung) ensures the cable, adapter, and port all match. You can't accidentally get a Lightning cable with a USB-C adapter.
 
 ---
 
