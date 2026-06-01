@@ -161,75 +161,6 @@ Java (Platform Independent):
 
 ---
 
-### Q5: What is the difference between == and equals()?
-
-This is one of the most common sources of bugs for Java beginners. The `==` operator and the `equals()` method serve fundamentally different purposes:
-
-- **`==` (Reference Equality):** Compares whether two references point to the **exact same object in memory** (same memory address). For primitives, it compares the actual values since primitives don't have references.
-- **`equals()` (Content Equality):** Compares whether two objects are **logically equivalent** based on their content/state. The default implementation in `Object` class uses `==` (reference comparison), but classes like `String`, `Integer`, etc. override it to compare actual content.
-
-```java
-String s1 = new String("Hello");
-String s2 = new String("Hello");
-String s3 = "Hello";
-String s4 = "Hello";
-
-// == compares references (memory addresses)
-System.out.println(s1 == s2);      // false (different objects)
-System.out.println(s3 == s4);      // true (string pool - same reference)
-
-// equals() compares content
-System.out.println(s1.equals(s2)); // true (same content)
-System.out.println(s3.equals(s4)); // true (same content)
-```
-
-| `==` | `equals()` |
-|------|------------|
-| Compares references | Compares content |
-| Works on primitives & objects | Works only on objects |
-| Cannot be overridden | Can be overridden |
-
----
-
-### Q5: What is the difference between final, finally, and finalize?
-
-These three keywords look similar but serve completely different purposes in Java:
-
-- **`final`** is a **modifier/keyword** used to declare constants, prevent method overriding, and prevent class inheritance. Once something is declared `final`, it cannot be changed.
-- **`finally`** is a **block** associated with try-catch that **always executes** regardless of whether an exception occurred or not. It is used for cleanup operations like closing database connections, file streams, or releasing resources.
-- **`finalize`** is a **method** in the `Object` class that the Garbage Collector calls just before destroying an object to perform cleanup. It was **deprecated in Java 9** because it is unpredictable (you can't control when or even if it runs) and has been replaced by `try-with-resources` and `Cleaner` API.
-
-```java
-// final - constant/immutable
-final int MAX = 100;           // Cannot change value
-final class MyClass { }        // Cannot extend
-final void method() { }        // Cannot override
-
-// finally - always executes after try-catch
-try {
-    // risky code
-} catch (Exception e) {
-    // handle exception
-} finally {
-    // ALWAYS executes (cleanup code)
-    connection.close();
-}
-
-// finalize - called by GC before destroying object (deprecated in Java 9+)
-@Override
-protected void finalize() throws Throwable {
-    // cleanup before garbage collection
-}
-```
-
-| Keyword | Type | Purpose |
-|---------|------|---------|
-| `final` | Modifier | Make constant/immutable |
-| `finally` | Block | Cleanup code, always runs |
-| `finalize` | Method | Called before GC (deprecated) |
-
----
-
 ### Q7: Can we override static methods?
 
 **No, static methods cannot be overridden** in Java. This is because method overriding is based on **runtime polymorphism** (dynamic dispatch), where the JVM decides which method to call based on the actual object type at runtime. Static methods, however, belong to the **class** (not the object) and are resolved at **compile time** based on the reference type.
@@ -1830,38 +1761,6 @@ Set<Employee> set = new HashSet<>();
 set.add(e1);
 set.add(e2);  // Without proper equals/hashCode, both get added!
 ```
-
----
-
-### Q32: What is the difference between Iterator and ListIterator?
-
-```java
-List<String> list = Arrays.asList("A", "B", "C");
-
-// Iterator - forward only, for any Collection
-Iterator<String> it = list.iterator();
-while (it.hasNext()) {
-    System.out.println(it.next());
-}
-
-// ListIterator - bidirectional, only for List
-ListIterator<String> lit = list.listIterator();
-while (lit.hasNext()) {
-    System.out.println(lit.next());
-    // lit.set("X");  // Can modify
-    // lit.add("Y");  // Can add
-}
-while (lit.hasPrevious()) {
-    System.out.println(lit.previous());
-}
-```
-
-| Iterator | ListIterator |
-|----------|--------------|
-| Forward only | Bidirectional |
-| Any Collection | Only List |
-| `remove()` only | `add()`, `set()`, `remove()` |
-| No index | `nextIndex()`, `previousIndex()` |
 
 ---
 
