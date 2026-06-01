@@ -1438,50 +1438,6 @@ System.out.println(s1 == s4);  // true (intern returns pool ref)
 
 ---
 
-### Q24: Important String methods?
-
-```java
-String str = "Hello World";
-
-// Length and access
-str.length();              // 11
-str.charAt(0);             // 'H'
-str.isEmpty();             // false
-str.isBlank();             // false (Java 11+)
-
-// Search
-str.indexOf("World");      // 6
-str.lastIndexOf("o");      // 7
-str.contains("World");     // true
-str.startsWith("Hello");   // true
-str.endsWith("World");     // true
-
-// Comparison
-str.equals("Hello World"); // true
-str.equalsIgnoreCase("hello world"); // true
-str.compareTo("Hello");    // positive (comes after)
-
-// Modification (returns NEW string)
-str.toUpperCase();         // "HELLO WORLD"
-str.toLowerCase();         // "hello world"
-str.trim();                // Remove leading/trailing spaces
-str.strip();               // Remove whitespace (Java 11+)
-str.replace("World", "Java"); // "Hello Java"
-str.substring(0, 5);       // "Hello"
-str.concat("!");           // "Hello World!"
-
-// Split and Join
-str.split(" ");            // ["Hello", "World"]
-String.join("-", "a", "b"); // "a-b"
-
-// Conversion
-String.valueOf(123);       // "123"
-Integer.parseInt("123");   // 123
-str.toCharArray();         // char[]
-```
-
----
-
 ## Collections Framework
 
 **What is Collections Framework?**
