@@ -738,49 +738,6 @@ public final class Student {
 }
 ```
 
-**Quick Reference for List Fields:**
-
-| Scenario | Constructor | Getter |
-|----------|-------------|--------|
-| `List<String>` | `new ArrayList<>(list)` | `new ArrayList<>(list)` |
-| `List<ImmutableObject>` | `new ArrayList<>(list)` | `new ArrayList<>(list)` |
-| `List<MutableObject>` | Copy list + copy each object | Copy list + copy each object |
-
----
-
-#### Decision Tree: Do I Need Defensive Copy?
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                  DO I NEED DEFENSIVE COPY?                              │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  Is the field a primitive (int, double, boolean)?                       │
-│      └── NO defensive copy needed                                       │
-│                                                                         │
-│  Is the field a String?                                                 │
-│      └── NO defensive copy needed (String is immutable)                 │
-│                                                                         │
-│  Is the field an immutable object (final class, no setters)?            │
-│      └── NO defensive copy needed                                       │
-│                                                                         │
-│  Is the field a List/Set/Map of immutable objects?                      │
-│      └── YES! Copy the collection in constructor AND getter             │
-│                                                                         │
-│  Is the field a List/Set/Map of mutable objects?                        │
-│      └── YES! Copy collection AND each object inside                    │
-│                                                                         │
-│  Is the field a mutable object (has setters)?                           │
-│      └── YES! Deep copy in constructor AND getter                       │
-│          OR make that object immutable first                            │
-│                                                                         │
-│  Is the field Date/Calendar?                                            │
-│      └── YES! Copy in constructor AND getter                            │
-│          OR use java.time (LocalDate, etc.) which is immutable          │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
 #### 💡 Pro Tip: Use Immutable Classes from java.time
 
 ```java
