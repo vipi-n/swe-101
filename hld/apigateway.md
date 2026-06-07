@@ -90,11 +90,14 @@ Microservices WITHOUT a gateway:
    Every new service breaks every client.
 
 Microservices WITH an API Gateway:
-┌──────────┐     ┌─────────────┐     ┌────────────┐
-│  Client  │ ───▶│ API Gateway │ ───▶│ Microsvcs  │
-└──────────┘     └─────────────┘     └────────────┘
+┌──────────┐     ┌──────────────┐     ┌─────────────┐     ┌────────────┐
+│  Client  │ ───▶│ Load Balancer│ ───▶│ API Gateway │ ───▶│ Microsvcs  │
+└──────────┘     │  (L4/L7)     │     │   fleet     │     └────────────┘
+                 └──────────────┘     └─────────────┘
    One hostname. One auth scheme. Backend evolves freely.
 ```
+
+> **Ordering note:** The **Load Balancer always sits in front of the API Gateway**, not behind it. The LB handles TCP/TLS distribution across a fleet of stateless gateway instances; the gateway then handles L7 policy (auth, rate-limit, routing) and forwards to backends. This `Client → LB → Gateway → Service` order is consistent across every architecture diagram in this document (see [Section 4](#4-high-level-architecture), [Section 7](#7-api-gateway-vs-load-balancer-vs-service-mesh-vs-bff), [Section 9](#9-end-to-end-request-flow-walkthrough)).
 
 As monoliths were broken down, the **N×M coupling problem** appeared: N clients had to know about M services. The gateway collapses this to **N → 1 → M**.
 
@@ -360,6 +363,102 @@ Once a route resolves to a service, the gateway must pick **which instance** of 
 | **Latency-aware (EWMA)** | Multi-AZ, prefer fastest replica |
 
 This is the **gateway-to-service** load balancing layer mentioned in [Section 7](#7-api-gateway-vs-load-balancer-vs-service-mesh-vs-bff).
+
+#### Where Does the Route Map Actually Live?
+
+A common interview follow-up: *"You said the gateway routes `/users/*` to `user-service` — where is that mapping stored, and how does the gateway know `user-service` is at `10.0.1.5`?"*
+
+The answer is **two separate lookups, two separate stores**:
+
+```
+                        ┌──────────────────────────────────────────┐
+                        │            API Gateway Instance          │
+                        │                                          │
+  Request /users/123 ──▶│  ① Route Table (in-memory trie)         │
+                        │     /users/*  →  service=user-service    │
+                        │                                          │
+                        │  ② Service Registry cache (in-memory)   │
+                        │     user-service → [10.0.1.5, 10.0.1.6] │
+                        │                                          │
+                        │  ③ Pick instance via LB strategy        │
+                        │     → forward to 10.0.1.5:8080          │
+                        └──────────────────────────────────────────┘
+                                  ▲                      ▲
+                                  │ watch                │ poll / watch
+                                  │ (rare changes)        │ (frequent)
+                        ┌─────────┴─────────┐  ┌──────────┴──────────┐
+                        │  Config Store     │  │  Service Registry   │
+                        │  (route rules)    │  │  (live instances)   │
+                        │                   │  │                     │
+                        │  • etcd           │  │  • Consul           │
+                        │  • Consul KV      │  │  • Eureka           │
+                        │  • ZooKeeper      │  │  • Kubernetes       │
+                        │  • Git + CI       │  │    Endpoints API    │
+                        │  • S3 + reload    │  │  • AWS Cloud Map    │
+                        │  • DynamoDB       │  │  • Nacos            │
+                        └───────────────────┘  └─────────────────────┘
+                         "What routes exist?"   "Where is svc X right now?"
+                         (changes daily)        (changes every few seconds)
+```
+
+**The two stores serve very different needs:**
+
+| | Route Config Store | Service Registry |
+|---|---|---|
+| **What** | Static rules: `/users/* → user-service`, auth policy, rate limits | Live IPs: `user-service = [10.0.1.5, 10.0.1.6, ...]` |
+| **Changes** | When operators deploy new routes (hourly–daily) | Every time a pod starts/dies (seconds–minutes) |
+| **Source of truth** | Operator / GitOps repo | The services themselves (self-register) |
+| **Typical store** | etcd, Consul KV, ZooKeeper, S3, Git | Consul, Eureka, K8s Endpoints, AWS Cloud Map |
+| **How gateway reads it** | Watches store → hot reloads in-memory trie | Polls/watches → updates in-memory endpoint pool |
+
+> **Critical:** **Both stores are read at startup and cached in the gateway's RAM.** The gateway does **not** hit a database on every request — that would add a 1–5 ms round trip to every call and make the database a SPOF. The pattern is **watch + cache locally, fall back to stale on store outage**.
+
+**Why not Redis for the route table?**
+- Redis is great for **per-request mutable state** (rate-limit counters, cached responses) where freshness matters every millisecond.
+- Routes change rarely and need **strong consistency + change notifications + version history** — that's why etcd / ZooKeeper / Consul KV (which provide watch semantics and Raft-backed consistency) are the standard choice, not Redis.
+- Some teams use simpler stores: a YAML file in S3 polled every 30 s, or routes baked into the gateway container image and rolled out via CI/CD. All work — Redis just isn't the right primitive for this.
+
+**Concrete examples in the wild:**
+
+| Gateway | Route storage | Service discovery |
+|---|---|---|
+| **Envoy** | xDS gRPC API (control plane like Istio Pilot reads from K8s/Consul) | EDS (Endpoint Discovery Service) via xDS |
+| **Kong** | PostgreSQL or Cassandra (admin DB) → cached in-memory in each node | DNS, Consul, K8s |
+| **NGINX** | `nginx.conf` file → reload | Upstream DNS resolution, or NGINX Plus dynamic API |
+| **AWS API Gateway** | AWS internal config store | VPC Link / Lambda ARN / HTTP endpoint |
+| **Spring Cloud Gateway** | `application.yml` or Spring Cloud Config Server | Eureka / Consul / K8s |
+
+**Pseudocode of the full lookup:**
+
+```java
+public Endpoint resolveBackend(HttpRequest req) {
+    // ① Route lookup — pure in-memory, sub-microsecond
+    Route route = routeTrie.match(req.getPath(), req.getMethod());
+    if (route == null) throw new NotFoundException();
+
+    // ② Service discovery — in-memory cache, refreshed in background
+    List<Endpoint> liveInstances = serviceCache.get(route.getServiceName());
+    if (liveInstances.isEmpty()) throw new ServiceUnavailableException();
+
+    // ③ Load balancing — pick one instance
+    return route.getLoadBalancer().choose(liveInstances);
+}
+
+// Background threads keep the caches fresh
+@Scheduled(every = "watch") // long-poll etcd
+void onRouteConfigChange(RouteConfig newConfig) {
+    this.routeTrie = RouteTrie.build(newConfig); // atomic swap
+}
+
+@Scheduled(every = "10s")   // poll registry
+void refreshServiceCache() {
+    for (String service : trackedServices) {
+        serviceCache.put(service, registry.healthyEndpoints(service));
+    }
+}
+```
+
+See [Section 5.4](#54-service-discovery-integration) for the service registry deep dive and [Section 5.7](#57-configuration-management) for how route config gets pushed safely.
 
 ### 3.4 Step 4 — Backend Communication & Protocol Translation
 
