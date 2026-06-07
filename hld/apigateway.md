@@ -99,6 +99,20 @@ Microservices WITH an API Gateway:
 
 > **Ordering note:** The **Load Balancer always sits in front of the API Gateway**, not behind it. The LB handles TCP/TLS distribution across a fleet of stateless gateway instances; the gateway then handles L7 policy (auth, rate-limit, routing) and forwards to backends. This `Client → LB → Gateway → Service` order is consistent across every architecture diagram in this document (see [Section 4](#4-high-level-architecture), [Section 7](#7-api-gateway-vs-load-balancer-vs-service-mesh-vs-bff), [Section 9](#9-end-to-end-request-flow-walkthrough)).
 
+> **Who picks the actual instance?** Both — at two different layers. **The Load Balancer picks _which gateway instance_** receives the request (e.g., `Gateway-A` vs `Gateway-B` vs `Gateway-C`) using a simple strategy like round-robin or least-connections — it doesn't read the URL or know what `user-service` is. **The Gateway picks _which backend service instance_** to forward to (e.g., `user-service` pod at `10.0.1.5` vs `10.0.1.6`) after doing L7 work like URL routing, auth, and service discovery. So:
+>
+> ```
+>     Layer 1: LB decision              Layer 2: Gateway decision
+>     ───────────────────              ─────────────────────────
+>     "Which gateway instance?"        "Which user-service pod?"
+>            ↓                                  ↓
+>  Client → LB ─→ Gateway-B ──────→ pick from [10.0.1.5, 10.0.1.6, 10.0.1.7]
+>           (round-robin              (least-connections,
+>            on TCP)                   consistent-hash, etc.)
+> ```
+>
+> See [Section 5.1 → Two layers of load balancing](#two-layers-of-load-balancing) for the full breakdown and [Section 3.3 → Where Does the Route Map Actually Live?](#where-does-the-route-map-actually-live) for how the gateway resolves the backend pool.
+
 As monoliths were broken down, the **N×M coupling problem** appeared: N clients had to know about M services. The gateway collapses this to **N → 1 → M**.
 
 ### 1.4 Functional Requirements
