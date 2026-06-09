@@ -688,6 +688,22 @@ Step 5: Use this as the short code
 
 **Why 41 bits?** Each Base62 character carries log₂(62) ≈ 5.954 bits, so 7 chars hold up to floor(7 × 5.954) = **41 bits** without overflow (62^7 = 3.52T, and 2^41 = 2.2T fits inside it). If we took 43 bits (≈ 8.8T) the value could exceed 62^7 and require **8** chars to encode — inconsistent with our 7-char target.
 
+**The pipeline at a glance — one-liner with each step's purpose:**
+
+```
+URL ──► HASH ──► TAKE 41 BITS ──► BASE62 ENCODE ──► 7-CHAR SHORT CODE
+```
+
+| Step | What | Why |
+|------|------|-----|
+| 1 | Take the long URL | Input |
+| 2 | Hash it (MD5 / SHA-256) | Turn arbitrary text → fixed-size number, evenly spread |
+| 3 | Keep only the first **41 bits** | Shrink it to fit the target space (2⁴¹ ≈ 2.2 T) |
+| 4 | Base62 encode that number | Convert the integer → printable `a-z A-Z 0-9` |
+| 5 | Result = **7 characters** | Because 62⁷ ≈ 3.52 T ≥ 2⁴¹ |
+
+> Note: the 7 chars are *not* a separate slicing step — they fall out automatically because step 3 sizes the number to fit in exactly 7 Base62 digits.
+
 **The Collision Problem:**
 
 Since we're truncating a 128-bit hash to ~43 bits, we lose entropy. Different long URLs can produce the same short code. This is inevitable due to the pigeonhole principle — we're mapping a large space to a smaller one.
