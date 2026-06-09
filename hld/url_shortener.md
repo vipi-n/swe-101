@@ -1836,19 +1836,90 @@ LIMIT 10000;  -- Batch to avoid long-running transactions
 
 ### Cache TTL Alignment
 
-Set the Redis TTL to match (or be shorter than) the URL's expiration:
+**The rule:**
+
+```
+TTL = min(time_until_url_expires, MAX_CACHE_TTL)
+```
+
+Two forces drive this:
+
+1. **You can't cache longer than the URL is valid** — otherwise Redis would serve an already-expired URL.
+2. **You shouldn't cache *too* long either** — the cache must remain bounded so cold entries fall out and hot data stays in memory.
+
+**Three cases to handle:**
+
+| Case | `expires_at` | Computed TTL | Why |
+|------|--------------|--------------|-----|
+| 1 | `now + 10 min` | **10 min** | shorter than cap — match URL lifetime |
+| 1 | `now + 30 days` | **24h** | cap wins — don't pin cold entries |
+| 2 | `NULL` (no expiry) | **24h** (default cap) | bounded so memory stays predictable |
+| 3 | `< now` (already expired) | — (return `410 Gone`, `DEL` cache) | never cache an expired URL |
+
+**Implementation:**
 
 ```java
-Duration cap = Duration.ofHours(24);
+Duration MAX_TTL = Duration.ofHours(24);
 Duration ttl;
-if (row.expiresAt != null) {
-    Duration remaining = Duration.between(Instant.now(), row.expiresAt.toInstant());
-    ttl = remaining.compareTo(cap) < 0 ? remaining : cap; // cap at 24 hours
+
+if (row.expiresAt == null) {
+    ttl = MAX_TTL;                                                // case 2
 } else {
-    ttl = cap; // default 24h TTL
+    Duration remaining = Duration.between(Instant.now(), row.expiresAt.toInstant());
+    if (remaining.isNegative() || remaining.isZero()) {
+        return ResponseEntity.status(HttpStatus.GONE).build();    // case 3
+    }
+    ttl = remaining.compareTo(MAX_TTL) < 0 ? remaining : MAX_TTL; // case 1
 }
 redis.opsForValue().set("url:" + shortCode, row.originalUrl, ttl);
 ```
+
+### TTL and LRU Work Together (Not Either/Or)
+
+Redis runs **both** mechanisms simultaneously — whichever fires first removes the key:
+
+```
+┌──────────────────┬─────────────────────────────────────────────────┐
+│ TTL expiry       │ Per-key timer set by SETEX. Removes one specific│
+│                  │ key when its clock runs out — even if memory is │
+│                  │ empty.                                          │
+├──────────────────┼─────────────────────────────────────────────────┤
+│ LRU eviction     │ Global policy (maxmemory-policy allkeys-lru).   │
+│                  │ Removes the least-recently-used key when Redis  │
+│                  │ hits maxmemory — even if TTL hasn't fired yet.  │
+└──────────────────┴─────────────────────────────────────────────────┘
+```
+
+**How Redis actually cleans expired keys** (not all-at-once at second N):
+
+- **Lazy expiration** — on every `GET`, if the key is past TTL → delete it now, return `nil`.
+- **Active expiration** — background task, ~10×/sec, samples 20 random keys with TTLs and deletes the expired ones.
+
+**LRU eviction is also approximate** — Redis samples `maxmemory-samples` (default 5) keys and evicts the oldest. Cheap, and close enough to true LRU.
+
+**Production config for the URL cache:**
+
+```
+maxmemory 80gb
+maxmemory-policy allkeys-lru
+```
+
+**Why both are needed:**
+
+| If we used only… | Problem |
+|------------------|---------|
+| **Only TTL** | Cache could grow unbounded if write rate outpaces expiry → OOM crash |
+| **Only LRU** | A stale (expired) URL that's still being clicked frequently would never leave the cache → wrong redirect served |
+| **Both** | TTL keeps data fresh; LRU keeps memory bounded. Belt + suspenders. |
+
+**Scenario walk-through for one cached short code:**
+
+| Situation | What removes it |
+|-----------|-----------------|
+| Hot URL, plenty of free memory | **TTL** fires after 24h |
+| Cold URL, cache full | **LRU** evicts it long before TTL |
+| URL deleted by user / reported as spam | Explicit `redis.delete(...)` (bypasses both) |
+| URL hits `expires_at` before TTL | Real-time check in app code → `410 Gone` + `DEL` |
 
 ---
 
