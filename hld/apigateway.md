@@ -42,6 +42,7 @@
 - [11. Architecture Decision Records (ADRs)](#11-architecture-decision-records-adrs)
 - [12. Quick Reference Cheat Sheet](#12-quick-reference-cheat-sheet)
 - [13. Glossary](#13-glossary)
+- [14. Putting It All Together — Final Diagram & Request Flow](#14-putting-it-all-together--final-diagram--request-flow)
 
 ---
 
@@ -197,6 +198,8 @@ GET    /admin/metrics                   # observability
 ```
 
 > **Security note:** The admin interface MUST be on a separate listener/port and locked down to the operations network — never expose `/admin/*` on the public internet.
+
+> **The pattern in one line:** **client → `api.example.com/<path>` → gateway matches `<path>` against its route table → forwards to the corresponding internal `service:port`.** The gateway doesn't invent these endpoints — it re-publishes whatever the backend services already implement, unified under one hostname and one auth/rate-limit policy. Clients only ever see `api.example.com`; the internal `user-service:8080` / `order-service:8081` hosts are private and never directly reachable from the internet.
 
 ---
 
@@ -1291,6 +1294,116 @@ Total mobile-perceived latency: ~140 ms
 | **SSL/TLS Termination** | Decrypting HTTPS at the edge so internal traffic is plain HTTP |
 | **Throttling** | Slowing down (vs. outright rejecting) over-quota traffic |
 | **xDS** | Envoy's family of dynamic configuration APIs (LDS, RDS, CDS, EDS) |
+
+---
+
+---
+
+## 14. Putting It All Together — Final Diagram & Request Flow
+
+This single diagram consolidates every component from sections 1–13 — DNS, CDN, the **two load balancers** (public LB before gateway + gateway-internal LB to backends), the gateway pipeline, control plane, service registry, Redis, and the backend microservices — with a numbered request flow overlaid.
+
+```mermaid
+flowchart TB
+    Client[("📱 Client<br/>(mobile / web / partner)")]
+
+    subgraph EDGE [" "]
+        direction TB
+        DNS["①  GeoDNS<br/>Route 53"]
+        CDN["②  CDN + WAF<br/>CloudFront · Cloudflare<br/>(cache + DDoS + OWASP)"]
+    end
+
+    subgraph REGION ["Region: us-east-1"]
+        direction TB
+        LB1["③  Public Load Balancer #1<br/>NLB / ALB<br/>(picks gateway instance — TCP/TLS)"]
+
+        subgraph GWFLEET ["API Gateway Fleet (stateless · autoscaled)"]
+            direction LR
+            GWA["Gateway-A"]
+            GWB["Gateway-B"]
+            GWC["Gateway-C"]
+        end
+
+        subgraph PIPELINE ["④  Pipeline inside the chosen gateway"]
+            direction TB
+            P1["④a Validate<br/>(URL, body, size)"]
+            P2["④b Middleware<br/>IP allow · Auth(JWT) · Rate-limit · CORS"]
+            P3["④c Route lookup<br/>(in-mem trie)"]
+            P4["④d Service discovery<br/>(in-mem endpoint cache)"]
+            P5["④e Internal LB #2<br/>pick backend pod<br/>(round-robin / least-conn)"]
+            P6["④f Protocol xlate<br/>HTTP → gRPC"]
+            P7["④g Cache check<br/>(optional)"]
+            P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7
+        end
+
+        subgraph BACKENDS ["⑤  Backend microservices"]
+            direction LR
+            US["user-service<br/>pods: 10.0.1.5–7"]
+            OS["order-service<br/>pods: 10.0.2.5–7"]
+            PS["payment-service<br/>pods: 10.0.3.5–7"]
+        end
+    end
+
+    subgraph CTRL ["Control Plane (shared, per region)"]
+        direction TB
+        CFG[("Config Store<br/>etcd / Consul KV<br/>route rules")]
+        REG[("Service Registry<br/>Consul / Eureka / K8s<br/>live pod IPs")]
+        REDIS[("Redis Cluster<br/>rate-limit counters<br/>+ response cache")]
+        TRACE[("OTel · Jaeger<br/>logs · metrics · traces")]
+    end
+
+    Client -->|HTTPS| DNS
+    DNS -->|nearest IP| CDN
+    CDN -->|cache miss| LB1
+    LB1 --> GWA
+    LB1 -.also distributes to.-> GWB
+    LB1 -.also distributes to.-> GWC
+
+    GWA --> PIPELINE
+    P7 -->|forward<br/>gRPC / HTTP| US
+    US -->|response| P7
+
+    PIPELINE -.watch routes.-> CFG
+    PIPELINE -.poll endpoints.-> REG
+    PIPELINE -.rate-limit + cache.-> REDIS
+    PIPELINE -.emit spans.-> TRACE
+
+    P7 -.response<br/>back to client.-> Client
+
+    classDef edge fill:#FFF4E6,stroke:#F59E0B,color:#000
+    classDef gw fill:#E0F2FE,stroke:#0284C7,color:#000
+    classDef ctrl fill:#F3E8FF,stroke:#9333EA,color:#000
+    classDef be fill:#DCFCE7,stroke:#16A34A,color:#000
+    class DNS,CDN edge
+    class LB1,GWA,GWB,GWC,P1,P2,P3,P4,P5,P6,P7 gw
+    class CFG,REG,REDIS,TRACE ctrl
+    class US,OS,PS be
+```
+
+### The Numbered Request Flow
+
+Concrete example: a logged-in user in Berlin sends `POST /orders` with a JWT.
+
+| # | Step | What happens | Latency budget |
+|---|------|--------------|----------------|
+| **①** | **GeoDNS resolves `api.example.com`** | Route 53 returns the IP of the nearest region's public LB (e.g., `eu-west-1`). Cached on device. | ~5 ms (1st call) / 0 ms (cached) |
+| **②** | **CDN / WAF check** | CloudFront / Cloudflare first runs WAF rules (OWASP, bot detection, geo-block) and checks if a cached response exists for the URL+method. For `POST /orders` → cache miss → forward to origin. | ~5 ms |
+| **③** | **Public LB #1 picks a gateway instance** | The L4/L7 load balancer (ALB/NLB) terminates TLS and picks one healthy gateway from the pool — e.g., `Gateway-B` — using round-robin or least-connections. **It does NOT read the URL or know about `order-service`.** | ~1 ms |
+| **④** | **Inside the chosen gateway — 7-step pipeline** | This is where all the L7 work happens, in order: | **5–10 ms total** |
+| ④a | Validate | URL well-formed, JSON parses, body < 1 MB, method allowed | ~0.1 ms |
+| ④b | Middleware | Check IP not denylisted → decode JWT signature → look up rate-limit counter in **Redis** (`429` if over quota) → add CORS headers, trace ID | ~2 ms |
+| ④c | Route lookup | Match `/orders/*` → `order-service` via in-memory trie (loaded from **etcd**) | ~0.01 ms |
+| ④d | Service discovery | Look up `order-service` in the in-memory endpoint cache (refreshed in background from **Consul / K8s**) → `[10.0.2.5, 10.0.2.6, 10.0.2.7]` | ~0.05 ms |
+| ④e | **Internal LB #2** picks a backend pod | The gateway's built-in load balancer picks **one pod** from the live list — e.g., `10.0.2.6` — using least-connections, consistent-hash, or latency-aware EWMA | ~0.05 ms |
+| ④f | Protocol translation + backend call | Translate HTTP/JSON → gRPC/Protobuf, attach `X-Request-Id` + propagated user identity, send to `10.0.2.6` (with circuit breaker + retry budget) | gRPC call: 10–50 ms |
+| ④g | Response transform + cache | gRPC response → JSON, inject `X-RateLimit-Remaining`, compress (gzip). Skip cache for `POST`. | ~1 ms |
+| **⑤** | **Backend service** | `order-service` processes the order, persists to DB, returns `201 Created` | 10–50 ms |
+| **↩** | **Response path** | Response flows back: pod → gateway → LB → CDN (skipped for `POST`) → client. Trace span finalized in Jaeger. | ~30 ms (network only) |
+
+**The two key load-balancing decisions in one sentence:**
+> **LB #1** (public, before the gateway) picks **which gateway instance** handles the call. **LB #2** (built into the gateway itself, step ④e) picks **which backend pod** receives the forwarded request. Both are needed because both tiers are horizontally scaled.
+
+**Total perceived latency for the client:** typically **80–150 ms** end-to-end — most of which is network (mobile RTT + TLS handshake), not the gateway itself (~5–10 ms).
 
 ---
 
