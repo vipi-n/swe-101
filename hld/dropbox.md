@@ -1100,103 +1100,41 @@ This is the complete end-to-end architecture after folding in every deep dive �
 
 ```mermaid
 %%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '16px'}}}%%
-graph TB
-    subgraph CLIENT["CLIENT DEVICE (Desktop / Mobile / Web)"]
-        direction TB
-        WATCH["File System Watcher<br/>FSEvents / FileSystemWatcher"]
-        PIPE["Upload Pipeline<br/>Compress (Zstd) → Encrypt →<br/>CDC Chunk (5-10MB) → SHA-256"]
-        SYNC["Sync Engine<br/>WebSocket + Periodic Poll"]
-        WATCH --> PIPE
-        WATCH --> SYNC
-    end
+graph LR
+    CLIENT["📱 Client<br/>Compress → Chunk (CDC)<br/>→ Fingerprint"]
+    LB["API Gateway"]
+    FS["File Service<br/>(control plane)"]
+    WS["WebSocket"]
+    DB[("Metadata DB")]
+    CDN["CDN"]
+    S3[("S3")]
 
-    subgraph EDGE["EDGE / GATEWAY"]
-        CDN["CDN — CloudFront<br/>Edge cache + Signed URL validation"]
-        LB["API Gateway + Load Balancer<br/>TLS · AuthN · Rate Limit"]
-    end
+    CLIENT -->|"1. ask upload"| LB --> FS
+    FS --> DB
+    CLIENT ==>|"2. PUT chunks (presigned)"| S3
+    S3 -.->|"3. event"| FS
+    FS -->|"4. notify"| WS ==>|"push"| CLIENT
+    CLIENT -->|"5. GET file"| LB
+    FS -->|"6. signed URL"| CLIENT
+    CLIENT ==>|"7. download"| CDN --> S3
 
-    subgraph BACKEND["BACKEND — CONTROL PLANE (our cloud)"]
-        direction TB
-        FS["File Service<br/>• Presigned URL gen (S3 SDK)<br/>• Multipart init / complete<br/>• ListParts verification<br/>• Permission checks<br/>• Signed CDN URL gen"]
-        WS["WebSocket / SSE Server<br/>Push change events to devices"]
-        NOTIF["S3 Event Listener<br/>(Lambda / SQS)"]
-    end
-
-    subgraph DATA["DATA STORES"]
-        direction LR
-        DB[("Metadata DB<br/>DynamoDB / Postgres<br/>• FileMetadata (status, chunks[],<br/>  fingerprint, currentVersionId)<br/>• SharedFiles (userId, fileId) PK<br/>• Version (optional)")]
-        CACHE[("Redis<br/>Hot share-list / ACL cache")]
-    end
-
-    subgraph STORAGE["BLOB STORAGE"]
-        S3[("S3 — 11 nines durability<br/>SSE encryption at rest<br/>Multipart Upload API<br/>Object Versioning")]
-    end
-
-    %% Upload path
-    PIPE -->|"1. POST /files<br/>(fingerprint, size)"| LB
-    LB --> FS
-    FS -->|"2. Lookup by fingerprint<br/>(dedup / resume?)"| DB
-    FS -->|"3. CreateMultipartUpload"| S3
-    FS -->|"4. uploadId +<br/>presigned URLs[]"| PIPE
-    PIPE ==>|"5. PUT chunks in parallel<br/>(only missing chunks on resume)"| S3
-    PIPE -->|"6. PATCH chunk status + ETag"| LB
-    FS -->|"7. ListParts (verify)"| S3
-    FS -->|"8. CompleteMultipartUpload"| S3
-    S3 -.->|"9. S3 Event Notification"| NOTIF
-    NOTIF --> FS
-    FS -->|"10. status = uploaded"| DB
-
-    %% Sync fan-out
-    FS -->|"11. Publish change event"| WS
-    WS ==>|"12. Push notification"| SYNC
-
-    %% Download path
-    SYNC -->|"13. GET /files/{id}"| LB
-    FS -->|"14. ACL check"| CACHE
-    CACHE -.->|"miss"| DB
-    FS -->|"15. Sign CDN URL<br/>(TTL 5 min, IP-bound)"| SYNC
-    SYNC ==>|"16. GET signed URL"| CDN
-    CDN -->|"cache miss"| S3
-    CDN ==>|"17. Stream bytes<br/>(HTTP Range supported)"| SYNC
-    SYNC -->|"18. Decrypt → Decompress →<br/>Reassemble → Write to disk"| WATCH
-
-    classDef client fill:#e1f5ff,stroke:#0288d1,stroke-width:2px,color:#000
-    classDef edge fill:#fff3e0,stroke:#f57c00,stroke-width:2px,color:#000
-    classDef backend fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#000
-    classDef data fill:#e8f5e9,stroke:#388e3c,stroke-width:2px,color:#000
-    classDef storage fill:#fce4ec,stroke:#c2185b,stroke-width:2px,color:#000
-
-    class WATCH,PIPE,SYNC client
-    class CDN,LB edge
-    class FS,WS,NOTIF backend
-    class DB,CACHE data
-    class S3 storage
+    classDef client fill:#e1f5ff,stroke:#0288d1,color:#000
+    classDef infra fill:#fff3e0,stroke:#f57c00,color:#000
+    classDef store fill:#e8f5e9,stroke:#388e3c,color:#000
+    class CLIENT client
+    class LB,FS,WS,CDN infra
+    class DB,S3 store
 ```
 
-### Request flow legend
+### Flow at a glance
 
-| # | Phase | What's happening |
-|---|-------|------------------|
-| 1–4 | **Upload init** | Client fingerprints file, asks backend; backend dedup-checks, opens S3 multipart upload, returns presigned URLs. |
-| 5–7 | **Chunked upload** | Client streams chunks directly to S3 in parallel; backend verifies each via `ListParts`. |
-| 8–10 | **Finalize** | `CompleteMultipartUpload` assembles parts; S3 event triggers metadata flip to `uploaded`. |
-| 11–12 | **Sync fan-out** | File Service publishes a change event; WebSocket pushes it to every other device of every authorized user. |
-| 13–17 | **Download** | Device requests file → backend signs short-lived CDN URL after ACL check → bytes streamed from nearest edge. |
-| 18 | **Client reassembly** | Decrypt → decompress → write back to the watched local folder. |
-
-### What each deep-dive concept maps to in the diagram
-
-| Deep-dive concept | Where you see it |
+| Path | Steps |
 |---|---|
-| **Presigned URLs / direct-to-S3** | Step 5 — bytes bypass our backend entirely. |
-| **Chunking + resumability** | Steps 4–7 — `chunks[]` in `FileMetadata` + `ListParts` verify. |
-| **Content-Defined Chunking** | "CDC Chunk" inside the Upload Pipeline box. |
-| **Compression before encryption** | Pipeline order: Compress → Encrypt → Chunk. |
-| **Fingerprint dedup / resume** | Step 2 — lookup by SHA-256 fingerprint. |
-| **CDN signed URL security** | Steps 15–16 — short TTL + IP-binding. |
-| **Encryption at rest** | S3 SSE annotation on the storage block. |
-| **Real-time sync hybrid** | WebSocket push (12) + periodic poll inside Sync Engine. |
-| **Versioning (optional)** | `currentVersionId` + `Version` table inside the DB block. |
+| **Upload** | Client asks backend → gets presigned URLs → PUTs chunks directly to S3 → S3 event marks metadata `uploaded`. |
+| **Sync** | File Service publishes change → WebSocket pushes to other devices. |
+| **Download** | Client requests file → backend returns short-lived signed CDN URL → client streams from edge. |
+
+> **Key idea:** the backend is a thin **control plane** — it only hands out signed URLs and tracks metadata. All bytes flow **client ↔ S3/CDN** directly.
 
 ---
 
