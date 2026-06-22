@@ -1,149 +1,176 @@
-# API Gateway — System Design Deep Dive
+# Distributed Rate Limiter — System Design
 
-> A comprehensive guide covering architecture, responsibilities, scaling, and interview expectations for designing an API Gateway. Based on the Hello Interview deep dive plus production patterns from AWS API Gateway, Kong, NGINX, and Envoy.
+> A comprehensive guide covering architecture, algorithms, scaling, and interview expectations for designing a distributed rate limiter.
 
 ---
 
 ## Table of Contents
 
 - [1. Understanding the Problem](#1-understanding-the-problem)
-  - [1.1 What is an API Gateway?](#11-what-is-an-api-gateway)
-  - [1.2 The Hotel Front Desk Analogy](#12-the-hotel-front-desk-analogy)
-  - [1.3 Why API Gateways Emerged — Microservices](#13-why-api-gateways-emerged--microservices)
-  - [1.4 Functional Requirements](#14-functional-requirements)
-  - [1.5 Non-Functional Requirements](#15-non-functional-requirements)
+  - [1.1 What is a Rate Limiter?](#11-what-is-a-rate-limiter)
+  - [1.2 Functional Requirements](#12-functional-requirements)
+  - [1.3 Non-Functional Requirements](#13-non-functional-requirements)
 - [2. The Set Up](#2-the-set-up)
   - [2.1 Core Entities](#21-core-entities)
   - [2.2 System Interface](#22-system-interface)
-- [3. Core Responsibilities — Tracing a Request](#3-core-responsibilities--tracing-a-request)
-  - [3.1 Step 1 — Request Validation](#31-step-1--request-validation)
-  - [3.2 Step 2 — Middleware Pipeline](#32-step-2--middleware-pipeline)
-  - [3.3 Step 3 — Routing](#33-step-3--routing)
-  - [3.4 Step 4 — Backend Communication & Protocol Translation](#34-step-4--backend-communication--protocol-translation)
-  - [3.5 Step 5 — Response Transformation](#35-step-5--response-transformation)
-  - [3.6 Step 6 — Caching](#36-step-6--caching)
-- [4. High-Level Architecture](#4-high-level-architecture)
-- [5. Deep Dives](#5-deep-dives)
-  - [5.1 Scaling — Horizontal Scaling](#51-scaling--horizontal-scaling)
-  - [5.2 Scaling — Global Distribution](#52-scaling--global-distribution)
-  - [5.3 High Availability & Fault Tolerance](#53-high-availability--fault-tolerance)
-  - [5.4 Service Discovery Integration](#54-service-discovery-integration)
-  - [5.5 Observability — Logging, Metrics, Tracing](#55-observability--logging-metrics-tracing)
-  - [5.6 Security Hardening](#56-security-hardening)
-  - [5.7 Configuration Management](#57-configuration-management)
-- [6. Popular API Gateways](#6-popular-api-gateways)
-  - [6.1 Managed Services](#61-managed-services)
-  - [6.2 Open Source Solutions](#62-open-source-solutions)
-  - [6.3 Comparison Matrix](#63-comparison-matrix)
-- [7. API Gateway vs. Load Balancer vs. Service Mesh vs. BFF](#7-api-gateway-vs-load-balancer-vs-service-mesh-vs-bff)
-- [8. When to Propose an API Gateway](#8-when-to-propose-an-api-gateway)
-- [9. End-to-End Request Flow Walkthrough](#9-end-to-end-request-flow-walkthrough)
+- [3. High-Level Design](#3-high-level-design)
+  - [3.1 Where to Place the Rate Limiter](#31-where-to-place-the-rate-limiter)
+  - [3.2 Client Identification](#32-client-identification)
+  - [3.3 Rate Limiting Algorithms](#33-rate-limiting-algorithms)
+    - [3.3.1 Fixed Window Counter](#331-fixed-window-counter)
+    - [3.3.2 Sliding Window Log](#332-sliding-window-log)
+    - [3.3.3 Sliding Window Counter](#333-sliding-window-counter)
+    - [3.3.4 Token Bucket (Recommended)](#334-token-bucket-recommended)
+    - [3.3.5 Leaky Bucket](#335-leaky-bucket)
+  - [3.4 Algorithm Comparison Matrix](#34-algorithm-comparison-matrix)
+  - [3.5 Storing State — Why Redis?](#35-storing-state--why-redis)
+  - [3.6 Handling Race Conditions](#36-handling-race-conditions)
+  - [3.7 Responding to Exceeded Limits (HTTP 429)](#37-responding-to-exceeded-limits-http-429)
+- [4. Deep Dives](#4-deep-dives)
+  - [4.1 Scaling to 1M Requests/Second](#41-scaling-to-1m-requestssecond)
+  - [4.2 High Availability & Fault Tolerance](#42-high-availability--fault-tolerance)
+  - [4.3 Minimizing Latency Overhead](#43-minimizing-latency-overhead)
+  - [4.4 Handling Hot Keys (Viral Content / DDoS)](#44-handling-hot-keys-viral-content--ddos)
+  - [4.5 Dynamic Rule Configuration](#45-dynamic-rule-configuration)
+- [5. Additional Considerations (Extra)](#5-additional-considerations-extra)
+  - [5.1 Multi-Region Rate Limiting](#51-multi-region-rate-limiting)
+  - [5.2 Rate Limiting at Different Layers](#52-rate-limiting-at-different-layers)
+  - [5.3 Monitoring & Observability](#53-monitoring--observability)
+  - [5.4 Rate Limit Bypass & Abuse Patterns](#54-rate-limit-bypass--abuse-patterns)
+  - [5.5 Cost Analysis](#55-cost-analysis)
+- [6. Interview Expectations by Level](#6-interview-expectations-by-level)
+- [7. Quick Reference Cheat Sheet](#7-quick-reference-cheat-sheet)
+- [8. End-to-End Request Flow Walkthrough](#8-end-to-end-request-flow-walkthrough)
+- [9. Real-World Implementations](#9-real-world-implementations)
 - [10. Common Interview Questions & Model Answers](#10-common-interview-questions--model-answers)
 - [11. Architecture Decision Records (ADRs)](#11-architecture-decision-records-adrs)
-- [12. Quick Reference Cheat Sheet](#12-quick-reference-cheat-sheet)
+- [12. Final Architecture Diagram](#12-final-architecture-diagram)
 - [13. Glossary](#13-glossary)
-- [14. Putting It All Together — Final Diagram & Request Flow](#14-putting-it-all-together--final-diagram--request-flow)
 
 ---
 
 ## 1. Understanding the Problem
 
-### 1.1 What is an API Gateway?
+### 1.1 What is a Rate Limiter?
 
-An **API Gateway** is a single entry point that sits in front of your backend services. It receives every client request, applies cross-cutting concerns (authentication, rate limiting, logging, etc.), and forwards the request to the appropriate backend service.
+A **rate limiter** controls how many requests a client can make within a specific timeframe. It acts like a traffic controller for your API — allowing, for example, 100 requests per minute from a user, then rejecting excess requests with an **HTTP 429 "Too Many Requests"** response.
 
-> "There's a good chance you've interacted with an API Gateway today, even if you didn't realize it." — *Hello Interview*
+**Why do we need it?**
 
-Think of it as a **reverse proxy with brains**. A vanilla reverse proxy forwards traffic; an API Gateway also enforces policy.
-
-**One sentence definition:**
-> An API Gateway is a server that acts as the single, policy-enforcing entry point between clients and a fleet of backend services.
-
-### 1.2 The Hotel Front Desk Analogy
-
-| Hotel | API Gateway |
+| Purpose | Description |
 |---|---|
-| Guests arrive at the front desk | Clients send requests to the gateway |
-| Guests don't go knock on the housekeeping office door | Clients don't talk to individual microservices |
-| Front desk verifies reservation (ID check) | Gateway authenticates the request |
-| Front desk enforces house rules ("no more than 4 guests per room") | Gateway enforces rate limits / quotas |
-| Front desk routes the request to the right team (housekeeping, room service, concierge) | Gateway routes to the right microservice |
-| Front desk delivers the response (towels, food) back to the room | Gateway returns the response to the client |
+| **Prevent abuse** | Stop malicious users from overwhelming the system |
+| **Protect servers** | Shield backend services from traffic bursts |
+| **Ensure fairness** | Guarantee equitable resource distribution across users |
+| **Cost control** | Prevent runaway API usage that inflates infrastructure costs |
+| **SLA enforcement** | Enforce contractual usage limits for API consumers |
+| **Compliance** | Meet regulatory requirements (e.g., financial APIs with transaction limits) |
+| **Revenue protection** | Enforce different tiers of paid API access |
 
-The hotel front desk pattern lets you reorganize back-office teams without ever confusing a guest. The same is true for microservices behind a gateway — you can split, merge, or rewrite services without breaking clients.
+**Real-World Examples:**
 
-### 1.3 Why API Gateways Emerged — Microservices
+| Company | Rate Limit Policy |
+|---|---|
+| **GitHub API** | 5,000 requests/hour for authenticated users; 60/hour for unauthenticated |
+| **Twitter/X API** | 300 tweets/3 hours; 900 reads/15 minutes (varies by tier) |
+| **Stripe API** | 100 read requests/sec; 25 write requests/sec per key |
+| **AWS API Gateway** | 10,000 requests/sec per region (default); configurable per API |
+| **Google Maps API** | 50 queries/second per project |
+| **Discord API** | Varies per endpoint; uses bucket-based system with headers |
 
-```
-Monolith Era (pre-gateway):
-┌──────────┐
-│  Client  │ ───▶ ┌──────────────┐
-└──────────┘     │   Monolith    │
-                 └──────────────┘
+**Types of Rate Limiting:**
 
-Microservices WITHOUT a gateway:
-┌──────────┐ ───▶ ┌─────────────┐
-│  Client  │ ───▶ ┌─────────────┐
-│           │ ───▶ ┌─────────────┐
-│           │ ───▶ ┌─────────────┐
-└──────────┘     User / Order / Pay / Search / Notif / ...
-   Client must know 12+ hostnames, auth schemes, retry rules.
-   Every new service breaks every client.
+| Type | What It Limits | Example |
+|---|---|---|
+| **Request rate limiting** | Number of HTTP requests per time window | 100 API calls/minute |
+| **Concurrent rate limiting** | Number of simultaneous active connections/requests | Max 10 parallel uploads |
+| **Bandwidth/data rate limiting** | Amount of data transferred per time window | 1 GB download/hour |
+| **Resource-based limiting** | Consumption of specific resources (CPU, memory, queries) | 10,000 database queries/hour |
+| **Cost-based limiting** | Monetary cost of operations (common in ML/AI APIs) | $100/day spend cap on GPT-4 API |
 
-Microservices WITH an API Gateway:
-┌──────────┐     ┌──────────────┐     ┌─────────────┐     ┌────────────┐
-│  Client  │ ───▶│ Load Balancer│ ───▶│ API Gateway │ ───▶│ Microsvcs  │
-└──────────┘     │  (L4/L7)     │     │   fleet     │     └────────────┘
-                 └──────────────┘     └─────────────┘
-   One hostname. One auth scheme. Backend evolves freely.
-```
+> **Interview Tip:** Clarify with your interviewer which type of rate limiting they're asking about. The most common is request rate limiting, which is what we'll design here.
 
-> **Ordering note:** The **Load Balancer always sits in front of the API Gateway**, not behind it. The LB handles TCP/TLS distribution across a fleet of stateless gateway instances; the gateway then handles L7 policy (auth, rate-limit, routing) and forwards to backends. This `Client → LB → Gateway → Service` order is consistent across every architecture diagram in this document (see [Section 4](#4-high-level-architecture), [Section 7](#7-api-gateway-vs-load-balancer-vs-service-mesh-vs-bff), [Section 9](#9-end-to-end-request-flow-walkthrough)).
-
-> **Who picks the actual instance?** Both — at two different layers. **The Load Balancer picks _which gateway instance_** receives the request (e.g., `Gateway-A` vs `Gateway-B` vs `Gateway-C`) using a simple strategy like round-robin or least-connections — it doesn't read the URL or know what `user-service` is. **The Gateway picks _which backend service instance_** to forward to (e.g., `user-service` pod at `10.0.1.5` vs `10.0.1.6`) after doing L7 work like URL routing, auth, and service discovery. So:
->
-> ```
->     Layer 1: LB decision              Layer 2: Gateway decision
->     ───────────────────              ─────────────────────────
->     "Which gateway instance?"        "Which user-service pod?"
->            ↓                                  ↓
->  Client → LB ─→ Gateway-B ──────→ pick from [10.0.1.5, 10.0.1.6, 10.0.1.7]
->           (round-robin              (least-connections,
->            on TCP)                   consistent-hash, etc.)
-> ```
->
-> See [Section 5.1 → Two layers of load balancing](#two-layers-of-load-balancing) for the full breakdown and [Section 3.3 → Where Does the Route Map Actually Live?](#where-does-the-route-map-actually-live) for how the gateway resolves the backend pool.
-
-As monoliths were broken down, the **N×M coupling problem** appeared: N clients had to know about M services. The gateway collapses this to **N → 1 → M**.
-
-### 1.4 Functional Requirements
+### 1.2 Functional Requirements
 
 | # | Requirement |
 |---|---|
-| FR-1 | The gateway should expose a **single public endpoint** that all clients call |
-| FR-2 | The gateway should **route** each request to the correct backend service based on path, method, headers, or query params |
-| FR-3 | The gateway should **authenticate** clients (JWT, API key, OAuth) and **authorize** access to specific routes |
-| FR-4 | The gateway should **rate limit** and **throttle** abusive clients |
+| FR-1 | The system should **identify clients** by user ID, IP address, or API key to apply appropriate limits |
+| FR-2 | The system should **limit HTTP requests** based on configurable rules (e.g., 100 API requests per minute per user) |
+| FR-3 | When limits are exceeded, the system should **reject requests with HTTP 429** and include helpful headers (rate limit remaining, reset time) |
 
-> **Beyond these four**, the gateway runs a pluggable **middleware pipeline** for cross-cutting concerns — request validation, TLS termination, protocol/format transformation (HTTP↔gRPC, JSON↔Protobuf), response caching for cacheable GETs, and observability (logging, tracing, metrics). These are policies plugged into the pipeline rather than separate design drivers, so we treat them as extensions of the core four.
+**Detailed Scenarios:**
 
-**Out of scope (intentionally):**
-- Business logic — the gateway should be thin
-- Long-lived stateful connections in most designs (WebSockets are an exception, supported by some gateways)
-- Heavy data processing or transformation pipelines
+```
+Scenario 1: Authenticated User
+  Alice (user_id: alice123) sends POST /api/tweets
+  → Gateway extracts user_id from JWT in Authorization header
+  → Checks rule: "users can send 300 tweets per 3 hours"
+  → Alice has sent 299 → ALLOW (remaining: 0, reset: 1640995200)
 
-### 1.5 Non-Functional Requirements
+Scenario 2: Anonymous User
+  Unknown user from IP 203.0.113.42 sends GET /api/search
+  → Gateway extracts IP from X-Forwarded-For header
+  → Checks rule: "IPs can make 60 search requests per minute"
+  → IP has made 60 → REJECT 429 (retry-after: 45s)
+
+Scenario 3: Developer API Key
+  Developer key "dk_abc123" sends GET /api/users/bulk
+  → Gateway extracts key from X-API-Key header
+  → Checks rule: "free-tier keys get 100 req/sec; paid keys get 1000 req/sec"
+  → Key is free-tier, 85 requests this second → ALLOW (remaining: 14)
+```
+
+**Out of scope:**
+- Complex querying or analytics on rate limit data
+- Long-term persistence of rate limiting data
+- Client-side rate limiting implementation
+- Billing or metering (though rate limiting data can feed into billing systems)
+
+### 1.3 Non-Functional Requirements
 
 | # | Requirement |
 |---|---|
-| NFR-1 | **Low latency overhead** — gateway processing should add **< 10 ms** p99 per request |
-| NFR-2 | **Highly available** — target ≥ 99.99 % uptime (the gateway is on the critical path of every request) |
-| NFR-3 | **Horizontally scalable** to millions of requests per second; instances must be **stateless** |
-| NFR-4 | **Fault isolated** — failure in one backend service must not bring down the gateway |
-| NFR-5 | **Secure by default** — TLS-only, sane authentication defaults, no credential leakage in logs |
-| NFR-6 | **Observable** — every request emits structured logs, RED metrics (Rate/Errors/Duration), and a distributed trace span |
+| NFR-1 | Minimal latency overhead: **< 10ms per request check** |
+| NFR-2 | **Highly available** — eventual consistency is acceptable (slight delays in limit enforcement across nodes are OK) |
+| NFR-3 | Scale to **1M requests/second** across **100M daily active users** |
 
-> **Key insight:** The gateway is on the **critical path for 100 % of traffic**. Its availability requirement is **strictly greater than** any single backend service's.
+**Out of scope:**
+- Strong consistency guarantees across all nodes
+
+> **Key Insight:** Availability >> Consistency for rate limiters. A brief window where a user exceeds their limit by a few requests is far less damaging than rate-limiting becoming unavailable entirely.
+
+**Back-of-Envelope Calculations:**
+
+```
+Scale:
+  • 100M DAU
+  • Average user makes ~100 API requests/day = 10B requests/day
+  • Peak load ≈ 3× average (social media spikes during events)
+  • 10B / 86,400 seconds ≈ ~115K req/s average
+  • Peak: ~350K req/s, design for 1M req/s (3× headroom)
+
+Storage per user (Token Bucket):
+  • Key: ~30 bytes (e.g., "user:alice123:bucket")
+  • tokens field: 8 bytes (double)
+  • last_refill field: 8 bytes (timestamp)
+  • Redis overhead per hash: ~100 bytes
+  • Total per bucket: ~150 bytes
+  • 100M users × 150 bytes = 15 GB
+  • With 3 rule types per user: ~45 GB
+  • Across 10 shards: ~4.5 GB per shard ← fits in memory comfortably
+
+Network bandwidth:
+  • Each rate limit check request: ~200 bytes
+  • Each response: ~100 bytes
+  • 1M req/s × 300 bytes = 300 MB/s total Redis network traffic
+  • Per shard: ~30 MB/s ← well within Redis capacity
+
+Latency budget:
+  • Total request latency target: ~200ms
+  • Rate limit check budget: < 10ms
+  • Redis round-trip (same region): ~0.5–2ms
+  • Budget remaining for compute: ~8ms ← comfortable margin
+```
 
 ---
 
@@ -152,1121 +179,2351 @@ As monoliths were broken down, the **N×M coupling problem** appeared: N clients
 ### 2.1 Core Entities
 
 ```
-┌──────────┐       ┌────────────────┐       ┌──────────────────┐
-│  Route   │──────▶│  Middleware    │──────▶│ Backend Service  │
-└──────────┘       │   Pipeline     │       └──────────────────┘
-                   └────────────────┘
+┌──────────┐       ┌──────────┐       ┌──────────┐
+│  Request  │──────▶│  Client  │──────▶│   Rule   │
+└──────────┘       └──────────┘       └──────────┘
 ```
 
 | Entity | Description |
 |---|---|
-| **Route** | A rule mapping incoming requests (path + method + headers + query) to a backend service. E.g., `GET /users/*` → `user-service:8080`. |
-| **Middleware** | A pluggable processing step run on every request. Examples: auth, rate-limiting, logging, response compression. Order matters. |
-| **Backend Service** | The downstream microservice that actually handles the business logic. The gateway forwards the request and proxies the response. |
-| **Client** | Anything calling the gateway — browser, mobile app, third-party developer, internal service. |
-| **Policy / Plugin** | Configuration applied to a route or globally. E.g., "the `/admin/*` route requires `role=admin` and 10 req/s limit." |
+| **Rules** | Rate limiting policies defining limits for different scenarios. Each rule specifies parameters like requests per time window, which clients it applies to, and what endpoints it covers. E.g., "authenticated users get 1000 requests/hour" or "the search API allows 10 requests/minute per IP." |
+| **Clients** | The entities being rate limited — users (by user ID), IP addresses, API keys, or combinations thereof. Each client has associated rate limiting state tracking current usage against applicable rules. |
+| **Requests** | Incoming API requests to be evaluated against rate limiting rules. Each request carries context: client identity, endpoint being accessed, and timestamp that determines which rules apply. |
+
+**How they interact:** When a **Request** arrives → identify the **Client** → look up applicable **Rules** → check current usage against those rules → decide whether to **allow** or **deny**.
 
 ### 2.2 System Interface
 
-The API Gateway itself does not expose a business interface — it **exposes whatever your backend services expose**, unified under one host.
-
 ```
-Client-facing surface (public):
-  GET    https://api.example.com/users/{id}
-  POST   https://api.example.com/orders
-  GET    https://api.example.com/search?q=...
-  POST   https://api.example.com/payments
-
-Internal routing (private):
-  /users/*    → http://user-service:8080
-  /orders/*   → http://order-service:8081
-  /search/*   → grpc://search-service:50051
-  /payments/* → http://payment-service:8082
+isRequestAllowed(clientId, ruleId) -> {
+    passes: boolean,
+    remaining: number,
+    resetTime: timestamp
+}
 ```
 
-**Admin / control-plane interface:** Most gateways expose a separate admin API or dashboard to manage routes and policies.
+| Parameter | Type | Description |
+|---|---|---|
+| `clientId` | string | User ID, IP address, or API key |
+| `ruleId` | string | Identifier for the rate limiting rule to check against |
+| **Returns** | object | Whether request is allowed, remaining quota, and when the limit resets |
 
-```
-PUT    /admin/routes/{routeId}        # create/update a route
-DELETE /admin/routes/{routeId}        # remove a route
-GET    /admin/routes                   # list routes
-POST   /admin/plugins                   # attach a plugin (auth, rate-limit)
-GET    /admin/metrics                   # observability
-```
+> **Important:** This is an **internal API** used by the API Gateway — not a client-facing endpoint. The client never sends a `ruleId`. The gateway extracts the client identity from the request headers (JWT, API key, or IP), determines the request endpoint, and then **resolves the applicable `ruleId` internally** by matching against rules cached in its local memory (loaded from ZooKeeper/config DB). For example, a `POST /api/tweets` with a valid JWT is internally mapped to `clientId = "user:alice123"` and `ruleId = "rule_tweet_limit"` before calling this function.
 
-> **Security note:** The admin interface MUST be on a separate listener/port and locked down to the operations network — never expose `/admin/*` on the public internet.
-
-> **The pattern in one line:** **client → `api.example.com/<path>` → gateway matches `<path>` against its route table → forwards to the corresponding internal `service:port`.** The gateway doesn't invent these endpoints — it re-publishes whatever the backend services already implement, unified under one hostname and one auth/rate-limit policy. Clients only ever see `api.example.com`; the internal `user-service:8080` / `order-service:8081` hosts are private and never directly reachable from the internet.
+The returned data feeds directly into response headers:
+- `X-RateLimit-Remaining` ← `remaining`
+- `X-RateLimit-Reset` ← `resetTime`
 
 ---
 
-## 3. Core Responsibilities — Tracing a Request
+## 3. High-Level Design
 
-This is the heart of the deep dive. Every request flows through these six steps **in order**. Together they fulfill the **functional requirements** from [Section 1.4](#14-functional-requirements): the single entry point (FR-1), routing (FR-2), auth (FR-3), and rate limiting (FR-4), plus the pluggable pipeline concerns (validation, transformation, caching). Each step below is tagged with the FR it satisfies.
+### 3.1 Where to Place the Rate Limiter
+
+There are three main placement options:
+
+| Option | Approach | Pros | Cons | Verdict |
+|---|---|---|---|---|
+| **In-Process** | Rate limiting logic runs inside each microservice | No extra network hop; simple | Each instance sees only its own traffic; no global enforcement | ❌ Bad |
+| **Dedicated Service** | Separate rate limiter microservice | Centralized; clean separation | Extra network hop for every request; another service to maintain | ✅ Good |
+| **API Gateway / Load Balancer** | Rate limiting at the gateway layer | Centralized control; no extra network hops; natural entry point | Tightly coupled with gateway | ✅✅ Great |
+
+**Detailed breakdown of each option:**
+
+**Option 1: In-Process (Bad)**
+```
+┌───────────────────────────────────────────────────┐
+│  Microservice Instance 1                        │
+│  ┌───────────────────────┐  ┌──────────────────┐  │
+│  │  Rate Limiter (local) │  │ Business Logic  │  │
+│  │  counter: {alice: 50}│  │                 │  │
+│  └───────────────────────┘  └──────────────────┘  │
+└───────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────┐
+│  Microservice Instance 2                        │
+│  ┌───────────────────────┐  ┌──────────────────┐  │
+│  │  Rate Limiter (local) │  │ Business Logic  │  │
+│  │  counter: {alice: 50}│  │                 │  │
+│  └───────────────────────┘  └──────────────────┘  │
+└───────────────────────────────────────────────────┘
+
+Problem: Alice sends 50 requests to Instance 1 and 50 to Instance 2.
+Each instance thinks alice made only 50 requests.
+Globally, alice made 100 — but neither instance knows that.
+→ Rate limiting is BROKEN.
+```
+
+The only way in-process works is with **sticky sessions** (all of a user's requests go to the same instance), but this defeats the purpose of load balancing and creates hot spots.
+
+**Option 2: Dedicated Service (Good)**
+```
+Client → Microservice 1 ───┐
+                            ├───→ Rate Limiter Service ───→ Redis
+Client → Microservice 2 ───┘
+                            │
+Client → Microservice 3 ───┘
+```
+
+This works because state is centralized, but every single API request requires an additional network hop to the rate limiter service. At 1M req/s, that's 1M extra HTTP calls per second. The rate limiter service itself becomes a bottleneck and single point of failure.
+
+**Option 3: API Gateway / Load Balancer (Great) ← Our Choice**
+```
+                    ┌─────────────────┐
+  Client ──────────▶│   API Gateway   │──────▶ Microservice 1
+                    │  (Rate Limiter) │──────▶ Microservice 2
+                    │                 │──────▶ Microservice 3
+                    └────────┬────────┘
+                             │
+                             ▼
+                        ┌─────────┐
+                        │  Redis  │
+                        └─────────┘
+```
+
+The API Gateway already sits on the request path. No extra network hops since the rate limit check is part of the gateway's processing pipeline. Examples:
+- **AWS API Gateway** — built-in rate limiting via usage plans
+- **Kong** — rate limiting plugin
+- **NGINX** — `ngx_http_limit_req_module`
+- **Envoy Proxy** — local and global rate limiting filters
+- **Zuul / Spring Cloud Gateway** — rate limiter filters
+
+#### Diagram: Rate Limiter Placement in API Gateway
 
 ```mermaid
 flowchart LR
-    Client[Client] -->|HTTPS| GW[API Gateway]
-    subgraph Gateway Pipeline
+    C[Client] -->|HTTP Request| LB[Load Balancer]
+    LB --> GW[API Gateway]
+
+    subgraph API Gateway
         direction TB
-        V[1. Validate] --> M[2. Middleware<br/>Auth · Rate Limit · CORS]
-        M --> R[3. Route Lookup]
-        R --> P[4. Backend Call<br/>HTTP / gRPC]
-        P --> T[5. Transform Response]
-        T --> C[6. Cache?]
+        GW --> Auth[1. Authentication<br/>JWT / API Key]
+        Auth --> Extract[2. Extract Client ID]
+        Extract --> RL[3. Rate Limit Check]
+        RL -->|EVALSHA| Redis[(Redis Cluster)]
+        Redis -->|allowed / rejected| RL
     end
-    GW --> V
-    C -->|Response| Client
-    P --> Backend[Backend Microservice]
-    Backend --> P
+
+    RL -->|✅ Allowed| Backend[Backend<br/>Microservices]
+    RL -->|❌ Rejected<br/>HTTP 429| C
+    Backend -->|Response| C
 ```
 
-### 3.1 Step 1 — Request Validation *(pluggable pipeline)*
+### 3.2 Client Identification
 
-Before the gateway does anything expensive (auth, routing, cache lookup), it sanity-checks the request shape. This is **cheap rejection** — fail fast on garbage.
+Since the rate limiter lives in the API Gateway, it only has access to information in the HTTP request itself:
 
-**What gets validated:**
-
-| Check | Example failure | Response |
-|---|---|---|
-| URL is well-formed | `GET ///\\foo` | `400 Bad Request` |
-| HTTP method allowed on the route | `DELETE /search` when only `GET` is configured | `405 Method Not Allowed` |
-| Required headers present | Missing `Content-Type` on a `POST` with body | `400 Bad Request` |
-| Body matches expected schema | Malformed JSON | `400 Bad Request` |
-| Body size within limits | 50 MB upload on a 1 MB-limit route | `413 Payload Too Large` |
-| API version supported | `GET /v99/users` | `404 Not Found` |
-
-**Why it matters:** A malformed JSON payload from a buggy mobile app should be rejected in 100 µs at the edge — never propagated 4 hops deep into your service mesh where it will OOM a parser somewhere.
-
-**Pseudocode:**
-
-```java
-public ValidationResult validate(HttpRequest req) {
-    if (!isValidUri(req.getUri()))           return reject(400, "malformed URI");
-    if (req.getContentLength() > MAX_BODY)   return reject(413, "payload too large");
-    if (req.getMethod() == POST && req.getBody() != null) {
-        if (!isValidJson(req.getBody()))     return reject(400, "invalid JSON");
-    }
-    Route route = routeTable.match(req);
-    if (route == null)                        return reject(404, "no route");
-    if (!route.allows(req.getMethod()))      return reject(405, "method not allowed");
-    return ValidationResult.OK;
-}
-```
-
-### 3.2 Step 2 — Middleware Pipeline *(FR-3 auth · FR-4 rate limit + pluggable)*
-
-Middleware is the gateway's superpower. It's a chain of pluggable processors that run **before** the request is forwarded.
-
-**Common middleware (in roughly the order they should run):**
-
-| # | Middleware | Purpose | Failure response |
+| Method | Source | Best For | Considerations |
 |---|---|---|---|
-| 1 | **TLS termination** | Decrypt HTTPS so internal traffic is plain HTTP | `502 Bad Gateway` if cert expired |
-| 2 | **IP allowlist / denylist** | Block bad actors at L3/L4 before spending CPU | `403 Forbidden` |
-| 3 | **Authentication** | Verify identity via JWT, OAuth, API key, mTLS | `401 Unauthorized` |
-| 4 | **Authorization** | Check permissions on the route | `403 Forbidden` |
-| 5 | **Rate limiting / throttling** | Enforce per-client quotas | `429 Too Many Requests` |
-| 6 | **Request size / quota check** | Enforce monthly data caps | `429` or `402 Payment Required` |
-| 7 | **CORS handling** | Add `Access-Control-*` headers for browser clients | `403` on disallowed origin |
-| 8 | **Request logging / tracing** | Generate request ID, start trace span | — |
-| 9 | **Header injection** | Add `X-Forwarded-For`, `X-Request-Id`, propagate user identity to backend | — |
-| 10 | **Response compression** | Gzip/Brotli the response | — |
+| **User ID** | `Authorization` header (JWT token) | Authenticated APIs | Most precise; one limit per user regardless of device |
+| **IP Address** | `X-Forwarded-For` header | Public APIs / unauthenticated | Shared IPs (NAT, corporate firewalls) can cause false positives |
+| **API Key** | `X-API-Key` header | Developer/partner APIs | Each key holder gets their own limits |
+| **Composite Key** | Combination of above | Multi-dimensional limiting | Most flexible; higher complexity |
 
-> **Hello Interview tip:** *"The most popular and relevant to system design interviews are authentication, rate limiting, and IP whitelisting/blacklisting. My suggestion when introducing an API Gateway to your design is to simply mention 'I'll add an API Gateway to handle routing and basic middleware' and move on."*
-
-#### Middleware Ordering Matters
-
-The order is not arbitrary — **cheap rejections must come before expensive ones**:
-
-```
-✅ Correct order
-IP denylist → Auth → Rate limit → Route → Backend
-   1 µs       1 ms     2 ms       100 µs   50 ms
-
-❌ Wrong order
-Backend call → Auth (after the work is done — wasteful)
-Rate limit → IP denylist (rate-limit DB hit for traffic we'd block anyway)
-```
-
-#### Pseudocode Pipeline
+**How the Gateway extracts client identity:**
 
 ```java
-public Response handle(HttpRequest req) {
-    for (Middleware mw : pipeline) {            // ordered list
-        Response early = mw.process(req);
-        if (early != null) return early;        // short-circuit on rejection
+// Pseudocode for client identification at the API Gateway
+public String extractClientId(HttpServletRequest request) {
+    // Priority 1: Try authenticated user ID from JWT
+    String authHeader = request.getHeader("Authorization");
+    if (authHeader != null && authHeader.startsWith("Bearer ")) {
+        String token = authHeader.substring(7);          // strip "Bearer "
+        Claims claims = jwtDecoder.decode(token);          // already verified by gateway
+        return "user:" + claims.getSubject();              // e.g., "user:alice123"
     }
-    Route route = router.match(req);
-    Response upstream = backendClient.send(route, req);
-    for (Middleware mw : reversePipeline) {     // response phase
-        mw.postProcess(req, upstream);
+
+    // Priority 2: Try API Key
+    String apiKey = request.getHeader("X-API-Key");
+    if (apiKey != null) {
+        return "apikey:" + apiKey;                         // e.g., "apikey:dk_abc123"
     }
-    return upstream;
-}
-```
 
-### 3.3 Step 3 — Routing *(FR-1 single endpoint · FR-2 routing)*
-
-The **routing table** is the heart of the gateway. It maps an incoming request to exactly one backend service.
-
-**Match criteria (in priority order):**
-
-1. **URL path** (most common) — `/users/*` → `user-service`
-2. **HTTP method** — `GET /orders` vs. `POST /orders` can route differently
-3. **Hostname** — `api.example.com` vs. `admin.example.com`
-4. **Headers** — `X-API-Version: v2` → `user-service-v2`
-5. **Query parameters** — `?canary=true` → `user-service-canary`
-
-**Example route configuration (YAML):**
-
-```yaml
-routes:
-  - id: user-route
-    match:
-      path: /users/*
-      methods: [GET, POST, PUT, DELETE]
-    backend:
-      service: user-service
-      port: 8080
-      timeout: 2s
-      retries: 2
-
-  - id: order-route
-    match:
-      path: /orders/*
-      methods: [GET, POST]
-    backend:
-      service: order-service
-      port: 8081
-    plugins:
-      - rate-limit: { limit: 100, window: 1s }
-      - require-auth: { scopes: [orders.read, orders.write] }
-
-  - id: payment-route
-    match:
-      path: /payments/*
-    backend:
-      service: payment-service
-      port: 8082
-    plugins:
-      - mtls-required: true            # extra security for $$$ endpoints
-      - rate-limit: { limit: 10, window: 1s }
-```
-
-#### Routing Algorithms
-
-For high request rates the routing table must support **O(log N) or O(1) lookups**, not linear scans.
-
-| Algorithm | Complexity | Used by |
-|---|---|---|
-| **Trie / Radix tree on URL path** | O(L) where L = path length | NGINX, Envoy, Fastify |
-| **Hash map on exact path** | O(1) | Simple gateways |
-| **Linear scan with regex** | O(N) | ❌ Bad — only OK for tiny route tables |
-
-#### Load Balancing to Backend
-
-Once a route resolves to a service, the gateway must pick **which instance** of that service to call. Common strategies:
-
-| Strategy | When to use |
-|---|---|
-| **Round robin** | Default, uniform instances |
-| **Least connections** | Long-lived or variable-duration requests |
-| **Consistent hashing** (by user-id) | Sticky sessions / cache locality |
-| **Weighted** | Canary deploys / blue-green |
-| **Latency-aware (EWMA)** | Multi-AZ, prefer fastest replica |
-
-This is the **gateway-to-service** load balancing layer mentioned in [Section 7](#7-api-gateway-vs-load-balancer-vs-service-mesh-vs-bff).
-
-#### Where Does the Route Map Actually Live?
-
-A common interview follow-up: *"You said the gateway routes `/users/*` to `user-service` — where is that mapping stored, and how does the gateway know `user-service` is at `10.0.1.5`?"*
-
-The answer is **two separate lookups, two separate stores**:
-
-```
-                        ┌──────────────────────────────────────────┐
-                        │            API Gateway Instance          │
-                        │                                          │
-  Request /users/123 ──▶│  ① Route Table (in-memory trie)         │
-                        │     /users/*  →  service=user-service    │
-                        │                                          │
-                        │  ② Service Registry cache (in-memory)   │
-                        │     user-service → [10.0.1.5, 10.0.1.6] │
-                        │                                          │
-                        │  ③ Pick instance via LB strategy        │
-                        │     → forward to 10.0.1.5:8080          │
-                        └──────────────────────────────────────────┘
-                                  ▲                      ▲
-                                  │ watch                │ poll / watch
-                                  │ (rare changes)        │ (frequent)
-                        ┌─────────┴─────────┐  ┌──────────┴──────────┐
-                        │  Config Store     │  │  Service Registry   │
-                        │  (route rules)    │  │  (live instances)   │
-                        │                   │  │                     │
-                        │  • etcd           │  │  • Consul           │
-                        │  • Consul KV      │  │  • Eureka           │
-                        │  • ZooKeeper      │  │  • Kubernetes       │
-                        │  • Git + CI       │  │    Endpoints API    │
-                        │  • S3 + reload    │  │  • AWS Cloud Map    │
-                        │  • DynamoDB       │  │  • Nacos            │
-                        └───────────────────┘  └─────────────────────┘
-                         "What routes exist?"   "Where is svc X right now?"
-                         (changes daily)        (changes every few seconds)
-```
-
-**The two stores serve very different needs:**
-
-| | Route Config Store | Service Registry |
-|---|---|---|
-| **What** | Static rules: `/users/* → user-service`, auth policy, rate limits | Live IPs: `user-service = [10.0.1.5, 10.0.1.6, ...]` |
-| **Changes** | When operators deploy new routes (hourly–daily) | Every time a pod starts/dies (seconds–minutes) |
-| **Source of truth** | Operator / GitOps repo | The services themselves (self-register) |
-| **Typical store** | etcd, Consul KV, ZooKeeper, S3, Git | Consul, Eureka, K8s Endpoints, AWS Cloud Map |
-| **How gateway reads it** | Watches store → hot reloads in-memory trie | Polls/watches → updates in-memory endpoint pool |
-
-> **Critical:** **Both stores are read at startup and cached in the gateway's RAM.** The gateway does **not** hit a database on every request — that would add a 1–5 ms round trip to every call and make the database a SPOF. The pattern is **watch + cache locally, fall back to stale on store outage**.
-
-**Why not Redis for the route table?**
-- Redis is great for **per-request mutable state** (rate-limit counters, cached responses) where freshness matters every millisecond.
-- Routes change rarely and need **strong consistency + change notifications + version history** — that's why etcd / ZooKeeper / Consul KV (which provide watch semantics and Raft-backed consistency) are the standard choice, not Redis.
-- Some teams use simpler stores: a YAML file in S3 polled every 30 s, or routes baked into the gateway container image and rolled out via CI/CD. All work — Redis just isn't the right primitive for this.
-
-**Concrete examples in the wild:**
-
-| Gateway | Route storage | Service discovery |
-|---|---|---|
-| **Envoy** | xDS gRPC API (control plane like Istio Pilot reads from K8s/Consul) | EDS (Endpoint Discovery Service) via xDS |
-| **Kong** | PostgreSQL or Cassandra (admin DB) → cached in-memory in each node | DNS, Consul, K8s |
-| **NGINX** | `nginx.conf` file → reload | Upstream DNS resolution, or NGINX Plus dynamic API |
-| **AWS API Gateway** | AWS internal config store | VPC Link / Lambda ARN / HTTP endpoint |
-| **Spring Cloud Gateway** | `application.yml` or Spring Cloud Config Server | Eureka / Consul / K8s |
-
-**Pseudocode of the full lookup:**
-
-```java
-public Endpoint resolveBackend(HttpRequest req) {
-    // ① Route lookup — pure in-memory, sub-microsecond
-    Route route = routeTrie.match(req.getPath(), req.getMethod());
-    if (route == null) throw new NotFoundException();
-
-    // ② Service discovery — in-memory cache, refreshed in background
-    List<Endpoint> liveInstances = serviceCache.get(route.getServiceName());
-    if (liveInstances.isEmpty()) throw new ServiceUnavailableException();
-
-    // ③ Load balancing — pick one instance
-    return route.getLoadBalancer().choose(liveInstances);
+    // Priority 3: Fall back to IP address
+    return "ip:" + getClientIp(request);                   // e.g., "ip:203.0.113.42"
 }
 
-// Background threads keep the caches fresh
-@Scheduled(every = "watch") // long-poll etcd
-void onRouteConfigChange(RouteConfig newConfig) {
-    this.routeTrie = RouteTrie.build(newConfig); // atomic swap
-}
-
-@Scheduled(every = "10s")   // poll registry
-void refreshServiceCache() {
-    for (String service : trackedServices) {
-        serviceCache.put(service, registry.healthyEndpoints(service));
+private String getClientIp(HttpServletRequest request) {
+    // X-Forwarded-For: client, proxy1, proxy2
+    // Only trust the chain added by our own load balancer.
+    String forwardedFor = request.getHeader("X-Forwarded-For");
+    if (forwardedFor != null && !forwardedFor.isBlank()) {
+        // Take the leftmost IP (original client)
+        return forwardedFor.split(",")[0].trim();
     }
+    return request.getRemoteAddr();
 }
 ```
 
-See [Section 5.4](#54-service-discovery-integration) for the service registry deep dive and [Section 5.7](#57-configuration-management) for how route config gets pushed safely.
+**Composite Key Examples:**
 
-### 3.4 Step 4 — Backend Communication *(FR-2)* & Protocol Translation *(pluggable)*
-
-The gateway speaks **HTTP/1.1, HTTP/2, HTTP/3, gRPC, and WebSocket** outward to clients, and **whatever your services use** inward.
-
-**Common translation scenarios:**
+For the most robust rate limiting, use composite keys that combine multiple identifiers:
 
 ```
-Client request                  Internal call
-─────────────────              ──────────────────────────────
-HTTP GET /users/123      →     gRPC userService.GetProfile{id:123}
-HTTP POST /orders        →     Kafka publish "orders.created"
-HTTP GET /search?q=foo   →     ElasticSearch HTTP query
-GraphQL mutation         →     N internal REST calls (BFF style)
-WebSocket /chat          →     gRPC streaming to chat-service
+Key format: "{identifier_type}:{identifier_value}:{endpoint}:{rule_id}"
+
+Examples:
+  "user:alice123:global:rule_default_user"        → Alice's global limit
+  "user:alice123:/api/search:rule_search"          → Alice's search-specific limit
+  "ip:203.0.113.42:global:rule_default_ip"         → IP-level global limit
+  "apikey:dk_abc123:/api/bulk:rule_bulk_endpoint"  → API key + endpoint limit
 ```
 
-**Why translate at the gateway?**
-- Clients (especially mobile/web) speak HTTP/JSON — friendly to firewalls, debuggers, browsers
-- Internal services often prefer **gRPC + Protobuf** — 5–10× smaller payloads, lower CPU
-- Translation at the edge lets backend teams pick the most efficient protocol without breaking clients
-
-**Concrete pseudocode example:**
-
-```java
-// Client sends HTTP GET
-GET /users/123/profile  Accept: application/json
-
-// Gateway translates → gRPC
-ProfileRequest req = ProfileRequest.newBuilder().setUserId("123").build();
-ProfileResponse resp = userServiceStub.getProfile(req);
-
-// Gateway translates response back to JSON
-return jsonResponse(200, Map.of(
-    "userId", resp.getUserId(),
-    "name",   resp.getName(),
-    "email",  resp.getEmail()
-));
-```
-
-**Other backend integrations:**
-- **AWS Lambda integration** (AWS API Gateway) — synchronously invoke a function as the backend
-- **Message queue publish** — convert HTTP POST to Kafka/SQS message ("async API")
-- **Service mesh handoff** — forward to a sidecar that handles mTLS + retries
-
-### 3.5 Step 5 — Response Transformation *(pluggable pipeline)*
-
-The response that comes back from the backend rarely goes to the client unchanged. The gateway applies:
-
-| Transformation | Example |
-|---|---|
-| **Protocol translation** | gRPC Protobuf → JSON |
-| **Field filtering / renaming** | Hide internal fields like `_internal_id`, rename `user_name` → `displayName` |
-| **Header injection** | Add `X-RateLimit-Remaining`, `X-Request-Id`, CORS headers |
-| **Status code normalization** | gRPC `NOT_FOUND` → HTTP `404` |
-| **Error envelope wrapping** | Wrap raw error in `{ "error": { "code": ..., "message": ... } }` |
-| **Compression** | Gzip / Brotli the body |
-| **Aggregation** (BFF style) | Combine responses from 3 backend calls into one client response |
-
-**Example (from the article):**
+**In practice, layer multiple rules:**
 
 ```
-// Client sends a HTTP GET request
-GET /users/123/profile
+Per-user limits:       "Alice can make 1000 requests/hour"
+Per-IP limits:         "This IP can make 100 requests/minute"
+Global limits:         "Our API can handle 50,000 requests/second total"
+Endpoint-specific:     "Search API: 10 req/min; Profile updates: 100 req/min"
+```
 
-// API Gateway transforms this into an internal gRPC call
-userService.getProfile({ userId: "123" })
+> **Important:** The rate limiter checks ALL applicable rules and enforces the **most restrictive** one. If Alice has quota remaining on her user limit but her IP has hit its cap, she gets blocked.
 
-// Gateway transforms the gRPC response into JSON and returns it
+### 3.3 Rate Limiting Algorithms
+
+> **Important — What lives WHERE?**
+>
+> This is a common point of confusion. Here's exactly what each component is responsible for:
+>
+> | Component | What It Stores / Does |
+> |---|---|
+> | **API Gateway (in-memory)** | Rate limiting **rules/config** (e.g., "100 req/min for users"). Cached from ZooKeeper/DB. Also: JWT decoding, client ID extraction, routing to correct Redis shard. |
+> | **Redis** | Rate limiting **state/data** only — the raw numbers stored under a **composite key**. Redis doesn't know what these numbers mean; the key is what ties the state to a user + rule. |
+> | **Redis Lua Script** | The algorithm **logic** (read state → calculate refill → decide allow/reject → update state). This runs INSIDE Redis to guarantee atomicity. |
+>
+> **What Redis actually holds — it's a KEY → VALUE store:**
+> ```
+> KEY (built by the Gateway: client + endpoint + rule)   →  VALUE (bucket state)
+> "user:alice123:/api/search:rule_search"                →  {tokens: 84.5, last_refill: 1640995200}
+> "user:alice123:global:rule_default_user"               →  {tokens: 12.0, last_refill: 1640995198}
+> "ip:203.0.113.42:global:rule_default_ip"               →  {tokens: 0.3,  last_refill: 1640995199}
+> "apikey:dk_abc123:/api/bulk:rule_bulk_endpoint"        →  {tokens: 50.0, last_refill: 1640995100}
+> ```
+> The value `{tokens, last_refill}` looks anonymous on its own, but it's never read on its own — it's always fetched **by its key**. The key answers "**which user?**" (`user:alice123`) and "**which rule?**" (`:rule_search`). The rule's actual limits (capacity, refill rate) are NOT in Redis — the Gateway passes them in as Lua arguments from its in-memory config.
+>
+> **The flow:**
+> ```
+> API Gateway                              Redis
+> ┌──────────────────────┐                 ┌────────────────────────────┐
+> │ 1. Extract client ID │                 │                            │
+> │ 2. Look up rules     │                 │  Lua Script executes:      │
+> │    (from memory)      │   EVALSHA ───▶  │  3. Read: tokens=84.5      │
+> │                       │                 │  4. Calc: +2.7 = 87.2      │
+> │                       │                 │  5. Consume: 87.2-1 = 86.2 │
+> │                       │   ◀─── {1,86}  │  6. Write: tokens=86.2     │
+> │ 7. Return response    │                 │  7. Return: allowed, 86    │
+> └──────────────────────┘                 └────────────────────────────┘
+> ```
+>
+> The **pseudocode below shows the algorithm logic conceptually** using local Python dictionaries (`self.buckets = {}`). In production, replace `self.buckets` with Redis calls — or better yet, the entire `is_allowed()` method becomes a Lua script running inside Redis.
+
+#### 3.3.1 Fixed Window Counter
+
+The simplest approach. Divides time into **fixed windows** (like 1-minute buckets) and counts requests in each window.
+
+```
+Time:    |---12:00:00---|---12:01:00---|---12:02:00---|
+Alice:   |     100      |      5       |      42      |
+Bob:     |      20      |     75       |      10      |
+```
+
+**Data structure:** Hash table mapping `clientId:windowStart → counter`
+
+```json
 {
-  "userId": "123",
-  "name":   "John Doe",
-  "email":  "john@example.com"
+  "alice:12:00:00": 100,
+  "alice:12:01:00": 5,
+  "bob:12:00:00": 20,
+  "charlie:12:00:00": 0
 }
 ```
 
-### 3.6 Step 6 — Caching *(pluggable pipeline)*
+**Pros:**
+- Extremely simple to implement
+- Minimal memory (one counter per client per window)
+- O(1) time complexity for each check
 
-The final (and **optional**) step. If a response is deterministic and not user-specific, cache it.
+**Cons:**
+- **Boundary effect:** A user could make 100 requests at 12:00:59, then 100 more at 12:01:00 — effectively 200 requests in 2 seconds
+- Potential for "starvation" if a user hits their limit early in a window
 
-**Strategies:**
-
-| Strategy | When to use |
-|---|---|
-| **Full response caching** | Public, high-traffic, slow-changing endpoints (e.g., `/products/featured`) |
-| **Partial caching** | Compose a response: cache product details, fetch live inventory |
-| **Per-user caching** | Use `Vary: Authorization` header — careful with PII |
-| **TTL-based invalidation** | Default — set `Cache-Control: max-age=300` |
-| **Event-based invalidation** | Subscribe to Kafka topic; purge on `product.updated` |
-
-**Where to put the cache:**
-
-| Location | Pros | Cons |
-|---|---|---|
-| **In-process (local memory)** | Zero network hop, sub-µs latency | Not shared across gateway instances; small |
-| **Distributed (Redis)** | Shared, large, durable | Adds 0.5–2 ms per lookup |
-| **Two-tier (local + Redis)** | Best of both | More complex invalidation |
-
-**Cache key design:**
-
-```
-Key = HTTP_METHOD + ":" + PATH + ":" + QUERY_PARAMS + ":" + VARY_HEADERS
-
-Example:
-"GET:/products/featured::"                          → public, no vary
-"GET:/products/123::Accept=application/json"        → format-vary
-"GET:/users/me::Authorization=Bearer abc..."        → per-user (use with care)
-```
-
-> **Anti-pattern:** Caching authenticated, user-specific responses without `Vary: Authorization` — you'll serve Alice's profile to Bob.
-
-**Important caveat:** Caching at the gateway is mostly a CDN/edge concern. **Don't over-rotate on it in interviews** unless the problem is genuinely read-heavy with cacheable responses (e.g., a product catalog, news feed home page).
-
----
-
-## 4. High-Level Architecture
-
-```mermaid
-flowchart TB
-    subgraph Edge
-        DNS[GeoDNS / Route 53]
-        CDN[CDN<br/>CloudFront / Fastly]
-    end
-
-    subgraph Region 1
-        LB1[Public Load Balancer<br/>NLB/ALB]
-        GW1A[Gateway Instance A]
-        GW1B[Gateway Instance B]
-        GW1C[Gateway Instance C]
-    end
-
-    subgraph Region 2
-        LB2[Public Load Balancer]
-        GW2A[Gateway Instance A]
-        GW2B[Gateway Instance B]
-    end
-
-    subgraph Control Plane
-        Cfg[(Config Store<br/>etcd / ZooKeeper)]
-        Reg[(Service Registry<br/>Consul / Eureka)]
-        Cache[(Redis<br/>rate-limit + response cache)]
-    end
-
-    subgraph Backends Region 1
-        S1[user-service]
-        S2[order-service]
-        S3[payment-service]
-        S4[search-service]
-    end
-
-    Client --> DNS
-    DNS --> CDN
-    CDN --> LB1
-    CDN --> LB2
-
-    LB1 --> GW1A
-    LB1 --> GW1B
-    LB1 --> GW1C
-
-    LB2 --> GW2A
-    LB2 --> GW2B
-
-    GW1A & GW1B & GW1C --> S1 & S2 & S3 & S4
-
-    GW1A -.config.-> Cfg
-    GW1A -.discover.-> Reg
-    GW1A -.state.-> Cache
-
-    GW2A -.config.-> Cfg
-    GW2A -.discover.-> Reg
-    GW2A -.state.-> Cache
-```
-
-**Layers explained:**
-
-| Layer | Purpose | Stateful? |
-|---|---|---|
-| **GeoDNS** | Route users to nearest region | No |
-| **CDN** | Cache static + cacheable API responses at the edge | Yes (cache) |
-| **Public LB** | TCP/TLS termination, distribute across gateway instances | No |
-| **API Gateway fleet** | Validate, auth, rate-limit, route, transform | **No (stateless)** |
-| **Control plane** | Centralized config, service registry, shared cache | Yes |
-| **Backend services** | Business logic | Varies |
-
-> **Critical property:** The gateway tier is **stateless**. Any state (config, rate-limit counters, cached responses) lives in external stores. This is what makes horizontal scaling trivial.
-
----
-
-## 5. Deep Dives
-
-> **From FRs to NFRs:** Sections 3–4 satisfy the **functional requirements** (single entry point, routing, auth, rate limiting). The deep dives below address each **non-functional requirement** from [Section 1.5](#15-non-functional-requirements) in turn — scalability (NFR-3), availability & fault isolation (NFR-2, NFR-4), security (NFR-5), observability (NFR-6), and the low-latency budget (NFR-1) that runs through all of them. Each deep dive is tagged with the NFR it primarily serves.
-
-### 5.1 Scaling — Horizontal Scaling *(NFR-3)*
-
-> *"API Gateways are typically stateless, making them ideal candidates for horizontal scaling. You can add more gateway instances behind a load balancer to distribute incoming requests."* — Hello Interview
-
-**The recipe:**
-
-```
-        ┌─────────────┐
-Client →│ Public LB   │→ Gateway A ─┐
-        │ (NLB/ALB)   │→ Gateway B ─┼→ Backend Services
-        └─────────────┘→ Gateway C ─┘
-                       → Gateway D ─┘
-                       → ... add more on autoscale triggers
-```
-
-**Autoscaling triggers:**
-- CPU > 60 % sustained for 2 minutes → add instance
-- Request rate > 80 % of capacity → add instance
-- p99 latency > target → add instance (usually a downstream symptom)
-
-**Capacity planning rule of thumb:**
-
-```
-1 modern gateway instance (4 vCPU, 8 GB) handles:
-  • ~20K req/s of plain HTTP forwarding
-  • ~10K req/s with auth + rate-limit
-  •  ~5K req/s with heavy transformation (JSON ↔ gRPC + caching)
-
-For 1M req/s → ~100–200 instances + headroom.
-```
-
-#### Two layers of load balancing
-
-A common confusion in interviews:
-
-| Layer | What it does | Common implementation |
-|---|---|---|
-| **Client → Gateway** | Distributes incoming public traffic across gateway instances | AWS ELB/ALB, NGINX, GCP LB |
-| **Gateway → Service** | Distributes outgoing traffic across backend service instances | Built into the gateway itself, or a service mesh sidecar |
-
-> **Interview tip:** Don't get bogged down. Draw **one box labeled "API Gateway + LB"** — that's enough for most interviews.
-
-### 5.2 Scaling — Global Distribution *(NFR-1 latency · NFR-3 scale)*
-
-For globally distributed users, deploy gateways in **multiple regions** like a CDN.
-
-```mermaid
-flowchart LR
-    EU[European user] -->|GeoDNS| EUGW[EU Gateway Cluster]
-    US[US user] -->|GeoDNS| USGW[US Gateway Cluster]
-    AP[Asia user] -->|GeoDNS| APGW[AP Gateway Cluster]
-
-    EUGW --> EUBackend[EU Backends]
-    USGW --> USBackend[US Backends]
-    APGW --> APBackend[AP Backends]
-
-    EUGW -.config sync.-> CP[(Global Config<br/>Plane)]
-    USGW -.config sync.-> CP
-    APGW -.config sync.-> CP
-```
-
-**Three pillars of global distribution:**
-
-1. **Regional deployments** — gateway clusters in `us-east-1`, `eu-west-1`, `ap-southeast-1`, etc.
-2. **DNS-based routing** — GeoDNS (Route 53 latency routing, Cloudflare, NS1) sends users to nearest region
-3. **Config sync** — routing rules and policies must stay consistent across regions (push from central control plane)
-
-**Latency win:** A European user hitting an EU gateway → EU backend avoids a transatlantic round trip. Typical savings: **80–150 ms per request**.
-
-**Failover:** If `eu-west-1` is down, DNS health checks pull it out of rotation and users get routed to `us-east-1`. Capacity planning must account for one region being able to absorb the load of a peer.
-
-### 5.3 High Availability & Fault Tolerance *(NFR-2 · NFR-4)*
-
-The gateway is on **100 % of the request path**. Its SLO must be **stricter than any backend**.
-
-| Risk | Mitigation |
-|---|---|
-| Gateway instance crash | Stateless + LB health checks → traffic shifts to peers in seconds |
-| Entire AZ outage | Multi-AZ deployment with cross-zone load balancing |
-| Entire region outage | Multi-region with GeoDNS failover |
-| Backend service is slow | **Circuit breaker** — fail fast, return cached or default response |
-| Backend service is down | **Fallback** — return 503 with retry-after, or stale cache |
-| Config push gone wrong | **Canary rollout** of config + automatic rollback on error-rate spike |
-| Rogue client sends 10× traffic | **Rate limit + adaptive concurrency** (e.g., Netflix's adaptive throttling) |
-
-#### Circuit Breaker Pattern
+**Pseudocode Implementation:**
 
 ```java
-// Pseudocode — Hystrix / Resilience4j style
-CircuitBreaker breaker = CircuitBreaker.ofDefaults("user-service");
+// NOTE: This shows the algorithm LOGIC conceptually.
+// In production, `counters` is NOT a local map — it's Redis.
+// The logic below would be a Lua script running inside Redis.
 
-Response response = breaker.executeSupplier(() ->
-    backendClient.call(userService, req)
-);
+public class FixedWindowCounter {
+    private final int maxRequests;        // e.g., 100
+    private final long windowSizeSeconds; // e.g., 60
+    private final Map<String, Integer> counters = new ConcurrentHashMap<>(); // "client:windowStart" -> count
 
-// States:
-//   CLOSED  — calls pass through normally
-//   OPEN    — fail fast for 30 s; return 503 immediately
-//   HALF_OPEN — allow 1 test request; reset to CLOSED on success
+    public FixedWindowCounter(int maxRequests, long windowSizeSeconds) {
+        this.maxRequests = maxRequests;
+        this.windowSizeSeconds = windowSizeSeconds;
+    }
+
+    public boolean isAllowed(String clientId) {
+        // Determine the current window start
+        long now = Instant.now().getEpochSecond();
+        long windowStart = now - (now % windowSizeSeconds); // floor to window boundary
+        String key = clientId + ":" + windowStart;
+
+        // Atomic get-or-init and increment-if-below-limit
+        Integer updated = counters.compute(key, (k, count) -> {
+            int current = (count == null) ? 0 : count;
+            return (current >= maxRequests) ? current : current + 1;
+        });
+
+        // Cleanup old windows (optional, or rely on TTL in Redis)
+        cleanupOldWindows(windowStart);
+
+        return updated < maxRequests || updated == maxRequests; // allowed iff we actually incremented
+    }
+}
 ```
 
-**State diagram:**
-
-```
-              failures > threshold
-   CLOSED ───────────────────────▶  OPEN
-     ▲                                 │
-     │ success                         │ wait timeout
-     │                                 ▼
-   HALF_OPEN ◀──── test request ──── (1 probe)
+**Redis Implementation:**
+```redis
+-- Fixed window in Redis (single commands, simple but not atomic)
+SET     rate:alice:1640995200  0  EX 60  NX   -- Create counter if not exists
+INCR    rate:alice:1640995200                   -- Atomic increment
+-- If INCR result > max_requests, reject
 ```
 
-### 5.4 Service Discovery Integration *(supports FR-2 · NFR-4)*
+**The Boundary Problem Visualized:**
+```
+Limit: 100 requests per minute
 
-In dynamic environments (Kubernetes, EC2 autoscaling), backend IPs change constantly. The gateway must integrate with a **service registry**.
+    Window 1              Window 2
+|<--- 60 seconds --->|<--- 60 seconds --->|
+                     |
+             99 reqs |  100 reqs
+          (last sec) | (first sec)
+                     |
+         |<-2 secs-->|
+         199 requests in 2 seconds!  ← Almost 2× the intended limit
+```
 
-| Registry | How the gateway uses it |
-|---|---|
-| **Kubernetes DNS / Endpoints** | Resolve `user-service.default.svc.cluster.local` → list of pod IPs |
-| **Consul** | Long-poll `/v1/health/service/user-service` for IP changes |
-| **Eureka** (Spring Cloud) | Periodic pull of registry snapshot |
-| **AWS Cloud Map** | DNS or HTTP discovery API |
+#### 3.3.2 Sliding Window Log
 
-**Pseudocode:**
+Keeps a **log of individual request timestamps** for each user. On a new request, remove timestamps older than the window, then check if the remaining count exceeds the limit.
+
+```
+Alice's log (limit: 8/minute):
+[12:00:02, 12:00:15, 12:00:22, 12:00:31, 12:00:45, 12:00:50, 12:00:55, 12:00:58]
+                                                                          ↑
+                                                        9th request in rolling minute → REJECT
+```
+
+**Pros:**
+- **Perfect accuracy** — always looking at exactly the last N minutes
+- No boundary effects
+
+**Cons:**
+- **High memory** — for a user making 1000 req/min, you store 1000 timestamps
+- Computational overhead scanning timestamp logs for each request
+- Doesn't scale well with millions of users
+
+**Pseudocode Implementation:**
 
 ```java
-public class ServiceResolver {
-    private final Map<String, List<Endpoint>> cache = new ConcurrentHashMap<>();
+// NOTE: In production, `logs` is a Redis Sorted Set (ZSET), not a local Deque.
+// The logic below runs as a Lua script inside Redis for atomicity.
 
-    @Scheduled(every = "10s")
-    public void refresh() {
-        for (String service : trackedServices) {
-            List<Endpoint> live = registry.healthyEndpoints(service);
-            cache.put(service, live);
+public class SlidingWindowLog {
+    private final int maxRequests;
+    private final long windowSizeSeconds;
+    // clientId -> sorted timestamps (oldest first)
+    private final Map<String, Deque<Long>> logs = new ConcurrentHashMap<>();
+
+    public SlidingWindowLog(int maxRequests, long windowSizeSeconds) {
+        this.maxRequests = maxRequests;
+        this.windowSizeSeconds = windowSizeSeconds;
+    }
+
+    public synchronized boolean isAllowed(String clientId) {
+        long now = Instant.now().getEpochSecond();
+        long windowStart = now - windowSizeSeconds;
+
+        Deque<Long> log = logs.computeIfAbsent(clientId, k -> new ArrayDeque<>());
+
+        // Remove timestamps outside the current window
+        while (!log.isEmpty() && log.peekFirst() <= windowStart) {
+            log.pollFirst();
+        }
+
+        // Reject if adding this request would exceed the limit
+        if (log.size() >= maxRequests) {
+            return false;
+        }
+
+        // Allow and record the timestamp
+        log.addLast(now);
+        return true;
+    }
+}
+```
+
+**Redis Implementation (using Sorted Sets):**
+```redis
+-- Sliding window log using Redis sorted set
+-- Score = timestamp, Member = unique request ID
+ZREMRANGEBYSCORE  rate:alice  0  <window_start>   -- Remove old entries
+ZCARD              rate:alice                       -- Count entries in window
+-- If ZCARD result >= max_requests, reject
+ZADD               rate:alice  <now>  <request_id>  -- Add this request
+EXPIRE             rate:alice  <window_size>        -- Auto-cleanup
+```
+
+**Memory Analysis:**
+```
+For a user making 1000 req/min:
+  • Each timestamp: 8 bytes + sorted set overhead ~50 bytes per entry
+  • Per user: 1000 × 58 = ~58 KB
+  • 100M users: 58 KB × 100M = 5.8 TB  ← Completely impractical!
+  • Compare to Token Bucket: 150 bytes × 100M = 15 GB
+```
+
+#### 3.3.3 Sliding Window Counter
+
+A clever **hybrid** that approximates sliding windows using fixed windows with math.
+
+Maintains counters for the **current window** and the **previous window**. Estimates the "true" sliding window count by weighting:
+
+```
+Estimated count = (previous_window_count × overlap%) + current_window_count
+```
+
+**Example:** If you're 30% through the current minute:
+- Count = (70% × previous minute's requests) + (100% × current minute's requests)
+
+**Pros:**
+- Much better accuracy than fixed windows
+- Minimal memory — just two counters per client
+
+**Cons:**
+- Approximation (assumes traffic is evenly distributed within windows)
+- Math can be tricky to implement correctly
+
+**Detailed Worked Example:**
+
+```
+Rule: 100 requests per minute
+Previous window (12:00:00 - 12:00:59): 84 requests
+Current window  (12:01:00 - 12:01:59): 36 requests
+
+Current time: 12:01:15 (we are 25% into the current window)
+
+Weighted count = (prev_count × overlap%) + curr_count
+               = (84 × 75%) + 36
+               = 63 + 36
+               = 99
+
+Since 99 < 100 → ALLOW this request
+
+Next request at 12:01:16:
+Weighted count = (84 × 74.7%) + 37 = 62.7 + 37 = 99.7 → rounds to 100 → REJECT
+```
+
+**Pseudocode Implementation:**
+
+```java
+// NOTE: In production, `windows` is stored as Redis keys with TTL.
+// The logic below runs as a Lua script inside Redis for atomicity.
+
+public class SlidingWindowCounter {
+    private final int maxRequests;
+    private final long windowSizeSeconds;
+    // clientId -> (windowStart -> count)
+    private final Map<String, Map<Long, Integer>> windows = new ConcurrentHashMap<>();
+
+    public SlidingWindowCounter(int maxRequests, long windowSizeSeconds) {
+        this.maxRequests = maxRequests;
+        this.windowSizeSeconds = windowSizeSeconds;
+    }
+
+    public synchronized boolean isAllowed(String clientId) {
+        long now = Instant.now().getEpochSecond();
+        long currentWindow = now - (now % windowSizeSeconds);
+        long previousWindow = currentWindow - windowSizeSeconds;
+
+        // How far are we into the current window? (0.0 to 1.0)
+        double elapsedInWindow = (now - currentWindow) / (double) windowSizeSeconds;
+
+        Map<Long, Integer> clientWindows = windows.computeIfAbsent(clientId, k -> new HashMap<>());
+        int prevCount = clientWindows.getOrDefault(previousWindow, 0);
+        int currCount = clientWindows.getOrDefault(currentWindow, 0);
+
+        // Weighted estimate
+        double overlapFraction = 1.0 - elapsedInWindow;
+        double estimatedCount = (prevCount * overlapFraction) + currCount;
+
+        if (estimatedCount >= maxRequests) {
+            return false; // rate limited
+        }
+
+        clientWindows.put(currentWindow, currCount + 1);
+        return true;
+    }
+}
+```
+
+**Why the approximation is acceptable:**
+Studies show that the sliding window counter has only a **~0.003% false positive rate** for most real-world traffic patterns. The approximation error only matters when traffic is extremely uneven within a window, which is rare at scale due to the law of large numbers.
+
+#### 3.3.4 Token Bucket (Recommended)
+
+Each client has a **bucket** that holds tokens up to a **burst capacity**. Tokens are added at a steady **refill rate**. Each request consumes one token. No tokens → request rejected.
+
+```
+┌───────────────────┐
+│  Bucket (max: 100)│
+│  ████████████░░░░  │  ← 75 tokens remaining
+│  Refill: 10/min   │
+└───────────────────┘
+```
+
+**Example:** Bucket holds 100 tokens (burst capacity), refills at 10 tokens/minute (steady rate).
+- Client can burst up to 100 requests immediately
+- Then sustain 10 requests/minute
+
+**Data per client:** Just two values — `(current_tokens, last_refill_time)`
+
+**Pros:**
+- Simple to implement
+- Memory efficient
+- Naturally handles **bursty traffic** (real-world traffic is bursty)
+- Used by **Stripe**, **AWS**, and many production systems
+
+**Cons:**
+- Choosing the right bucket size and refill rate requires tuning
+- "Cold start" — idle clients start with full buckets
+
+**This is our chosen algorithm** because it strikes the best balance between simplicity, memory efficiency, and handling real-world traffic patterns.
+
+**Pseudocode Implementation:**
+
+```java
+// NOTE: In production, `buckets` is a Redis Hash (HMSET/HMGET).
+// This entire isAllowed() method runs as a Lua script inside Redis.
+// See Section 3.6 for the actual Lua script.
+
+public class TokenBucket {
+    private final double maxTokens;       // Burst capacity (e.g., 100)
+    private final double refillRatePerSec; // Steady rate (e.g., 10/sec)
+    private final Map<String, Bucket> buckets = new ConcurrentHashMap<>();
+
+    private static class Bucket {
+        double tokens;
+        double lastRefill;
+        Bucket(double tokens, double lastRefill) { this.tokens = tokens; this.lastRefill = lastRefill; }
+    }
+
+    public TokenBucket(double maxTokens, double refillRatePerSec) {
+        this.maxTokens = maxTokens;
+        this.refillRatePerSec = refillRatePerSec;
+    }
+
+    public Result isAllowed(String clientId) {
+        double now = System.currentTimeMillis() / 1000.0;
+
+        // Initialize bucket if first request (start full)
+        Bucket bucket = buckets.computeIfAbsent(clientId, k -> new Bucket(maxTokens, now));
+
+        synchronized (bucket) {
+            // Step 1: Calculate token refill
+            double elapsed = now - bucket.lastRefill;
+            bucket.tokens = Math.min(maxTokens, bucket.tokens + elapsed * refillRatePerSec);
+            bucket.lastRefill = now;
+
+            // Step 2: Try to consume a token
+            if (bucket.tokens >= 1.0) {
+                bucket.tokens -= 1.0;
+                return new Result(true, (int) bucket.tokens);
+            }
+            return new Result(false, 0);
         }
     }
 
-    public Endpoint pick(String service, LoadBalancingStrategy lb) {
-        return lb.choose(cache.get(service));
+    public record Result(boolean allowed, int remaining) {}
+}
+```
+
+**Token Bucket Behavior Over Time:**
+```
+Bucket capacity: 10 tokens, Refill: 2 tokens/second
+
+Time    Event              Tokens   Result
+0.0s    Request arrives    10 → 9   ALLOW  (started full)
+0.1s    Request arrives     9 → 8   ALLOW
+0.2s    5 requests burst    8 → 3   ALLOW all 5
+0.3s    Request arrives     3.2→2.2  ALLOW  (refilled 0.2 tokens in 0.1s)
+1.0s    Request arrives     5.6→4.6  ALLOW  (refilled 1.4 tokens over 0.7s)
+5.0s    Request arrives    10 → 9   ALLOW  (bucket refilled to max)
+--- 10 rapid requests ---
+5.0s    10 requests burst  10 → 0   ALLOW all 10
+5.0s    Request arrives     0       REJECT (no tokens!)
+5.5s    Request arrives     1 → 0   ALLOW  (refilled 1 token in 0.5s)
+```
+
+#### 3.3.5 Leaky Bucket
+
+The **Leaky Bucket** is the sibling of the Token Bucket. Instead of adding tokens, think of a bucket with a hole at the bottom that "leaks" requests at a constant rate.
+
+Requests enter the bucket (a FIFO queue). The bucket processes requests at a fixed rate. If the bucket (queue) is full when a new request arrives, it's dropped.
+
+```
+    Incoming requests
+         │ │ │
+         ▼ ▼ ▼
+    ┌─────────────┐
+    │  ▁ ▁ ▁ ▁ ▁   │  ← Queue (capacity = 5)
+    │             │     If full, new requests
+    │  ▁ ▁ ▁      │     are DROPPED
+    └─────┬───────┘
+          │
+          ▼  ← Leaks at a CONSTANT rate (e.g., 10 req/sec)
+    Processed requests
+```
+
+**Key Differences from Token Bucket:**
+
+| Aspect | Token Bucket | Leaky Bucket |
+|---|---|---|
+| **Burst handling** | Allows bursts up to bucket capacity | Smooths out bursts; processes at constant rate |
+| **Output rate** | Variable (can be bursty) | Constant (always steady) |
+| **Queue** | No queue; immediate accept/reject | Has a queue; requests may wait |
+| **Best for** | APIs where bursts are acceptable | Systems requiring steady, predictable output |
+| **Used by** | Stripe, AWS | NGINX (`limit_req`), network traffic shaping |
+
+**Pseudocode Implementation:**
+
+```java
+// NOTE: Same pattern — `buckets` is Redis, logic runs as a Lua script.
+
+public class LeakyBucket {
+    private final double capacity;        // Max queue size
+    private final double leakRatePerSec;  // Constant output rate
+    private final Map<String, Bucket> buckets = new ConcurrentHashMap<>();
+
+    private static class Bucket {
+        double waterLevel;
+        double lastLeakTime;
+        Bucket(double waterLevel, double lastLeakTime) { this.waterLevel = waterLevel; this.lastLeakTime = lastLeakTime; }
+    }
+
+    public LeakyBucket(double capacity, double leakRatePerSec) {
+        this.capacity = capacity;
+        this.leakRatePerSec = leakRatePerSec;
+    }
+
+    public boolean isAllowed(String clientId) {
+        double now = System.currentTimeMillis() / 1000.0;
+        Bucket bucket = buckets.computeIfAbsent(clientId, k -> new Bucket(0, now));
+
+        synchronized (bucket) {
+            // Step 1: Leak water based on time elapsed
+            double elapsed = now - bucket.lastLeakTime;
+            bucket.waterLevel = Math.max(0, bucket.waterLevel - elapsed * leakRatePerSec);
+            bucket.lastLeakTime = now;
+
+            // Step 2: Try to add water (incoming request)
+            if (bucket.waterLevel < capacity) {
+                bucket.waterLevel += 1;
+                return true;  // Allowed (added to queue)
+            }
+            return false;     // Rejected (bucket overflow)
+        }
     }
 }
 ```
 
-### 5.5 Observability — Logging, Metrics, Tracing *(NFR-6)*
+> **Interview Tip:** Most interviewers are happy with Token Bucket. Only bring up Leaky Bucket if asked about smoothing bursty traffic or if the interviewer specifically mentions constant-rate processing.
 
-The gateway sees every request — perfect spot for telemetry.
-
-**RED metrics (must-have):**
-
-| Metric | What |
-|---|---|
-| **R**ate | requests/sec per route |
-| **E**rrors | error rate per route + status code breakdown |
-| **D**uration | p50 / p95 / p99 latency per route |
-
-**Plus USE metrics for the gateway itself:**
-
-| Metric | Threshold |
-|---|---|
-| CPU utilization | < 70 % |
-| Memory utilization | < 80 % |
-| Saturation (queue depth) | < 100 pending requests per instance |
-
-**Distributed tracing:**
-
-```
-Client request enters →
-  Gateway generates trace_id = "abc123", span_id = "span_1"
-  Gateway adds headers: traceparent: 00-abc123-span_1-01
-  Gateway calls user-service →
-    user-service creates child span_2, propagates trace_id
-    user-service calls db → child span_3
-  All spans sent to Jaeger / Zipkin / AWS X-Ray
-  → Engineer sees full waterfall: gateway 2ms + service 45ms + db 12ms
-```
-
-**Standard implementations:**
-- **OpenTelemetry** — vendor-neutral standard, supported by every gateway worth using
-- **W3C Trace Context** — header format (`traceparent`, `tracestate`)
-
-**Logging best practices:**
-- Structured JSON logs — searchable in Elasticsearch / Datadog
-- One log line per request with: `trace_id`, `client_id`, `route`, `status`, `latency_ms`, `bytes_in/out`
-- **Never** log full request bodies (PII, credentials)
-- **Never** log `Authorization` headers — redact
-
-### 5.6 Security Hardening *(NFR-5)*
-
-The gateway is the **front door**. If it falls, everything falls.
-
-| Threat | Mitigation |
-|---|---|
-| **DDoS** | Rate limit per IP + CDN/WAF in front + connection limits |
-| **Credential stuffing** | Slow rate limit on `/login` + CAPTCHA after N failures |
-| **Token theft** | Short-lived JWTs + refresh tokens + token binding |
-| **Header injection** | Strip client-supplied `X-Forwarded-*` headers; rewrite from LB |
-| **Path traversal** | URL normalization + canonical decoding before routing |
-| **Internal endpoint leak** | Never proxy `/admin/*`, `/debug/*`, `/metrics` to public listener |
-| **SSL stripping** | HSTS header + `Strict-Transport-Security: max-age=31536000` |
-| **OWASP Top 10** | Run a Web Application Firewall (AWS WAF, Cloudflare, ModSecurity) in front |
-
-**Defense in depth — the layering:**
-
-```
-Internet
-   │
-   ▼
-[CDN + WAF]                ← OWASP rules, geo-block, bot detection
-   │
-   ▼
-[DDoS protection]          ← AWS Shield, Cloudflare
-   │
-   ▼
-[Public Load Balancer]     ← TLS termination
-   │
-   ▼
-[API Gateway]              ← Auth, rate limit, validation
-   │
-   ▼
-[Service mesh (mTLS)]      ← E2E encryption to backends
-   │
-   ▼
-[Backend services]         ← Defense-in-depth: own auth checks
-```
-
-### 5.7 Configuration Management *(NFR-2 availability)*
-
-Routes and policies change constantly. How do you push config to 100+ gateway instances without downtime?
-
-**Pattern: Centralized config + watched updates**
+#### Diagram: Token Bucket Algorithm Flow
 
 ```mermaid
-flowchart LR
-    Ops[Operator] -->|PUT /admin/routes| ControlPlane[Control Plane API]
-    ControlPlane --> Store[(etcd / ZooKeeper / Consul KV)]
-    Store -.watch.-> GW1[Gateway 1]
-    Store -.watch.-> GW2[Gateway 2]
-    Store -.watch.-> GW3[Gateway 3]
-    GW1 -->|hot reload| GW1
-    GW2 -->|hot reload| GW2
-    GW3 -->|hot reload| GW3
+flowchart TD
+    A[Request Arrives] --> B{Bucket exists<br/>for client?}
+    B -->|No| C[Initialize bucket<br/>tokens = max_tokens<br/>last_refill = now]
+    B -->|Yes| D[Read bucket state<br/>tokens, last_refill]
+    C --> D
+
+    D --> E[Calculate elapsed time<br/>elapsed = now - last_refill]
+    E --> F["Refill tokens<br/>new_tokens = min(max,<br/>tokens + elapsed x rate)"]
+    F --> G{new_tokens >= 1?}
+
+    G -->|Yes| H[Consume 1 token<br/>tokens = tokens - 1]
+    H --> I[Update bucket state<br/>in Redis]
+    I --> J[✅ ALLOW request<br/>Return remaining tokens]
+
+    G -->|No| K[Update last_refill<br/>in Redis]
+    K --> L[❌ REJECT request<br/>Return HTTP 429]
 ```
 
-**Properties to aim for:**
+### 3.4 Algorithm Comparison Matrix
 
-| Property | How |
-|---|---|
-| **Atomic updates** | Write whole config snapshots, not individual fields |
-| **Hot reload** | No restart needed — gateway swaps in-memory routing table |
-| **Validation before push** | Reject configs that fail schema or smoke tests |
-| **Canary rollout** | Push to 1 % of instances first, watch error rate, then ramp |
-| **Versioned + rollback-able** | Every config version stored; one-click rollback |
-| **Audit log** | Who changed what, when |
-
----
-
-## 6. Popular API Gateways
-
-### 6.1 Managed Services
-
-Cloud-provider gateways. Easiest to start with, deepest lock-in.
-
-| Service | Strengths | Weaknesses |
-|---|---|---|
-| **AWS API Gateway** | Seamless Lambda integration · usage plans · WebSockets · throttling built-in · CloudWatch metrics | Cold starts · pricey at scale (~$3.50/M requests) · less flexible than open source |
-| **Azure API Management** | Strong OAuth/OIDC · policy XML language · developer portal · multi-region · API versioning | Steep learning curve · expensive · slower iteration |
-| **Google Cloud Endpoints / API Gateway** | Native gRPC · auto OpenAPI docs · deep GCP integration | Smaller feature set than AWS · less mature |
-
-### 6.2 Open Source Solutions
-
-Self-hosted. More work, more control, much cheaper at scale.
-
-| Gateway | Built on | Strengths | Best for |
-|---|---|---|---|
-| **Kong** | NGINX + Lua | Huge plugin ecosystem · enterprise + OSS editions · Kubernetes-native | General purpose, large scale |
-| **Envoy** | C++ from Lyft | Service mesh foundation (Istio, AWS App Mesh) · xDS dynamic config · best perf | Microservices + service mesh |
-| **NGINX / NGINX Plus** | Pure C | Battle-tested · low memory · ubiquitous | Lightweight gateway / reverse proxy |
-| **Traefik** | Go | Auto service discovery (Docker/K8s) · Let's Encrypt built in · simple config | Containerized / edge environments |
-| **Tyk** | Go | GraphQL native · API analytics · multi-DC | API product teams |
-| **Spring Cloud Gateway** | Java + Reactor | Java ecosystem · easy custom filters | Java/Spring shops |
-| **Express Gateway** | Node.js | Lightweight · JS plugins | ⚠️ Largely unmaintained — avoid for new projects |
-
-### 6.3 Comparison Matrix
-
-| Feature | AWS API GW | Kong | Envoy | NGINX | Spring Cloud GW |
+| Algorithm | Memory | Accuracy | Burst Handling | Complexity | Best For |
 |---|---|---|---|---|---|
-| Throughput per instance | N/A (managed) | ~30K rps | **~50K rps** | ~40K rps | ~10K rps |
-| p99 latency overhead | ~10 ms | ~3 ms | **~1 ms** | ~2 ms | ~5 ms |
-| Dynamic config | Yes | Yes | Yes (xDS) | Needs reload | Yes |
-| gRPC support | Limited | Yes | **Native** | Yes | Yes |
-| WebSocket | Yes | Yes | Yes | Yes | Yes |
-| Hot reload | N/A | Yes | Yes | Limited | Yes |
-| Plugin ecosystem | AWS-only | **Excellent** | Good | Limited | Java-only |
-| Operational burden | **Zero** | Medium | High | Medium | Medium |
-| Cost at 1B req/month | ~$3,500 | Infra only | Infra only | Infra only | Infra only |
+| Fixed Window Counter | ⭐⭐⭐ Very Low | ⭐ Low | ❌ Boundary spikes | ⭐⭐⭐ Simple | Simple use cases, prototyping |
+| Sliding Window Log | ⭐ High | ⭐⭐⭐ Perfect | ✅ Smooth | ⭐⭐ Medium | When accuracy is paramount and scale is small |
+| Sliding Window Counter | ⭐⭐⭐ Very Low | ⭐⭐ Good (approx) | ⭐⭐ Better than fixed | ⭐⭐ Medium | Good balance when bursts aren't important |
+| **Token Bucket** | ⭐⭐⭐ Very Low | ⭐⭐ Good | ✅ Natural burst support | ⭐⭐⭐ Simple | **Production systems, bursty API traffic** |
+| Leaky Bucket | ⭐⭐⭐ Very Low | ⭐⭐ Good | ❌ Smooths bursts (constant output) | ⭐⭐⭐ Simple | Traffic shaping, constant-rate processing |
 
----
+### 3.5 Storing State — Why Redis?
 
-## 7. API Gateway vs. Load Balancer vs. Service Mesh vs. BFF
+> **To be very clear:** The API Gateway holds the **rules and decision-making orchestration** in memory. Redis holds ONLY the **numerical state** (counters, tokens, timestamps). The algorithm **logic** is shipped to Redis as a Lua script so it can execute atomically.
 
-These get confused constantly. Here's the cheat sheet.
+**What exactly is stored in Redis per algorithm?**
 
-| | API Gateway | Load Balancer | Service Mesh | BFF (Backend-for-Frontend) |
-|---|---|---|---|---|
-| **Layer** | L7 (application) | L4 (TCP) or L7 | L7 (sidecar) | L7 (application) |
-| **Primary job** | Policy + routing for **external** traffic | Distribute traffic across instances | Policy + observability for **service-to-service** traffic | Aggregate & shape responses for a specific client |
-| **Knows about business** | Lightly (routes, auth scopes) | No | No | **Yes — per-client** |
-| **Auth** | Yes | No | mTLS only | Yes (delegates) |
-| **Rate limit** | Yes (per user) | Rarely | Yes (per service) | Inherits from gateway |
-| **Examples** | AWS API GW, Kong, Envoy | ELB, HAProxy | Istio, Linkerd | One BFF per app (mobile-bff, web-bff) |
-| **In interview, mention when** | Microservices + external clients | Always (assumed) | Many services + need mTLS/policy between them | Multiple very different clients (mobile vs web vs partner API) |
+| Algorithm | Redis Key | Redis Value | Redis Data Type |
+|---|---|---|---|
+| Fixed Window Counter | `rate:{clientId}:{windowStart}` | `counter` (integer) | String (with INCR) |
+| Sliding Window Log | `rate:{clientId}` | Set of timestamps | Sorted Set (ZSET) |
+| Sliding Window Counter | `rate:{clientId}:{windowStart}` | `counter` (integer) | String (with INCR) |
+| **Token Bucket** | `bucket:{clientId}:{ruleId}` | `{tokens: 84.5, last_refill: 1640995200}` | Hash (HMSET) |
+| Leaky Bucket | `leak:{clientId}:{ruleId}` | `{water_level: 3, last_leak: 1640995200}` | Hash (HMSET) |
 
-**Visual:**
+**Example: What's actually in Redis for Token Bucket?**
 
-```
-                Client
-                  │
-              ┌───▼────┐
-              │  CDN   │
-              └───┬────┘
-                  │
-            ┌─────▼─────┐
-            │ Public LB │ ← Load Balancer (L4)
-            └─────┬─────┘
-                  │
-        ┌─────────▼─────────┐
-        │   API Gateway     │ ← Policy + routing for EXTERNAL traffic
-        └─────────┬─────────┘
-                  │
-       ┌──────────┼──────────┐
-       │          │          │
-   ┌───▼──┐   ┌───▼──┐   ┌───▼──┐
-   │ Svc1 │   │ Svc2 │   │ Svc3 │ ← Sidecars enforce policy between services
-   │ proxy│   │ proxy│   │ proxy│   (Service Mesh)
-   └──────┘   └──────┘   └──────┘
+```redis
+# Redis stores ONLY these tiny data points per client per rule:
+
+127.0.0.1:6379> HGETALL bucket:user:alice123:rule_default
+1) "tokens"
+2) "84.5"              ← Just a number
+3) "last_refill"
+4) "1640995200"        ← Just a timestamp
+
+127.0.0.1:6379> TTL bucket:user:alice123:rule_default
+(integer) 3542          ← Auto-expires in ~59 minutes
+
+# That's it! No rules, no logic, no config — just 2 numbers with a TTL.
 ```
 
-**BFF** sits **between gateway and services**, or sometimes replaces the gateway when each client type has very different needs:
+**What the API Gateway holds in memory (NOT in Redis):**
+
+```java
+// These are cached in the gateway's local memory (from ZooKeeper/config DB)
+record Rule(String id, int maxTokens, double refillRate, String appliesTo, List<String> endpoints) {}
+
+Map<String, Rule> rules = Map.of(
+    "rule_default", new Rule("rule_default", 1000, 0.278, "user:*", List.of("*")),           // ≈1000/hour
+    "rule_search",  new Rule("rule_search",    10, 0.167, "user:*", List.of("/api/search")) // ≈10/minute
+);
+
+// The gateway's rate limit check:
+public Decision checkRateLimit(String clientId, String endpoint) {
+    // 1. Find matching rules (from local memory — NO Redis call)
+    List<Rule> matchingRules = findRulesFor(clientId, endpoint);
+
+    // 2. For each rule, call Redis Lua script (THIS is the Redis call)
+    for (Rule rule : matchingRules) {
+        List<Long> result = stringRedisTemplate.execute(
+            new DefaultRedisScript<>(LUA_SCRIPT_SHA, List.class),
+            List.of("bucket:" + clientId + ":" + rule.id()),
+            String.valueOf(rule.maxTokens()),
+            String.valueOf(rule.refillRate()),
+            String.valueOf(Instant.now().getEpochSecond())
+        );
+        boolean allowed = result.get(0) == 1L;
+        if (!allowed) {
+            return Decision.REJECT_429;
+        }
+    }
+
+    // 3. All rules passed
+    return Decision.ALLOW;
+}
+```
+
+Each token bucket tracks `(current_tokens, last_refill_time)`. This state must be **shared across all API gateway instances** — otherwise each gateway only sees a fraction of a client's traffic.
+
+**Why not in-memory per gateway?**
+
+If Alice makes 50 requests to Gateway A and 50 to Gateway B, each gateway thinks Alice made only 50 requests. Globally she made 100 and should be rate-limited. The algorithm becomes useless without centralized state.
+
+**Why Redis?**
+
+| Feature | Benefit |
+|---|---|
+| **Sub-millisecond latency** | Meets our < 10ms requirement |
+| **In-memory storage** | Fast reads and writes |
+| **Automatic cleanup** | `EXPIRE` removes inactive user buckets (e.g., after 1 hour) |
+| **High availability** | Can be replicated across multiple instances |
+| **Atomic operations** | `MULTI/EXEC` and Lua scripting prevent race conditions |
+| **Battle-tested** | Used by virtually every major tech company for this purpose |
+| **Rich data structures** | Hashes, sorted sets, strings — all useful for different algorithms |
+| **Pub/Sub support** | Useful for pushing config updates to gateways |
+
+**Why Not Other Stores?**
+
+| Alternative | Why Not |
+|---|---|
+| **Memcached** | No atomic read-modify-write. No Lua scripting. No persistence. No pub/sub. Simpler but lacks critical features for safe rate limiting. |
+| **DynamoDB / Cassandra** | Too slow for rate limiting (single-digit ms at best). Rate limit checks need sub-millisecond latency. Overkill for ephemeral data. |
+| **In-memory (local)** | No shared state across gateways. Useless for distributed rate limiting. |
+| **PostgreSQL / MySQL** | Way too slow for 1M writes/sec and not designed for this access pattern. |
+| **etcd / ZooKeeper** | Designed for configuration/coordination, not high-throughput data. Limited to ~10K writes/sec. |
+
+> **When Memcached might work:** If your rate limiting only needs simple increment operations (Fixed Window Counter) and you don't need atomicity guarantees, Memcached's `INCR` command works. But for Token Bucket (which needs atomic read-modify-write), Redis is the clear winner.
+
+**Token Bucket Algorithm with Redis — Step by Step:**
+
+1. Request arrives at Gateway A for user `alice`
+2. Gateway fetches Alice's bucket state: `HMGET alice:bucket tokens last_refill`
+3. Calculate tokens to add based on elapsed time since last refill:
+   - If 30 seconds elapsed and refill rate is 1 token/sec → add 30 tokens (up to max capacity)
+4. Update bucket state atomically:
+   ```redis
+   MULTI
+   HSET alice:bucket tokens <new_token_count>
+   HSET alice:bucket last_refill <current_timestamp>
+   EXPIRE alice:bucket 3600
+   EXEC
+   ```
+5. If tokens ≥ 1 → **allow** request, decrement by 1
+6. If tokens = 0 → **reject** with 429
+
+### 3.6 Handling Race Conditions
+
+**The Problem:** The read (`HMGET`) happens **outside** the transaction. If two requests for the same user arrive simultaneously:
 
 ```
-Mobile app  ──▶ Mobile-BFF  ──┐
-Web app     ──▶ Web-BFF     ──┼──▶ Microservices
-Partner API ──▶ Partner-API ──┘
+Gateway A: READ alice → 1 token left
+Gateway B: READ alice → 1 token left    ← same stale value!
+Gateway A: WRITE alice → 0 tokens, ALLOW
+Gateway B: WRITE alice → 0 tokens, ALLOW ← should have been REJECTED!
 ```
 
----
+Both gateways allow the request, but only 1 token was available. We allowed 2 requests when we should have allowed 1.
 
-## 8. When to Propose an API Gateway
+**The Solution: Redis Lua Scripting**
 
-The TL;DR from Hello Interview:
-> *"Use it when you have a microservices architecture and don't use it when you have a simple client-server architecture."*
+Move the **entire read-calculate-update** logic into a single atomic Lua script:
 
-### When to use ✅
+```lua
+-- Rate limit check (runs atomically in Redis)
+local key = KEYS[1]
+local max_tokens = tonumber(ARGV[1])
+local refill_rate = tonumber(ARGV[2])
+local now = tonumber(ARGV[3])
 
-- You have **microservices** (3+ backend services)
-- You have **multiple client types** (mobile, web, third-party, partner)
-- You need **centralized auth** that all services can rely on
-- You need **rate limiting** to protect backends from abuse
-- You want **a single public hostname** even though backends are split
-- You need **request/response transformation** (gRPC ↔ HTTP, JSON shape changes)
-- You want **central observability** (one place to see all traffic)
+local bucket = redis.call('HMGET', key, 'tokens', 'last_refill')
+local tokens = tonumber(bucket[1]) or max_tokens
+local last_refill = tonumber(bucket[2]) or now
 
-### When NOT to use ❌
+-- Calculate token refill
+local elapsed = now - last_refill
+local new_tokens = math.min(max_tokens, tokens + (elapsed * refill_rate))
 
-- **Monolithic** application with one backend
-- **Single internal client** with private network access
-- **Ultra-low latency** systems where 1–10 ms gateway overhead is unacceptable (HFT, real-time gaming) — use direct connections + service mesh
-- **MVP / prototype** — adds operational complexity you don't yet need
-- **Heavy data streaming** — proxy through a gateway adds latency; use direct WebSocket / gRPC bidi
+-- Try to consume a token
+if new_tokens >= 1 then
+    new_tokens = new_tokens - 1
+    redis.call('HMSET', key, 'tokens', new_tokens, 'last_refill', now)
+    redis.call('EXPIRE', key, 3600)
+    return {1, new_tokens}  -- allowed, remaining
+else
+    redis.call('HMSET', key, 'tokens', new_tokens, 'last_refill', now)
+    redis.call('EXPIRE', key, 3600)
+    return {0, 0}  -- rejected, 0 remaining
+end
+```
 
-> **Critical interview advice:** *"While it's important to understand every component you introduce into your design, the API Gateway is not the most interesting. There is a far greater chance that you are making a mistake by spending too much time on it than not enough. Get it down, say it will handle routing and middleware, and move on."*
+Lua scripts in Redis are **atomic** — the entire script executes without interruption. This eliminates the race condition completely.
 
-**The 30-second pitch in an interview:**
-> "I'll put an API Gateway in front of these microservices. It handles routing, authentication, rate limiting, and TLS termination. We'll deploy it stateless behind a load balancer so it scales horizontally. Now, let me move on to the more interesting parts of this design..."
+**How the Lua Script Is Deployed & Called:**
 
----
+You write **one single Lua script** that works for **all users**. The user-specific part is just the **key** you pass to it — think of it like a reusable function.
 
-## 9. End-to-End Request Flow Walkthrough
+```
+Same script for everyone:    check_rate_limit(key, max_tokens, refill_rate, now)
 
-Let's trace a realistic request — a mobile user posts a tweet.
+Called with different keys:
+  → check_rate_limit("bucket:alice", 1000, 0.278, now)       ← Alice
+  → check_rate_limit("bucket:bob",   1000, 0.278, now)       ← Bob
+  → check_rate_limit("bucket:ip:1.2.3.4", 100, 1.67, now)   ← An IP address
+```
+
+**Step 1: At gateway startup — load the script once:**
+
+**Where the files live in your codebase:**
+```
+your-api-gateway/
+  ├── src/
+  │   ├── gateway_app.py          ← Your gateway application code
+  │   ├── rate_limiter.py         ← Rate limiter module (loads & calls the Lua script)
+  │   └── config/
+  │       └── rules.yaml          ← Rate limiting rules (synced from ZooKeeper)
+  ├── scripts/
+  │   └── rate_limiter.lua        ← The Lua script YOU write (shipped to Redis at startup)
+  └── tests/
+      └── test_rate_limiter.py    ← Tests for rate limiting logic
+```
+
+```java
+// RateLimiter.java — loads the Lua script from file and registers it with Redis
+
+// Read the Lua script from your codebase (classpath resource)
+String luaScript = new String(
+    getClass().getResourceAsStream("/scripts/rate_limiter.lua").readAllBytes(),
+    StandardCharsets.UTF_8
+);
+
+// Redis hashes the script and returns a SHA1 identifier
+String scriptSha = stringRedisTemplate.execute(
+    (RedisCallback<String>) conn -> conn.scriptingCommands().scriptLoad(luaScript.getBytes())
+);   // → "a1b2c3d4e5f6..."
+// This SHA is reused for ALL subsequent calls — the full script is NOT sent each time
+```
+
+**The actual Lua script file (`scripts/rate_limiter.lua`):**
+
+```lua
+-- scripts/rate_limiter.lua
+-- Token Bucket rate limiter — runs atomically inside Redis
+-- ONE script for ALL users — the user's key is passed as KEYS[1]
+
+local key = KEYS[1]
+local max_tokens = tonumber(ARGV[1])
+local refill_rate = tonumber(ARGV[2])
+local now = tonumber(ARGV[3])
+
+local bucket = redis.call('HMGET', key, 'tokens', 'last_refill')
+local tokens = tonumber(bucket[1]) or max_tokens
+local last_refill = tonumber(bucket[2]) or now
+
+local elapsed = now - last_refill
+local new_tokens = math.min(max_tokens, tokens + (elapsed * refill_rate))
+
+if new_tokens >= 1 then
+    new_tokens = new_tokens - 1
+    redis.call('HMSET', key, 'tokens', new_tokens, 'last_refill', now)
+    redis.call('EXPIRE', key, 3600)
+    return {1, math.floor(new_tokens)}   -- {allowed, remaining}
+else
+    redis.call('HMSET', key, 'tokens', new_tokens, 'last_refill', now)
+    redis.call('EXPIRE', key, 3600)
+    return {0, 0}                         -- {rejected, 0 remaining}
+end
+```
+
+**Step 2: Per request — call by SHA hash (one Redis round-trip):**
+
+```java
+// On every incoming request, the gateway calls EVALSHA (NOT EVAL).
+// EVALSHA sends only the tiny SHA hash, not the entire script text.
+
+public record RateLimitResult(boolean allowed, long remaining) {}
+
+public RateLimitResult checkRateLimit(String clientId, Rule rule) {
+    List<Long> result = stringRedisTemplate.execute(
+        (RedisCallback<List<Long>>) conn -> conn.scriptingCommands().evalSha(
+            scriptSha,                                              // Pre-loaded script hash
+            ReturnType.MULTI,
+            1,                                                       // numKeys
+            ("bucket:" + clientId + ":" + rule.id()).getBytes(),    // KEYS[1] — which user's bucket
+            String.valueOf(rule.maxTokens()).getBytes(),             // ARGV[1]
+            String.valueOf(rule.refillRate()).getBytes(),            // ARGV[2]
+            String.valueOf(Instant.now().getEpochSecond()).getBytes()// ARGV[3]
+        )
+    );
+    return new RateLimitResult(result.get(0) == 1L, result.get(1));
+}
+
+// Same script, called with different keys:
+checkRateLimit("user:alice123",    defaultRule);    // Alice's request
+checkRateLimit("user:bob456",      defaultRule);    // Bob's request
+checkRateLimit("ip:203.0.113.42",  ipRule);         // Anonymous IP
+checkRateLimit("apikey:dk_abc123", developerRule);  // Developer API key
+```
+
+**Summary:**
+
+| What | How Many | Where It Lives |
+|---|---|---|
+| Lua script | **1** (loaded once at startup) | Your codebase → shipped to Redis via `SCRIPT LOAD` |
+| Script SHA hash | **1** (returned by Redis) | Stored in gateway memory |
+| Redis keys (state) | **1 per user per rule** (auto-created on first request) | Redis |
+| `EVALSHA` calls | **1 per request** | Gateway → Redis |
+
+> **Think of it like a stored procedure in a database:** you write it once, deploy it to Redis, and then call it by name (SHA). Redis executes it server-side, atomically, and returns the result. The script is just a text file in your codebase — not one script per user.
+
+> **Pattern: Dealing with Contention** — Race conditions in distributed counters are a classic contention challenge. The solution is expanding the atomic boundary to include the entire read-modify-write sequence.
+
+#### Diagram: Race Condition & Lua Script Solution
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    participant C as Mobile Client
-    participant DNS as GeoDNS
-    participant LB as Load Balancer
+    participant GW_A as Gateway A
+    participant GW_B as Gateway B
+    participant Redis as Redis Shard
+
+    Note over GW_A, Redis: ❌ WITHOUT Lua Script (Race Condition)
+    GW_A->>Redis: HMGET alice:bucket tokens
+    Redis-->>GW_A: tokens = 1
+    GW_B->>Redis: HMGET alice:bucket tokens
+    Redis-->>GW_B: tokens = 1 (stale!)
+    GW_A->>Redis: HMSET alice:bucket tokens 0
+    Note right of GW_A: ✅ ALLOW (correct)
+    GW_B->>Redis: HMSET alice:bucket tokens 0
+    Note right of GW_B: ✅ ALLOW (WRONG! should be rejected)
+
+    Note over GW_A, Redis: ✅ WITH Lua Script (Atomic)
+    GW_A->>Redis: EVALSHA token_bucket_lua<br/>key=alice:bucket args=[max, rate, now]
+    Note over Redis: Lua runs atomically:<br/>read → refill → consume → write
+    Redis-->>GW_A: {1, 0} → ALLOW, 0 remaining
+    GW_B->>Redis: EVALSHA token_bucket_lua<br/>key=alice:bucket args=[max, rate, now]
+    Note over Redis: Lua runs atomically:<br/>read → 0 tokens → reject
+    Redis-->>GW_B: {0, 0} → REJECT ✅
+```
+
+**Alternative: Redis WATCH (Optimistic Locking)**
+
+Another approach is Redis's `WATCH` command for optimistic locking:
+
+```redis
+WATCH alice:bucket                           -- Watch for changes
+tokens = HMGET alice:bucket tokens last_refill
+-- Calculate new token count in application code
+MULTI                                         -- Start transaction
+HMSET alice:bucket tokens <new> last_refill <now>
+EXEC                                          -- Execute atomically
+-- If another client modified alice:bucket between WATCH and EXEC,
+-- EXEC returns nil (transaction fails) → retry
+```
+
+**WATCH vs Lua scripting comparison:**
+
+| Aspect | WATCH (Optimistic Locking) | Lua Script |
+|---|---|---|
+| **Network round trips** | 3+ (WATCH, HMGET, MULTI/EXEC) | 1 (EVALSHA) |
+| **Contention handling** | Retry on conflict | No conflicts (atomic) |
+| **Performance under load** | Degrades with contention (retries) | Constant (no retries) |
+| **Complexity** | Medium (retry logic needed) | Low (single script) |
+| **Best for** | Low-contention scenarios | **High-contention (our choice)** |
+
+Lua scripting is strictly better for rate limiting because rate limit keys are frequently contested (multiple gateways hitting the same user's bucket).
+
+### 3.7 Responding to Exceeded Limits (HTTP 429)
+
+**Drop or Queue?**
+
+| Strategy | When to Use |
+|---|---|
+| **Reject immediately (fail fast)** ✅ | Interactive APIs — this is our choice |
+| Queue for later processing | Batch processing systems that can afford to wait |
+
+Queuing creates more problems: consumes memory, users retry (more load), unpredictable response times.
+
+**Response Format:**
+
+```http
+HTTP/1.1 429 Too Many Requests
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 0
+X-RateLimit-Reset: 1640995200
+Retry-After: 60
+Content-Type: application/json
+
+{
+  "error": "Rate limit exceeded",
+  "message": "You have exceeded the rate limit of 100 requests per minute. Try again in 60 seconds."
+}
+```
+
+**Key Headers:**
+
+| Header | Purpose | Example |
+|---|---|---|
+| `X-RateLimit-Limit` | Maximum requests allowed in the window | `100` |
+| `X-RateLimit-Remaining` | Requests left in the current window | `0` |
+| `X-RateLimit-Reset` | Unix timestamp when the limit resets | `1640995200` |
+| `Retry-After` | Seconds to wait before retrying | `60` |
+
+These headers allow well-behaved clients to implement **proper backoff strategies** rather than hammering the API with failed requests.
+
+---
+
+## 4. Deep Dives
+
+### 4.1 Scaling to 1M Requests/Second
+
+**The Problem:**
+
+A single Redis instance handles ~100K–200K operations/second. Each rate limit check needs multiple operations (at minimum `HMGET` + `HSET`). So one Redis instance realistically supports ~50K–100K rate limit checks/second.
+
+At 1M req/s, we need **horizontal scaling**.
+
+**Solution: Redis Sharding via Consistent Hashing**
+
+```
+                    ┌───────────────────────┐
+                    │      API Gateways      │
+                    └───────────┬────────────┘
+                                │
+               Consistent Hashing / Redis Cluster
+                    ┌───────────┼───────────┐
+                    ▼           ▼           ▼
+              ┌──────────┐┌──────────┐┌──────────┐
+              │ Redis 1  ││ Redis 2  ││ Redis 3  │  ... Redis N
+              │(users A-G)│(users H-P)│(users Q-Z)│
+              └──────────┘└──────────┘└──────────┘
+```
+
+**What is Consistent Hashing?**
+
+Consistent hashing maps both keys (client IDs) and servers (Redis shards) onto a circular hash ring. Each key is assigned to the nearest server clockwise on the ring.
+
+```
+              Server A
+                │
+        ┌───────┴───────┐
+        │               │
+  Key 3 ◄               ► Key 1
+        │               │
+        └───────┬───────┘
+                │
+           Server B
+                │
+              Key 2
+
+Key 1 → Server B (nearest clockwise)
+Key 2 → Server B
+Key 3 → Server A
+```
+
+**Why consistent hashing instead of simple modulo?**
+
+| Approach | Add/Remove a Node | Impact |
+|---|---|---|
+| **Simple modulo** (`hash(key) % N`) | Changing N remaps almost ALL keys | Catastrophic: nearly all users lose their rate limit state |
+| **Consistent hashing** | Only keys mapped to the affected node move | Minimal: only ~1/N of keys are remapped |
+
+**Example with modulo disaster:**
+```
+3 nodes: hash("alice") % 3 = 1  → Node 1
+         hash("bob")   % 3 = 2  → Node 2
+
+Add a 4th node:
+         hash("alice") % 4 = 0  → Node 0  ← MOVED! Lost state!
+         hash("bob")   % 4 = 3  → Node 3  ← MOVED! Lost state!
+
+With consistent hashing, adding a node only moves keys in the
+affected segment — about 1/4 of keys instead of nearly all.
+```
+
+**Virtual Nodes:** In practice, each physical Redis shard gets multiple "virtual nodes" on the ring (e.g., 150–200 per shard) to ensure even distribution. Without virtual nodes, the distribution can be uneven, leading to hot shards.
+
+**How it works:**
+
+1. **Authenticated users** → hash their **user ID** to determine the Redis shard
+2. **Anonymous users** → hash their **IP address**
+3. **API key requests** → hash the **API key**
+
+This ensures each client's rate limiting state lives on **exactly one shard**, while distributing load evenly.
+
+**Math:**
+
+| Metric | Value |
+|---|---|
+| Target throughput | 1M requests/second |
+| Per-shard capacity | ~100K ops/sec |
+| Shards needed | **~10 Redis shards** |
+
+> **Production Tip:** Use **Redis Cluster** rather than managing individual instances. Redis Cluster automatically divides keys across 16,384 hash slots distributed across nodes. It handles routing automatically — no custom consistent hashing logic needed in your gateways.
+
+#### Diagram: Redis Cluster Sharding with Consistent Hashing
+
+```mermaid
+flowchart TD
+    subgraph API Gateways
+        GW1[Gateway 1]
+        GW2[Gateway 2]
+        GW3[Gateway N]
+    end
+
+    GW1 & GW2 & GW3 -->|EVALSHA| Router["Redis Cluster Router<br/>CRC16(key) mod 16384"]
+
+    subgraph Redis Cluster - 16384 Hash Slots
+        Router -->|Slots 0-5460| S1[Shard 1 Primary<br/>+ Replica]
+        Router -->|Slots 5461-10922| S2[Shard 2 Primary<br/>+ Replica]
+        Router -->|Slots 10923-16383| S3[Shard 3 Primary<br/>+ Replica]
+    end
+
+    S1 ---|"bucket:alice → slot 7234"| S2
+    S3 ---|"bucket:ip:203.x → slot 14891"| S3
+```
+
+```mermaid
+flowchart LR
+    subgraph Scaling Math
+        direction TB
+        Target["Target: 1M req/s"] --> PerShard["Per Redis Shard: ~100K ops/s"]
+        PerShard --> Shards["Shards needed: ~10"]
+        Shards --> Memory["Memory per shard:<br/>~1.5-2.5 GB"]
+    end
+```
+
+**Redis Cluster Hash Slot Mechanism:**
+
+```
+Redis Cluster divides the key space into 16,384 hash slots:
+
+  Slot 0       Slot 5460      Slot 10922     Slot 16383
+  |            |              |              |
+  v            v              v              v
+  [  Node A   ][   Node B    ][   Node C    ]
+  slots 0-5460  slots 5461-10922  slots 10923-16383
+
+For any key:
+  slot = CRC16(key) mod 16384
+  
+  CRC16("alice:bucket") = 7234  → 7234 mod 16384 = 7234  → Node B
+  CRC16("bob:bucket")   = 14891 → 14891 mod 16384 = 14891 → Node C
+```
+
+**Adding a new shard to Redis Cluster:**
+```
+Before (3 nodes):
+  Node A: slots 0-5460
+  Node B: slots 5461-10922
+  Node C: slots 10923-16383
+
+After adding Node D (automatic resharding):
+  Node A: slots 0-4095
+  Node B: slots 4096-8191
+  Node C: slots 8192-12287
+  Node D: slots 12288-16383
+
+Only ~25% of keys migrate — and Redis Cluster handles this automatically!
+During migration, both old and new node can serve requests for migrating slots.
+```
+
+### 4.2 High Availability & Fault Tolerance
+
+When a Redis shard goes down, all clients mapped to that shard lose rate limiting. Two failure modes:
+
+| Strategy | Behavior | When to Choose |
+|---|---|---|
+| **Fail-Closed** ✅ | Reject all requests when Redis is unavailable | When system protection is critical (our choice) |
+| **Fail-Open** | Allow all requests when Redis is unavailable | When availability matters more than protection |
+
+**Why fail-closed for a social media platform?**
+
+Rate limiting failures often coincide with traffic spikes (e.g., viral events). If Redis fails and we fail-open, the flood of requests could overwhelm backend databases → turning a rate limiter outage into a **complete platform failure**. Brief rejected requests are preferable to cascading collapse.
+
+**Preventing Failures: Master-Replica Replication**
+
+```
+┌──────────────┐         ┌──────────────┐
+│ Redis Master │────────▶│ Redis Replica│
+│   (Shard 1)  │  async  │   (Shard 1)  │
+└──────────────┘  repli- └──────────────┘
+                  cation
+```
+
+- Each Redis shard gets one or more **read replicas** that continuously sync with the master
+- When master fails → replica is **automatically promoted** to new master
+- **Redis Cluster** has built-in failover (detects failures, promotes replicas without manual intervention)
+- Typical failover time: **1–2 seconds** (modern Redis Cluster), worst case 15–30 seconds
+- Trade-off: increased infrastructure cost + replica sync lag (usually negligible)
+
+**Circuit Breaker Pattern for Redis Failures:**
+
+Instead of making failing Redis calls repeatedly, implement a circuit breaker:
+
+```java
+public class RateLimiterWithCircuitBreaker {
+    private enum State { CLOSED, OPEN, HALF_OPEN }
+
+    private int failureCount = 0;
+    private final int failureThreshold = 5;       // Open circuit after 5 failures
+    private final long recoveryTimeoutSec = 30;   // Try again after 30 seconds
+    private volatile State circuitState = State.CLOSED;
+    private volatile Instant lastFailureTime = null;
+
+    public RateLimitResult checkRateLimit(String clientId, String ruleId) {
+        // Circuit is OPEN: don't even try Redis
+        if (circuitState == State.OPEN) {
+            if (Duration.between(lastFailureTime, Instant.now()).getSeconds() > recoveryTimeoutSec) {
+                circuitState = State.HALF_OPEN;   // Try one request
+            } else {
+                return failClosed();              // Reject (fail-closed)
+            }
+        }
+
+        try {
+            RateLimitResult result = redisCheck(clientId, ruleId);
+
+            // Success! Reset circuit
+            if (circuitState == State.HALF_OPEN) {
+                circuitState = State.CLOSED;
+            }
+            failureCount = 0;
+            return result;
+
+        } catch (RedisConnectionFailureException ex) {
+            failureCount++;
+            lastFailureTime = Instant.now();
+
+            if (failureCount >= failureThreshold) {
+                circuitState = State.OPEN;
+                log.error("Circuit breaker OPENED — Redis unavailable");
+            }
+            return failClosed();
+        }
+    }
+
+    private RateLimitResult failClosed() {
+        return new RateLimitResult(false, 0, Instant.now().getEpochSecond() + 60);
+    }
+}
+```
+
+```
+Circuit Breaker State Transitions:
+
+  ┌─────────┐    5 failures     ┌────────┐    30s timeout    ┌───────────┐
+  │ CLOSED  │ ────────────▶ │  OPEN  │ ────────────▶ │ HALF_OPEN │
+  │ (normal)│               │(reject)│               │ (test one)│
+  └────┬────┘               └────────┘               └─────┬─────┘
+       ▲                                                  │
+       │                  success                         │
+       └──────────────────────────────────────────────┘
+       (if test request fails → back to OPEN)
+```
+
+**Redis Sentinel vs Redis Cluster for HA:**
+
+| Feature | Redis Sentinel | Redis Cluster |
+|---|---|---|
+| **Purpose** | HA (failover only) | HA + sharding |
+| **Sharding** | No (single master) | Yes (automatic) |
+| **Max throughput** | ~100-200K ops/s | Millions of ops/s |
+| **Failover** | Automatic (Sentinel monitors) | Automatic (peer-to-peer) |
+| **Use when** | Small scale, no sharding needed | **Our choice: need both HA and sharding** |
+
+#### Diagram: High Availability with Failover & Circuit Breaker
+
+```mermaid
+sequenceDiagram
     participant GW as API Gateway
-    participant Redis as Redis (rate limit)
-    participant Auth as Auth Service
-    participant Reg as Service Registry
-    participant TS as Tweet Service
-    participant Trace as Jaeger
+    participant CB as Circuit Breaker
+    participant RM as Redis Master
+    participant RR as Redis Replica
 
-    C->>DNS: Resolve api.example.com
-    DNS-->>C: 203.0.113.10 (nearest region)
-    C->>LB: POST /tweets (JWT in header)
-    LB->>GW: Forward (TLS terminated)
+    Note over GW, RR: Normal Operation
+    GW->>CB: check_rate_limit(alice)
+    CB->>RM: EVALSHA token_bucket
+    RM-->>CB: {1, 848}
+    CB-->>GW: ALLOW
 
-    rect rgb(245, 245, 245)
-    Note over GW: 1. Validate
-    GW->>GW: URL well-formed ✓<br/>Body < 10 KB ✓<br/>JSON valid ✓
-    end
+    Note over RM: ❌ Redis Master DIES
+    GW->>CB: check_rate_limit(bob)
+    CB->>RM: EVALSHA token_bucket
+    RM--xCB: Connection refused
+    CB->>CB: failure_count++ (1/5)
 
-    rect rgb(245, 245, 245)
-    Note over GW: 2. Middleware
-    GW->>GW: IP not on denylist ✓
-    GW->>GW: Decode JWT → user_id = alice123
-    GW->>Redis: EVALSHA rate-limit check
-    Redis-->>GW: ALLOWED, remaining=85
-    end
+    GW->>CB: check_rate_limit(charlie)
+    CB->>RM: EVALSHA token_bucket
+    RM--xCB: Connection refused
+    CB->>CB: failure_count++ (5/5)
+    Note over CB: Circuit OPEN → Fail-closed
+    CB-->>GW: REJECT ALL (429)
 
-    rect rgb(245, 245, 245)
-    Note over GW: 3. Route
-    GW->>GW: Match /tweets/* → tweet-service
-    GW->>Reg: Lookup tweet-service endpoints
-    Reg-->>GW: [10.0.1.5, 10.0.1.6, 10.0.1.7]
-    GW->>GW: Pick instance (least-conn)
-    end
+    Note over RM, RR: Auto-failover (1-2s)
+    RR->>RR: Promoted to new Master
 
-    rect rgb(245, 245, 245)
-    Note over GW: 4. Backend call
-    GW->>TS: gRPC CreateTweet(...)<br/>+ trace headers + user_id
-    GW->>Trace: Start span gateway.process
-    TS->>TS: Persist tweet
-    TS-->>GW: TweetResponse(id=42)
-    end
-
-    rect rgb(245, 245, 245)
-    Note over GW: 5. Transform
-    GW->>GW: Protobuf → JSON<br/>+ X-RateLimit-Remaining: 85
-    end
-
-    rect rgb(245, 245, 245)
-    Note over GW: 6. Cache (skip — POST is not cacheable)
-    end
-
-    GW->>Trace: End span (8 ms total)
-    GW-->>LB: 201 Created {id: 42}
-    LB-->>C: 201 Created
+    Note over CB: 30s recovery timeout
+    CB->>CB: Circuit → HALF_OPEN
+    GW->>CB: check_rate_limit(alice)
+    CB->>RR: EVALSHA token_bucket
+    RR-->>CB: {1, 847}
+    CB->>CB: Circuit → CLOSED ✅
+    CB-->>GW: ALLOW
 ```
 
-**Timing budget:**
+### 4.3 Minimizing Latency Overhead
+
+| Optimization | Impact | Complexity |
+|---|---|---|
+| **Connection pooling** ⭐ | Eliminates TCP handshake (20–50ms) per request | Low — most Redis clients handle it automatically |
+| **Geographic distribution** ⭐ | Deploy Redis close to users (Tokyo user → Tokyo Redis) | Medium — complexity around cross-region consistency |
+| **Redis pipelining** | Batch multiple commands in one round trip | Low |
+| **Lua scripting** | Entire rate limit check in one atomic call | Low (already implemented) |
+| **Local caching** | Cache recent rate limit decisions locally | High risk — stale cache = incorrect decisions |
+
+**Connection pooling** is the most important optimization. Instead of a new TCP connection per rate limit check, gateways maintain a pool of persistent connections.
+
+**Connection Pool Sizing:**
 
 ```
-Total mobile-perceived latency: ~140 ms
-├─ DNS:                  5 ms (cached on device)
-├─ Network to LB:       30 ms (4G)
-├─ LB → Gateway:         1 ms
-├─ Gateway pipeline:     8 ms  ← our budget
-│   ├─ Validate:         0.1 ms
-│   ├─ JWT decode:       0.5 ms
-│   ├─ Rate limit:       1.5 ms (Redis round trip)
-│   ├─ Service lookup:   0.1 ms (cached)
-│   ├─ gRPC call:        5 ms (Tweet service own latency)
-│   └─ Response xform:   0.8 ms
-├─ Gateway → LB → client: 30 ms
-└─ Other:                66 ms (TLS handshake on cold conn, etc.)
+Formula: pool_size = (requests_per_second × avg_redis_latency) / 1000
+
+Example:
+  - Gateway handles 50K req/s
+  - Average Redis round-trip: 1ms
+  - Pool size = (50,000 × 1) / 1000 = 50 connections
+  - Add 20% headroom: ~60 connections per gateway
+  
+  With 20 gateway instances: 20 × 60 = 1,200 total connections to Redis
+  Redis default max connections: 10,000 → Plenty of room
 ```
+
+**Latency Breakdown of a Rate Limit Check:**
+
+```
+Without optimization:
+  TCP handshake:           20-50ms  ← eliminated by connection pooling
+  TLS handshake:           10-30ms  ← eliminated by persistent connections
+  Redis command:            0.1-1ms
+  Network round trip:       0.5-2ms (same region)
+  Application processing:   0.1ms
+  Total:                   30-83ms  ❌ Exceeds 10ms budget!
+
+With connection pooling:
+  Redis command:            0.1-1ms
+  Network round trip:       0.5-2ms (same region)
+  Application processing:   0.1ms
+  Total:                   0.7-3.1ms  ✅ Well within budget!
+
+With Lua script (single round trip):
+  Lua script execution:     0.1-0.5ms
+  Network round trip:       0.5-2ms
+  Total:                   0.6-2.5ms  ✅ Excellent!
+```
+
+**Geographic distribution** gives the biggest latency wins. For rate limiting, you can accept **eventual consistency between regions** in exchange for lower latency.
+
+**Cross-region latency comparison:**
+```
+Same availability zone:    0.1-0.5ms
+Same region (diff AZ):     1-2ms
+US East → US West:         60-80ms
+US East → EU West:         80-120ms
+US East → APAC:            150-250ms
+
+→ A user in Tokyo hitting a Redis in Virginia adds 150ms+ per request!
+→ Deploy Redis in each major region to keep latency < 2ms
+```
+
+### 4.4 Handling Hot Keys (Viral Content / DDoS)
+
+A **hot key** occurs when a single user/IP generates enough requests to overwhelm a single Redis shard (tens of thousands of req/s from one source).
+
+**For Legitimate High-Volume Clients:**
+
+| Strategy | Description |
+|---|---|
+| **Client-side rate limiting** | Encourage well-behaved clients to self-regulate; API SDKs can respect `Retry-After` headers |
+| **Request batching** | Allow clients to batch operations into single requests |
+| **Premium tiers** | Offer higher limits for power users, potentially with dedicated infrastructure |
+
+**For Abusive Traffic:**
+
+| Strategy | Description |
+|---|---|
+| **Automatic blocking** | When a client hits rate limits consistently (e.g., 10 times in a minute), temporarily block their IP/API key entirely via a blocklist |
+| **DDoS protection** | Use services like Cloudflare, AWS Shield, or AWS WAF to detect and block malicious traffic before it reaches your rate limiter |
+| **IP reputation scoring** | Maintain reputation scores and apply stricter limits to low-reputation IPs |
+
+> **Key Insight:** Rate limiting ≠ DDoS protection. They tackle different problems. In production, you want **both**: rate limiting for abusive clients + DDoS/WAF solutions for large-scale attacks.
+
+**Shared IP addresses:** Design rate limits to account for corporate NATs and public WiFi. Set higher limits for IP-based rate limiting and rely more on **authenticated user limits** where possible.
+
+### 4.5 Dynamic Rule Configuration
+
+Production systems need to adjust limits without deploying new code.
+
+| Approach | How It Works | Latency | Complexity |
+|---|---|---|---|
+| **Poll-Based** ✅ Good | Gateways periodically poll a database/config service for rule changes | Seconds to minutes (poll interval) | Simple |
+| **Push-Based** ✅✅ Great | Use ZooKeeper / etcd to push rule updates to gateways in real-time via watches | Near-instant | More infrastructure |
+
+**Push-Based with ZooKeeper/etcd:**
+
+```
+┌──────────────┐     watch      ┌──────────────┐
+│  API Gateway │◀───────────────│  ZooKeeper   │
+│  API Gateway │◀───────────────│   / etcd     │
+│  API Gateway │◀───────────────│              │
+└──────────────┘                └──────┬───────┘
+                                       │
+                                  ┌────▼────┐
+                                  │  Admin  │
+                                  │   UI    │
+                                  └─────────┘
+```
+
+1. Rules stored in ZooKeeper/etcd
+2. Each API Gateway sets up a **watch** on the rules path
+3. When an admin updates a rule, ZooKeeper pushes the change to all gateways instantly
+4. Gateways cache rules in memory for fast lookup
+
+> **Clarification:** Redis stores the **rate limit state** (token counts, timestamps). Rules (the policies) are stored separately in a database or config service and cached by the gateways.
+
+---
+
+## 5. Additional Considerations (Extra)
+
+### 5.1 Multi-Region Rate Limiting
+
+For global platforms serving users across continents, you need rate limiting in multiple regions.
+
+**Two strategies:**
+
+| Strategy | How It Works | Trade-off |
+|---|---|---|
+| **Independent per-region** | Each region has its own Redis cluster; limits apply per-region | Simple. User gets N requests in US + N in EU = 2N total |
+| **Global with async sync** | Region-local Redis with periodic cross-region synchronization | More accurate globally, but added complexity and sync lag |
+
+**Recommended approach:** Independent per-region rate limiting with **slightly lower per-region limits**.
+
+```
+Example: Global limit of 1000 req/hour
+  → US region: 600 req/hour
+  → EU region: 600 req/hour
+  → APAC region: 600 req/hour
+```
+
+Over-provisioning per region is acceptable; the goal is preventing abuse, not exact accounting.
+
+### 5.2 Rate Limiting at Different Layers
+
+A defense-in-depth approach applies rate limiting at multiple layers:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Layer 1: CDN / Edge (Cloudflare, AWS CloudFront)           │ ← DDoS protection, IP blocking
+├─────────────────────────────────────────────────────────────┤
+│  Layer 2: API Gateway (our main rate limiter)               │ ← Per-user, per-IP, per-key limits
+├─────────────────────────────────────────────────────────────┤
+│  Layer 3: Application-level (optional)                      │ ← Business logic limits (e.g., 5 posts/day)
+├─────────────────────────────────────────────────────────────┤
+│  Layer 4: Database-level (connection limits, query throttle) │ ← Last line of defense
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 5.3 Monitoring & Observability
+
+Rate limiters need comprehensive monitoring to detect issues and tune limits:
+
+| Metric | What to Track |
+|---|---|
+| **Rate limit hit rate** | % of requests being rejected (429s). A sudden spike may indicate an attack or misconfigured limits |
+| **Redis latency** | P50, P95, P99 response times per shard |
+| **Redis CPU / memory** | Per-shard resource utilization |
+| **Shard distribution** | Ensure even key distribution across shards |
+| **Fail-open/closed events** | Alerts when Redis becomes unavailable and fallback mode activates |
+| **Top rate-limited clients** | Identify who's hitting limits most frequently |
+
+**Dashboards and alerts:**
+- Alert when any shard's P99 latency exceeds 5ms
+- Alert when fail-closed mode activates
+- Alert when a single client accounts for > 5% of total rate limit checks
+- Dashboard showing rate limit utilization per endpoint
+
+### 5.4 Rate Limit Bypass & Abuse Patterns
+
+Common ways clients try to circumvent rate limits:
+
+| Abuse Pattern | Mitigation |
+|---|---|
+| **IP rotation** | Combine IP-based with user-based limits; require authentication |
+| **Account farming** | Monitor for coordinated behavior across accounts; device fingerprinting |
+| **Slow & steady** | Set per-day limits in addition to per-minute limits |
+| **Header spoofing** | Validate `X-Forwarded-For` chains; only trust known proxy headers |
+| **Distributed attacks** | DDoS protection (Cloudflare, AWS Shield); global rate limits in addition to per-client limits |
+
+### 5.5 Cost Analysis
+
+**Redis infrastructure sizing for our target scale:**
+
+| Component | Count | Estimated Monthly Cost |
+|---|---|---|
+| Redis Cluster shards (primary) | 10 | ~$3,000–$5,000 (AWS ElastiCache) |
+| Redis replicas | 10–20 | ~$3,000–$10,000 |
+| API Gateway instances | 20–50 | Varies by platform |
+| ZooKeeper/etcd cluster | 3–5 nodes | ~$500–$1,000 |
+
+**Memory calculation:**
+- Each token bucket: ~50 bytes (tokens + last_refill + key overhead)
+- 100M users: 100M × 50 bytes ≈ **5 GB** total
+- With multiple rules per user: ~15–25 GB
+- Distributed across 10 shards: **~1.5–2.5 GB per shard** (easily fits in memory)
+
+---
+
+## 6. Interview Expectations by Level
+
+### Mid-Level
+
+| Expectation | Details |
+|---|---|
+| **Focus** | 80% breadth, 20% depth |
+| **Should demonstrate** | Craft a high-level design meeting functional requirements |
+| **Must cover** | Explain one rate limiting algorithm (Token Bucket is fine), place rate limiter in API Gateway, identify Redis for shared state |
+| **When probed** | Explain how Redis works and why it was chosen; recognize need to shard Redis for scale |
+| **Okay to miss** | Won't proactively spot all design flaws; may need guidance on deep dives |
+
+### Senior
+
+| Expectation | Details |
+|---|---|
+| **Focus** | 60% breadth, 40% depth |
+| **Should demonstrate** | Confidently discuss trade-offs between algorithms; explain design choices |
+| **Must cover** | Consistent hashing, Redis Cluster, connection pooling, atomic operations (MULTI/EXEC), fail-open vs fail-closed, hot keys, latency optimization |
+| **Proactive** | Identify potential issues without prompting; move quickly through basic algorithm discussion to spend time on distributed systems challenges |
+| **Strong opinions** | Redis sharding strategies, failover scenarios, configuration management |
+
+### Staff+
+
+| Expectation | Details |
+|---|---|
+| **Focus** | 40% breadth, 60% depth |
+| **Should demonstrate** | Deep understanding of distributed rate limiting in production; draw from real experience |
+| **Exceptional proactivity** | Identify edge cases, discuss observability, suggest operational procedures without guidance |
+| **Natural topics** | Multi-region deployments, data consistency across geographic boundaries, gradual rollouts, canary deployments |
+| **Strong opinions** | Technology choices backed by experience; production operations, failure modes, system integration challenges |
+
+---
+
+## 7. Quick Reference Cheat Sheet
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│              DISTRIBUTED RATE LIMITER CHEAT SHEET               │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  PLACEMENT:     API Gateway (centralized, no extra hops)        │
+│  ALGORITHM:     Token Bucket (simple, memory-efficient, bursty) │
+│  STATE STORE:   Redis (sub-ms latency, atomic ops, HA)          │
+│  ATOMICITY:     Lua scripts in Redis (no race conditions)       │
+│  SCALING:       Redis Cluster (consistent hashing, ~10 shards)  │
+│  AVAILABILITY:  Master-replica with auto-failover               │
+│  FAILURE MODE:  Fail-closed (protect backend from overload)     │
+│  RESPONSE:      HTTP 429 + X-RateLimit-* headers                │
+│  CONFIG:        Push-based via ZooKeeper/etcd                   │
+│  LATENCY:       Connection pooling + geo-distribution           │
+│  HOT KEYS:      Blocklists + DDoS protection + client-side RL  │
+│                                                                 │
+│  KEY NUMBERS:                                                   │
+│  • 1M req/s target throughput                                   │
+│  • 100M daily active users                                      │
+│  • < 10ms latency overhead per check                            │
+│  • ~50 bytes per token bucket                                   │
+│  • ~5 GB total for 100M users (single rule)                     │
+│  • ~10 Redis shards @ 100K ops/s each                           │
+│                                                                 │
+│  REMEMBER:                                                      │
+│  • Availability >> Consistency for rate limiters                 │
+│  • Rate limiting ≠ DDoS protection (need both)                  │
+│  • Layer multiple rules (user + IP + global + endpoint)         │
+│  • Redis stores STATE, config service stores RULES              │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 8. End-to-End Request Flow Walkthrough
+
+This section traces a single request through the entire system from client to response.
+
+### Concise Flow Summary
+
+```
+User hits API (e.g., POST /api/tweets)
+        │
+        ▼
+┌─ API Gateway ──────────────────────────────────────────────────────────┐
+│                                                                        │
+│  Step 1: EXTRACT CLIENT IDENTITY (from request headers)                │
+│    • Parse JWT from Authorization header → get user_id + tier/plan     │
+│    • OR extract API key from X-API-Key header                          │
+│    • OR fall back to IP from X-Forwarded-For                           │
+│    • Result: clientId = "user:alice123", tier = "premium"              │
+│                                                                        │
+│  Step 2: MATCH APPLICABLE RULES (from gateway's local memory cache)    │
+│    • Rules are cached in-memory (loaded from ZooKeeper/config DB)      │
+│    • Match by: client type + tier + endpoint                           │
+│    • e.g., endpoint = /api/tweets + tier = premium                     │
+│      → rule_tweet_limit: max_tokens=500, refill_rate=0.046             │
+│    • NO database call — rules are already in gateway memory            │
+│                                                                        │
+│  Step 3: CALL REDIS with rule VALUES (not ruleId!)                     │
+│    • Redis key:  "bucket:user:alice123:rule_tweet_limit"               │
+│    • Lua args:   [max_tokens=500, refill_rate=0.046, current_time]     │
+│    • Redis does NOT know about rules — it just receives numbers        │
+│                                                                        │
+└────────────┬───────────────────────────────────────────────────────────┘
+             │  EVALSHA <lua_sha> 1 "bucket:user:alice123:rule_tweet_limit"
+             │                      500  0.046  1712400000
+             ▼
+┌─ Redis (Lua Script - executes atomically) ────────────────────────────┐
+│                                                                        │
+│  Step 4: READ current state → {tokens: 84.5, last_refill: 1712399900} │
+│  Step 5: CALCULATE refill → elapsed=100s × 0.046 = 4.6 new tokens     │
+│           new_tokens = min(500, 84.5 + 4.6) = 89.1                    │
+│  Step 6: DECIDE → 89.1 >= 1? YES → ALLOW, consume: 89.1 - 1 = 88.1   │
+│  Step 7: WRITE updated state → {tokens: 88.1, last_refill: 1712400000}│
+│  Step 8: RETURN → {allowed: 1, remaining: 88}                         │
+│                                                                        │
+└────────────┬───────────────────────────────────────────────────────────┘
+             │
+             ▼
+┌─ API Gateway (continued) ─────────────────────────────────────────────┐
+│                                                                        │
+│  Step 9: ENFORCE most restrictive rule (if multiple rules matched)     │
+│    • All rules passed? → Forward request to backend service            │
+│    • Any rule failed?  → Return HTTP 429 immediately (no backend call) │
+│                                                                        │
+└────────────┬───────────────────────────────────────────────────────────┘
+             │
+             ▼
+    ┌─────────────────┐        ┌──────────────────────────┐
+    │ Backend Service  │───────▶│ Response to Client        │
+    │ (Tweet Service)  │        │ HTTP 201 Created          │
+    └─────────────────┘        │ X-RateLimit-Remaining: 88 │
+                               │ X-RateLimit-Reset: ...    │
+                               └──────────────────────────┘
+```
+
+> **Key takeaways:**
+> - The **user's tier/plan comes from the JWT** (set by auth service at login) — no DB lookup needed
+> - **Rules live in gateway memory** (synced from ZooKeeper/config DB) — no DB call per request
+> - **Redis receives rule values (numbers)**, not a ruleId — Redis is a dumb data store
+> - **Lua script runs atomically inside Redis** — read + calculate + write in one operation
+> - The gateway only contacts Redis — **no other external call** is needed for rate limiting
+
+### Happy Path (Request Allowed)
+
+```
+Step 1: Client sends request
+  ┌──────────┐
+  │  Client   │ ── POST /api/tweets ──▶
+  │ (Alice)   │    Authorization: Bearer eyJhbG...
+  └──────────┘
+
+Step 2: Request hits API Gateway
+  ┌──────────────────────────────────────────────┐
+  │  API Gateway                                  │
+  │                                               │
+  │  a) Extract client ID from JWT:               │
+  │     JWT decode → user_id: "alice123"          │
+  │     rate_limit_key = "user:alice123"          │
+  │                                               │
+  │  b) Look up applicable rules (from memory):   │
+  │     Rule 1: user:* → 1000 req/hour            │
+  │     Rule 2: user:*:/api/tweets → 300/3hr      │
+  │                                               │
+  │  c) Determine Redis shard:                    │
+  │     CRC16("user:alice123") mod 16384 = 7234   │
+  │     → Shard B (slots 5461-10922)              │
+  └──────────────────┬───────────────────────────┘
+                     │
+Step 3: Rate limit check via Lua script
+                     │  EVALSHA <sha> 1 "user:alice123:rule1"
+                     │          1000 0.278 1640995200
+                     ▼
+  ┌──────────────────────────────────────────────┐
+  │  Redis Shard B                                │
+  │                                               │
+  │  Lua script executes atomically:              │
+  │    1. HMGET user:alice123:rule1               │
+  │       → tokens: 847, last_refill: 1640995190  │
+  │    2. elapsed = 1640995200 - 1640995190 = 10s │
+  │       refill = 10 × 0.278 = 2.78 tokens      │
+  │       new_tokens = min(1000, 847 + 2.78)      │
+  │                  = 849.78                      │
+  │    3. 849.78 >= 1 → ALLOW                     │
+  │       new_tokens = 849.78 - 1 = 848.78        │
+  │    4. HMSET user:alice123:rule1               │
+  │       tokens 848.78 last_refill 1640995200    │
+  │    5. EXPIRE user:alice123:rule1 3600         │
+  │    6. Return {1, 848}                         │
+  └──────────────────┬───────────────────────────┘
+                     │
+Step 4: Check all rules (repeat for Rule 2)
+  ┌──────────────────┴───────────────────────────┐
+  │  API Gateway                                  │
+  │                                               │
+  │  Rule 1 result: ALLOW, remaining: 848         │
+  │  Rule 2 result: ALLOW, remaining: 212         │
+  │                                               │
+  │  All rules pass → FORWARD request             │
+  │  Use MOST RESTRICTIVE remaining: 212          │
+  └──────────────────┬───────────────────────────┘
+                     │
+Step 5: Forward to backend + respond
+                     ▼
+  ┌──────────────────────────────────────────────┐
+  │  Tweet Service                                │
+  │  → Creates tweet → Returns 201 Created       │
+  └──────────────────┬───────────────────────────┘
+                     │
+Step 6: Response to client
+                     ▼
+  HTTP/1.1 201 Created
+  X-RateLimit-Limit: 300
+  X-RateLimit-Remaining: 212
+  X-RateLimit-Reset: 1641006000
+  Content-Type: application/json
+  {"id": "tweet_789", "text": "Hello world!", ...}
+```
+
+### Unhappy Path (Request Rejected)
+
+```
+Step 1-2: Same as above, but...
+
+Step 3: Lua script returns {0, 0}
+  │  tokens = 0.3, not enough to consume 1 token
+  │  → REJECT
+
+Step 4: Gateway returns 429 immediately (no backend call!)
+  │
+  ▼
+  HTTP/1.1 429 Too Many Requests
+  X-RateLimit-Limit: 300
+  X-RateLimit-Remaining: 0
+  X-RateLimit-Reset: 1641006000
+  Retry-After: 42
+  Content-Type: application/json
+  {
+    "error": "rate_limit_exceeded",
+    "message": "Rate limit of 300 requests per 3 hours exceeded.",
+    "retry_after": 42
+  }
+
+  Total latency: ~2-3ms (Redis check only, no backend call)
+  ↑ This is a KEY benefit — rejected requests are cheap!
+```
+
+### Latency Budget Breakdown
+
+```
+                    Request arrives
+                         │
+                    ├─── 0.1ms  JWT decode + client ID extraction
+                    ├─── 0.1ms  Rule lookup (in-memory)
+                    ├─── 0.1ms  Compute Redis shard
+                    ├─── 1.5ms  Redis Lua script (network + execution)
+                    ├─── 0.1ms  Rule 2 check (same shard, pipelined)
+                    ├─── 0.1ms  Decision + header construction
+                    │
+Rate limit overhead:  ~2ms total  ✅ Well within 10ms budget
+                    │
+                    ├─── 50-200ms  Backend service processing
+                    │
+                    Response sent
+```
+
+---
+
+## 9. Real-World Implementations
+
+### How Major Companies Do Rate Limiting
+
+#### Stripe — Token Bucket with Redis
+
+Stripe uses the **Token Bucket** algorithm with Redis for their API rate limiting:
+- **Limits:** 100 read requests/sec and 25 write requests/sec per API key
+- **Implementation:** Lua scripts in Redis for atomicity
+- **Headers:** Standard `RateLimit-*` headers in every response
+- **Special feature:** Separate limits for test mode vs live mode
+- **Documentation:** Publishes detailed rate limit documentation and recommends exponential backoff
+
+#### GitHub — Multi-tier Rate Limiting
+
+GitHub layers multiple rate limits:
+- **Primary rate limit:** 5,000 requests/hour for authenticated users (token)
+- **Secondary rate limits:** Per-endpoint limits to prevent abuse of expensive operations
+- **Search API:** 30 requests/minute (more expensive operations)
+- **GraphQL API:** Point-based system where different queries cost different amounts
+- **Implementation:** Returns `X-RateLimit-*` headers and `Retry-After`
+
+#### Cloudflare — Edge Rate Limiting
+
+Cloudflare applies rate limiting at the CDN edge:
+- **Implementation:** In-memory counters at each edge PoP (Point of Presence)
+- **Synchronization:** Eventual consistency across PoPs
+- **Challenge:** A user hitting different PoPs gets separate counters
+- **Solution:** Slight over-limit tolerance is acceptable at their scale
+- **Advanced:** ML-based rate limiting that detects anomalous patterns
+
+#### AWS API Gateway — Built-in Rate Limiting
+
+AWS offers rate limiting as a managed service:
+- **Token bucket** implementation built into the gateway
+- **Burst limit:** Maximum concurrent requests (bucket size)
+- **Rate limit:** Steady-state request rate (refill rate)
+- **Throttling:** Returns 429 with `Retry-After` header
+- **Per-method limits:** Different limits for different API methods
+- **Usage plans:** Tie rate limits to API keys for different customer tiers
+
+#### NGINX — Leaky Bucket (`limit_req`)
+
+NGINX uses the **Leaky Bucket** algorithm:
+```nginx
+# NGINX rate limiting configuration
+http {
+    # Define a rate limiting zone
+    # Zone "api" uses 10MB of shared memory
+    # Rate: 10 requests per second per client IP
+    limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
+    
+    server {
+        location /api/ {
+            # Allow bursts of 20 requests, no delay for first 10
+            limit_req zone=api burst=20 nodelay;
+            
+            # Custom error page for rate-limited requests
+            limit_req_status 429;
+            
+            proxy_pass http://backend;
+        }
+    }
+}
+```
+
+### Open-Source Rate Limiter Libraries
+
+| Library | Language | Algorithm | Backend |
+|---|---|---|---|
+| **Resilience4j** | Java | Various | In-memory, Redis |
+| **Flask-Limiter** | Python | Fixed Window, Sliding Window, Token Bucket | Redis, Memcached, in-memory |
+| **express-rate-limit** | Node.js | Fixed Window | Redis, Memcached, in-memory |
+| **Bucket4j** | Java | Token Bucket | Hazelcast, Redis, in-memory |
+| **go-rate** | Go | Token Bucket | In-memory |
+| **redis-cell** | Redis Module | Generic Cell Rate Algorithm (GCRA) | Redis (native) |
 
 ---
 
 ## 10. Common Interview Questions & Model Answers
 
-**Q1: Where exactly should authentication happen — gateway or service?**
+### Q1: "Why not just use a database instead of Redis?"
 
-> Both. The **gateway** validates the JWT signature and expiry — a cheap, common check that protects every service from unauthenticated traffic. The **backend service** still does fine-grained authorization (e.g., "can Alice edit *this specific* document?"). Defense in depth: never assume the gateway is the only line of defense.
+**Answer:** Databases introduce too much latency for rate limiting. A rate limit check happens on **every single API request** — at 1M req/s, that's 1 million database queries per second just for rate limiting. Traditional databases add 5-20ms per query (disk I/O, connection overhead, query parsing). Redis operates in-memory with sub-millisecond response times. The total latency budget for rate limiting is < 10ms; a database query alone could exceed that. Additionally, we need atomic read-modify-write operations, which Redis handles natively with Lua scripts.
 
-**Q2: How do you avoid the API Gateway becoming a single point of failure?**
+### Q2: "What happens if Redis goes down?"
 
-> Three things. (1) Deploy it **stateless and horizontally** behind a load balancer with health checks — instance failure is invisible. (2) **Multi-AZ** within a region; if a zone goes down the LB pulls those instances. (3) **Multi-region** with GeoDNS failover for full-region outages. The gateway tier targets ≥ 99.99 % availability because it's on 100 % of the request path.
+**Answer:** We implement both **fail-closed** behavior and **high availability**:
 
-**Q3: Won't the gateway add latency?**
+1. **Immediate:** Circuit breaker pattern detects Redis failure after ~5 consecutive failures and stops making Redis calls
+2. **Fail-closed:** While circuit is open, reject all requests (protect backend from overload)
+3. **Recovery:** Redis Cluster with master-replica replication provides automatic failover in 1-2 seconds
+4. **Monitoring:** Alert on-call engineers when fail-closed activates
+5. **Alternative:** For less critical systems, fail-open (allow all) prevents user-visible impact at the cost of temporary rate limit bypass
 
-> Yes, but a well-tuned gateway adds **1–5 ms p99**. That's tiny compared to backend service latency (10s–100s of ms). The tradeoff is overwhelmingly worth it for the centralized policy, security, and observability you get. If your application genuinely cannot tolerate 5 ms — e.g., HFT, real-time gaming — you skip the gateway and use a service mesh + direct connections.
+### Q3: "How do you handle users who use multiple IP addresses?"
 
-**Q4: How is an API Gateway different from a Load Balancer?**
+**Answer:** This is why we layer multiple identification methods:
+- **Authenticated users:** Rate limit by user ID (works regardless of IP)
+- **Unauthenticated users:** Rate limit by IP + device fingerprinting
+- **API consumers:** Rate limit by API key
+- **Defense in depth:** Global endpoint limits catch abuse even if individual limits are bypassed
 
-> A load balancer distributes traffic — that's it. It works at L4 (TCP) or simple L7 (round-robin HTTP). An API Gateway is L7 with **understanding**: it parses headers, validates JWTs, applies rate limits per user, routes based on URL patterns, transforms protocols. You usually have **both** — LB in front of the gateway fleet for instance-level distribution, and the gateway itself in front of the services.
+### Q4: "What's the difference between rate limiting and throttling?"
 
-**Q5: How does the gateway find backend instances when they autoscale?**
+**Answer:**
 
-> Via a **service registry** — Consul, Eureka, Kubernetes Endpoints, or AWS Cloud Map. The gateway watches the registry for changes and updates its in-memory load-balancing pool every few seconds. New pods come up, register themselves, and start receiving traffic within ~10 s.
+| Concept | Behavior | Analogy |
+|---|---|---|
+| **Rate limiting** | Hard reject after limit is exceeded | Bouncer: "Club is full, go home" |
+| **Throttling** | Slow down requests but still process them | Speed bump: "Slow down, you can still pass" |
+| **Backpressure** | Signal upstream to send less | Traffic light: "Stop sending until I'm ready" |
 
-**Q6: How do you handle gateway configuration changes without downtime?**
+Rate limiting returns 429 immediately. Throttling might queue requests and process them slowly. Backpressure propagates upstream (e.g., TCP flow control, reactive streams).
 
-> Push config to a centralized store (etcd, ZooKeeper, Consul KV). Each gateway instance **watches** the store and hot-reloads its routing table without restarting. Validate every change against a schema before push, do canary rollouts (1 % → 10 % → 100 %), and keep version history for instant rollback.
+#### Diagram: End-to-End Request Flow (Happy + Unhappy Path)
 
-**Q7: What happens if a backend service is slow or down?**
+```mermaid
+sequenceDiagram
+    participant Client
+    participant GW as API Gateway
+    participant Mem as Local Memory - Rules Cache
+    participant Redis as Redis Cluster - Shard B
+    participant Backend as Backend Service
 
-> Use a **circuit breaker**. After N failures or timeouts to a backend, the gateway flips that route to OPEN — failing fast with 503 instead of holding connections open. After a cooldown, it sends a probe; on success it closes the breaker and resumes normal traffic. This prevents one bad service from cascading into resource exhaustion at the gateway.
+    Note over Client, Backend: ✅ Happy Path - Request ALLOWED
+    Client->>GW: POST /api/tweets<br/>Authorization: Bearer JWT
+    GW->>GW: Extract client_id from JWT<br/>→ user:alice123
+    GW->>Mem: Lookup matching rules
+    Mem-->>GW: rule_default (1000/hr)<br/>rule_tweets (300/3hr)
+    GW->>Redis: EVALSHA lua_sha<br/>key=bucket:alice:rule_default<br/>args=[1000, 0.278, now]
+    Redis-->>GW: {1, 848} → ALLOW
+    GW->>Redis: EVALSHA lua_sha<br/>key=bucket:alice:rule_tweets<br/>args=[300, 0.028, now]
+    Redis-->>GW: {1, 212} → ALLOW
+    GW->>Backend: Forward POST /api/tweets
+    Backend-->>GW: 201 Created
+    GW-->>Client: 201 Created<br/>X-RateLimit-Remaining: 212<br/>X-RateLimit-Reset: 1641006000
 
-**Q8: Should the gateway cache responses?**
+    Note over Client, Backend: ❌ Unhappy Path - Request REJECTED
+    Client->>GW: POST /api/tweets<br/>Authorization: Bearer JWT
+    GW->>GW: Extract client_id
+    GW->>Mem: Lookup rules
+    GW->>Redis: EVALSHA lua_sha<br/>key=bucket:alice:rule_tweets
+    Redis-->>GW: {0, 0} → REJECT
+    Note over GW: No backend call needed!
+    GW-->>Client: 429 Too Many Requests<br/>Retry-After: 42<br/>X-RateLimit-Remaining: 0
+```
 
-> Only for **idempotent, non-user-specific** GETs (e.g., product catalog, public search results). User-specific responses are dangerous to cache without a strict `Vary: Authorization` header — you risk serving Alice's data to Bob. Most teams push caching to a **dedicated CDN** in front of the gateway rather than building it into the gateway itself.
+### Q5: "Can you implement rate limiting without a centralized store?"
+
+**Answer:** Yes, but with trade-offs:
+
+1. **Local counters with gossip protocol:** Each gateway maintains local counters and periodically shares them via gossip (like CRDT counters). Eventual consistency — may allow 2-3× the limit during convergence.
+2. **Sticky sessions:** Route all of a user's requests to the same gateway instance. Breaks load balancing and creates hot spots.
+3. **Probabilistic approach:** Each of N gateways enforces `limit/N` locally. Works if traffic is evenly distributed, but typically isn't.
+
+None of these match the accuracy of centralized Redis. The centralized approach is preferred unless you have specific constraints (e.g., no Redis available, extreme latency requirements).
+
+### Q6: "How would you test a rate limiter?"
+
+**Answer:**
+
+```
+Unit Tests:
+  ✓ Token bucket correctly allows requests within limit
+  ✓ Token bucket correctly rejects requests over limit
+  ✓ Tokens refill at the correct rate
+  ✓ Burst capacity works (can use all tokens at once)
+  ✓ Race condition test: concurrent requests don't over-allow
+  ✓ Correct HTTP 429 response with proper headers
+  ✓ Multiple rules: most restrictive wins
+
+Integration Tests:
+  ✓ End-to-end: send N+1 requests, verify first N succeed and N+1 gets 429
+  ✓ Redis failover: kill master, verify replica promotion, verify service continues
+  ✓ Circuit breaker: simulate Redis timeout, verify fail-closed behavior
+
+Load/Performance Tests:
+  ✓ Verify < 10ms overhead at target throughput (1M req/s)
+  ✓ Redis shard performance under load
+  ✓ Connection pool behavior under burst traffic
+
+Chaos Tests:
+  ✓ Kill random Redis shards during load test
+  ✓ Introduce network partitions between gateway and Redis
+  ✓ Simulate clock skew between gateways
+```
+
+### Q7: "How do you prevent clock skew issues across gateways?"
+
+**Answer:** Since each gateway sends `now` as a parameter to the Lua script, clock skew between gateways could cause incorrect refill calculations. Mitigations:
+
+1. **Use Redis server time:** Instead of gateway time, use `redis.call('TIME')` inside the Lua script
+2. **NTP synchronization:** Ensure all gateways sync to the same NTP servers (typical drift < 1ms)
+3. **Relative timestamps:** Use Redis's built-in monotonic clock for elapsed time calculations
+
+### Q8: "How would you handle rate limiting for GraphQL APIs?"
+
+**Answer:** GraphQL is trickier because a single request can vary enormously in cost:
+
+```
+# Simple query — should cost 1 "point"
+query { user(id: "123") { name } }
+
+# Expensive query — should cost 100+ "points"
+query { 
+  users(first: 100) { 
+    name 
+    posts(first: 50) { 
+      title 
+      comments(first: 100) { body } 
+    } 
+  } 
+}
+```
+
+**Solution: Complexity-based rate limiting**
+- Assign cost points to each field and connection
+- Calculate total query cost before execution
+- Rate limit based on total points consumed per time window
+- GitHub does this: 5,000 points/hour for GraphQL API
 
 ---
 
 ## 11. Architecture Decision Records (ADRs)
 
-### ADR-001 — Adopt API Gateway over direct client-to-service calls
 
-**Status:** Accepted
-**Context:** We have 12 microservices and multiple client apps (iOS, Android, web, partner API). Without a gateway, clients must know all 12 hostnames and reimplement auth/retry logic.
-**Decision:** Deploy an API Gateway as the single public entry point.
-**Consequences:**
-- ✅ Single hostname, single auth scheme, single rate-limit policy
-- ✅ Backends can be rewritten without client changes
-- ✅ Centralized observability
-- ❌ +5 ms p99 latency
-- ❌ Gateway team becomes a coordination point
+### ADR-1: Token Bucket over Fixed Window
 
-### ADR-002 — Choose Envoy over Kong
+| | |
+|---|---|
+| **Decision** | Use Token Bucket algorithm |
+| **Context** | Need an algorithm that handles bursty API traffic while enforcing overall limits |
+| **Alternatives considered** | Fixed Window (too simple, boundary issues), Sliding Window Log (too memory-intensive), Sliding Window Counter (approximation) |
+| **Rationale** | Token Bucket naturally handles bursts, uses minimal memory (2 values per client), and is widely proven in production (Stripe, AWS) |
+| **Consequences** | Need to choose bucket size and refill rate carefully; idle users start with full buckets |
 
-**Status:** Accepted
-**Context:** Need ~50K RPS per instance, gRPC support, and integration with our existing Istio service mesh.
-**Decision:** Use Envoy as the API Gateway (it already runs as our service mesh data plane).
-**Consequences:**
-- ✅ Reuse Envoy operational expertise
-- ✅ Best-in-class gRPC and HTTP/2 support
-- ✅ xDS dynamic config — no restarts
-- ❌ Smaller plugin ecosystem than Kong
-- ❌ C++ extensions are harder to write than Kong's Lua
+### ADR-2: API Gateway Placement
 
-### ADR-003 — Stateless gateways with Redis for shared state
+| | |
+|---|---|
+| **Decision** | Rate limiting at the API Gateway layer |
+| **Context** | Need centralized rate limiting across all microservices |
+| **Alternatives considered** | In-process (broken with load balancing), Dedicated service (extra network hop) |
+| **Rationale** | No additional network hop since gateway is already on the request path; centralized control point |
+| **Consequences** | Tightly coupled with gateway; harder to apply different limits per microservice |
 
-**Status:** Accepted
-**Context:** Need to autoscale gateway tier to absorb traffic spikes.
-**Decision:** Gateway instances hold no per-request state. Rate-limit counters and response cache live in Redis Cluster.
-**Consequences:**
-- ✅ Trivial horizontal scaling
-- ✅ Instance crash is invisible to users
-- ❌ Every rate-limit check is a Redis round trip (~1 ms)
-- ❌ Redis becomes a critical dependency — needs its own HA story
+### ADR-3: Redis as State Store
 
-### ADR-004 — TLS termination at the gateway, plain HTTP internally
+| | |
+|---|---|
+| **Decision** | Use Redis Cluster for token bucket state |
+| **Context** | Need sub-millisecond shared state across all gateway instances at 1M req/s |
+| **Alternatives considered** | Memcached (no atomic ops), DynamoDB (too slow), local memory (no sharing) |
+| **Rationale** | Sub-ms latency, Lua scripting for atomicity, built-in HA with Cluster, proven at scale |
+| **Consequences** | Redis becomes a critical dependency; need HA setup and circuit breaker |
 
-**Status:** Accepted (with mTLS planned)
-**Context:** Need to inspect headers for routing and rate limiting.
-**Decision:** Terminate TLS at the gateway. Internal traffic is plain HTTP within the VPC.
-**Consequences:**
-- ✅ Gateway can read URLs, headers, body for routing decisions
-- ✅ Cheaper than re-encrypting on every internal hop
-- ❌ Internal traffic is unencrypted — must trust the VPC
-- 🔜 Plan to add mTLS via service mesh sidecars in next quarter
+### ADR-4: Fail-Closed Strategy
 
-### ADR-005 — Multi-region active-active with GeoDNS
+| | |
+|---|---|
+| **Decision** | Fail-closed when Redis is unavailable |
+| **Context** | Rate limiter failures often coincide with traffic spikes |
+| **Alternatives considered** | Fail-open (allow all traffic) |
+| **Rationale** | For a social media platform, uncontrolled traffic during Redis outage could cascade into complete platform failure. Brief request rejections are preferable. |
+| **Consequences** | Users may see brief unavailability during Redis failover (1-2 seconds) |
 
-**Status:** Accepted
-**Context:** 40 % of users are outside the US; transatlantic latency hurts.
-**Decision:** Deploy gateway clusters in `us-east-1`, `eu-west-1`, `ap-southeast-1`. GeoDNS routes by latency.
-**Consequences:**
-- ✅ ~100 ms p99 latency reduction for non-US users
-- ✅ Single-region outage doesn't take down the API
-- ❌ Config sync complexity across regions
-- ❌ 3× infrastructure cost
+### ADR-5: Push-Based Configuration
+
+| | |
+|---|---|
+| **Decision** | Use ZooKeeper/etcd for rule configuration with watches |
+| **Context** | Need to update rate limits without code deployment |
+| **Alternatives considered** | Poll-based (simpler but delayed) |
+| **Rationale** | Near-instant propagation critical for emergency limit changes during incidents |
+| **Consequences** | Additional infrastructure (ZooKeeper/etcd cluster); gateways need watch logic |
 
 ---
 
-## 12. Quick Reference Cheat Sheet
+## 12. Final Architecture Diagram
+
+The complete end-to-end architecture of the distributed rate limiter:
+
+#### Diagram: Final Architecture (Mermaid)
+
+```mermaid
+flowchart LR
+    Client[Client] --> LB[Load Balancer]
+    LB --> GW[API Gateway]
+
+    Admin[Admin UI] --> ZK[(ZooKeeper / etcd)]
+    ZK -->|Push rules| GW
+
+    GW -->|EVALSHA| Redis[(Redis Cluster)]
+    Redis -->|Allowed / Rejected| GW
+
+    GW -->|Allowed| Backend[Backend Services]
+    GW -.->|HTTP 429| Client
+
+    Backend -->|Response| Client
+```
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                    API GATEWAY CHEAT SHEET                      │
-├──────────────────────────────────────────────────────────────────┤
-│ ONE-LINER:                                                       │
-│   Single entry point that does routing + cross-cutting policy   │
-│   for a fleet of backend services.                                │
-│                                                                  │
-│ SIX-STEP PIPELINE:                                               │
-│   1. Validate     → URL, headers, body, size                    │
-│   2. Middleware   → Auth, rate-limit, CORS, logging             │
-│   3. Route        → URL path + method → backend service         │
-│   4. Backend call → HTTP/gRPC with retries + circuit breaker    │
-│   5. Transform    → Protobuf↔JSON, headers, errors              │
-│   6. Cache        → Optional; only for idempotent GETs          │
-│                                                                  │
-│ KEY PROPERTIES:                                                  │
-│   ✓ Stateless (state lives in Redis/etcd)                       │
-│   ✓ Horizontally scalable                                       │
-│   ✓ < 10 ms p99 overhead                                        │
-│   ✓ ≥ 99.99% availability                                       │
-│                                                                  │
-│ WHEN TO USE:                                                     │
-│   ✅ Microservices with external clients                         │
-│   ✅ Multiple client types                                       │
-│   ❌ Monolith                                                    │
-│   ❌ Ultra-low latency systems                                   │
-│                                                                  │
-│ POPULAR CHOICES:                                                 │
-│   Managed:   AWS API Gateway · Azure APIM · GCP API Gateway     │
-│   OSS:       Kong · Envoy · NGINX · Traefik · Spring Cloud GW   │
-│                                                                  │
-│ DON'T CONFUSE WITH:                                              │
-│   Load Balancer:  L4 distribution, no business smarts           │
-│   Service Mesh:   policy for INTERNAL service-to-service        │
-│   BFF:            per-client response shaping                   │
-│                                                                  │
-│ INTERVIEW MANTRA:                                                │
-│   "I'll add an API Gateway for routing and basic middleware."   │
-│   …then MOVE ON. Don't dwell.                                   │
-└──────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                        DISTRIBUTED RATE LIMITER — FINAL ARCHITECTURE                          │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+                          ┌──────────────────────────────────────────────┐
+                          │              ADMIN / OPS LAYER               │
+                          │                                              │
+                          │   ┌────────────┐      ┌──────────────────┐  │
+                          │   │  Admin UI  │─────▶│  ZooKeeper/etcd  │  │
+                          │   │  (CRUD     │      │  (Rule Store)    │  │
+                          │   │   rules)   │      │                  │  │
+                          │   └────────────┘      │  Rules:          │  │
+                          │                       │  ├─ rule_default  │  │
+                          │                       │  │   max:1000     │  │
+                          │                       │  │   rate:0.278   │  │
+                          │                       │  ├─ rule_search   │  │
+                          │                       │  │   max:10       │  │
+                          │                       │  │   rate:0.167   │  │
+                          │                       │  └─ rule_bulk     │  │
+                          │                       │      max:50       │  │
+                          │                       │      rate:0.83    │  │
+                          │                       └────────┬─────────┘  │
+                          └────────────────────────────────┼────────────┘
+                                                           │
+                                              watch / push on change
+                                                           │
+┌──────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────┐
+│                                   API GATEWAY LAYER      │     (Multiple Instances Behind Load Balancer)       │
+│                                                          ▼                                                     │
+│   ┌───────────────────────────────────────────────────────────────────────────────────────────────────────┐    │
+│   │   API GATEWAY INSTANCE 1                                                                             │    │
+│   │                                                                                                       │    │
+│   │   ┌──────────────────────┐   ┌─────────────────────────────┐   ┌──────────────────────────────────┐  │    │
+│   │   │  1. RECEIVE REQUEST  │   │  2. IDENTIFY CLIENT         │   │  3. MATCH RULES (from memory)    │  │    │
+│   │   │                      │──▶│                              │──▶│                                  │  │    │
+│   │   │  POST /api/search    │   │  JWT → user:alice123        │   │  Matching rules:                 │  │    │
+│   │   │  Auth: Bearer <jwt>  │   │  IP  → 203.0.113.42        │   │  ├─ rule_default (1000/hr)       │  │    │
+│   │   │  X-API-Key: dk_abc   │   │  Key → apikey:dk_abc123    │   │  └─ rule_search (10/min)         │  │    │
+│   │   └──────────────────────┘   └─────────────────────────────┘   └──────────────┬───────────────────┘  │    │
+│   │                                                                                │                      │    │
+│   │   ┌───────────────── Local In-Memory Cache ──────────────────────────┐         │                      │    │
+│   │   │  Rules: { rule_default: {max:1000, rate:0.278, ...},            │         │                      │    │
+│   │   │           rule_search:  {max:10,   rate:0.167, ...}, ... }      │         │                      │    │
+│   │   │  Lua SHA: "a1b2c3d4e5f6..."                                     │         │                      │    │
+│   │   │  Connection Pool: [conn1, conn2, ..., conn50]                    │         │                      │    │
+│   │   └──────────────────────────────────────────────────────────────────┘         │                      │    │
+│   │                                                                                │                      │    │
+│   │                      ┌─────────────────────────────────────────────────────────┘                      │    │
+│   │                      │                                                                                │    │
+│   │                      ▼                                                                                │    │
+│   │   ┌──────────────────────────────────────────────────────────────────────────────────────────────┐    │    │
+│   │   │  4. CALL REDIS — FOR EACH MATCHING RULE                                                     │    │    │
+│   │   │                                                                                              │    │    │
+│   │   │  Rule 1:  EVALSHA "a1b2c3..."                                                               │    │    │
+│   │   │             KEYS = ["bucket:user:alice123:rule_default"]                                     │    │    │
+│   │   │             ARGS = [1000, 0.278, 1710841200.0]                                              │    │    │
+│   │   │             ──────────────────────────────────────────────────────────┐                      │    │    │
+│   │   │                                                                      │                      │    │    │
+│   │   │  Rule 2:  EVALSHA "a1b2c3..."                                       │                      │    │    │
+│   │   │             KEYS = ["bucket:user:alice123:rule_search"]              │  Pipeline / Serial   │    │    │
+│   │   │             ARGS = [10, 0.167, 1710841200.0]                         │  (1 round trip each) │    │    │
+│   │   │             ──────────────────────────────────────────────────────┐  │                      │    │    │
+│   │   │                                                                  │  │                      │    │    │
+│   │   │  ◀── {1, 862}  (allowed, 862 tokens remaining)                  │  │                      │    │    │
+│   │   │  ◀── {1, 7}    (allowed, 7 tokens remaining)                    │  │                      │    │    │
+│   │   │                                                                  │  │                      │    │    │
+│   │   │  ALL rules passed? ──▶ YES ──▶ Forward to backend service       │  │                      │    │    │
+│   │   │                   └──▶ NO  ──▶ Return HTTP 429                   │  │                      │    │    │
+│   │   └──────────────────────────────────────────────────────────────────┴──┘                      │    │    │
+│   │                                                                                                │    │    │
+│   │   ┌──────────────────────────────────────────────────────────────────────────────────────────┐  │    │    │
+│   │   │  5. RESPOND                                                                              │  │    │    │
+│   │   │                                                                                          │  │    │    │
+│   │   │  ✅ ALLOWED:                          ❌ REJECTED:                                       │  │    │    │
+│   │   │  Forward request to backend            HTTP/1.1 429 Too Many Requests                    │  │    │    │
+│   │   │  Add headers:                          X-RateLimit-Limit: 10                             │  │    │    │
+│   │   │    X-RateLimit-Remaining: 7            X-RateLimit-Remaining: 0                          │  │    │    │
+│   │   │    X-RateLimit-Limit: 10               Retry-After: 60                                   │  │    │    │
+│   │   └──────────────────────────────────────────────────────────────────────────────────────────┘  │    │    │
+│   └────────────────────────────────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                                             │
+│   ┌─────────────────────────────────────────────────────────┐                                               │
+│   │  API GATEWAY INSTANCE 2  (same logic, same Lua SHA)     │                                               │
+│   └─────────────────────────────────────────────────────────┘                                               │
+│   ┌─────────────────────────────────────────────────────────┐                                               │
+│   │  API GATEWAY INSTANCE N  (same logic, same Lua SHA)     │                                               │
+│   └─────────────────────────────────────────────────────────┘                                               │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                                                           │
+                                                    EVALSHA calls
+                                                           │
+┌──────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────┐
+│                              REDIS CLUSTER LAYER         │     (Sharded by Key Hash Slot)                      │
+│                                                          ▼                                                     │
+│   ┌─────────────────────────────────────────────────────────────────────────────────────────────────────┐      │
+│   │                                 Redis Cluster (16,384 Hash Slots)                                   │      │
+│   │                                                                                                     │      │
+│   │   ┌──────────────────────────┐  ┌──────────────────────────┐  ┌──────────────────────────┐         │      │
+│   │   │  Shard 1 (Primary)       │  │  Shard 2 (Primary)       │  │  Shard 3 (Primary)       │         │      │
+│   │   │  Slots 0–5460            │  │  Slots 5461–10922        │  │  Slots 10923–16383       │         │      │
+│   │   │                          │  │                          │  │                          │         │      │
+│   │   │  Lua Script (loaded):    │  │  Lua Script (loaded):    │  │  Lua Script (loaded):    │         │      │
+│   │   │  SHA: a1b2c3d4e5f6...    │  │  SHA: a1b2c3d4e5f6...    │  │  SHA: a1b2c3d4e5f6...    │         │      │
+│   │   │                          │  │                          │  │                          │         │      │
+│   │   │  Keys:                   │  │  Keys:                   │  │  Keys:                   │         │      │
+│   │   │  bucket:user:alice123    │  │  bucket:user:bob456      │  │  bucket:ip:203.0.113.42  │         │      │
+│   │   │   :rule_default          │  │   :rule_default          │  │   :rule_default          │         │      │
+│   │   │    → tokens: 862.0       │  │    → tokens: 445.2       │  │    → tokens: 78.0        │         │      │
+│   │   │    → last_refill: 171... │  │    → last_refill: 171... │  │    → last_refill: 171... │         │      │
+│   │   │    → TTL: 3542s          │  │    → TTL: 2810s          │  │    → TTL: 1200s          │         │      │
+│   │   │                          │  │                          │  │                          │         │      │
+│   │   │     ┌─────────────┐      │  │     ┌─────────────┐      │  │     ┌─────────────┐      │         │      │
+│   │   │     │  Replica 1  │      │  │     │  Replica 1  │      │  │     │  Replica 1  │      │         │      │
+│   │   │     └─────────────┘      │  │     └─────────────┘      │  │     └─────────────┘      │         │      │
+│   │   └──────────────────────────┘  └──────────────────────────┘  └──────────────────────────┘         │      │
+│   │                                                                                                     │      │
+│   │   What Lua Script Does (atomically, inside Redis):                                                  │      │
+│   │   ┌───────────────────────────────────────────────────────────────────┐                              │      │
+│   │   │  1. HMGET key 'tokens' 'last_refill'                            │                              │      │
+│   │   │  2. elapsed = now - last_refill                                  │                              │      │
+│   │   │  3. new_tokens = min(max_tokens, tokens + elapsed * refill_rate) │                              │      │
+│   │   │  4. IF new_tokens >= 1:                                          │                              │      │
+│   │   │       new_tokens -= 1                                            │                              │      │
+│   │   │       HMSET key tokens=new_tokens last_refill=now                │                              │      │
+│   │   │       EXPIRE key 3600                                            │                              │      │
+│   │   │       RETURN {1, remaining}  ← ALLOWED                          │                              │      │
+│   │   │     ELSE:                                                        │                              │      │
+│   │   │       HMSET key tokens=new_tokens last_refill=now                │                              │      │
+│   │   │       EXPIRE key 3600                                            │                              │      │
+│   │   │       RETURN {0, 0}          ← REJECTED                         │                              │      │
+│   │   └───────────────────────────────────────────────────────────────────┘                              │      │
+│   └─────────────────────────────────────────────────────────────────────────────────────────────────────┘      │
+│                                                                                                                │
+│   Fail-Open Strategy: If Redis is unreachable → allow request (availability over strictness)                   │
+│   Circuit Breaker: After 5 consecutive failures → skip Redis for 30s → gradually retry                         │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                                                           │
+                                                   (if allowed)
+                                                           │
+┌──────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────┐
+│                             BACKEND SERVICES LAYER       ▼                                                     │
+│                                                                                                                │
+│   ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐   ┌──────────────┐                          │
+│   │  Auth Service   │   │  Search Service │   │  User Service   │   │  Order Svc   │                          │
+│   │  (POST /login)  │   │  (GET /search)  │   │  (GET /profile) │   │  (POST /buy) │                          │
+│   └─────────────────┘   └─────────────────┘   └─────────────────┘   └──────────────┘                          │
+│                                                                                                                │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                     MONITORING & OBSERVABILITY                                                 │
+│                                                                                                                │
+│   ┌────────────────────┐   ┌─────────────────────┐   ┌────────────────────┐   ┌─────────────────────────┐     │
+│   │  Prometheus        │   │  Grafana Dashboard  │   │  PagerDuty Alerts  │   │  ELK / Loki (Logs)     │     │
+│   │  (Metrics)         │   │  (Visualization)    │   │  (Alerting)        │   │  (Audit Trail)         │     │
+│   │                    │   │                     │   │                    │   │                         │     │
+│   │  • req_total       │   │  • 429 rate trend   │   │  • 429 spike alert │   │  • rate_limited events │     │
+│   │  • req_rejected    │   │  • latency p99      │   │  • Redis down      │   │  • client_id, rule_id  │     │
+│   │  • redis_latency   │   │  • per-client usage │   │  • hot key alert   │   │  • timestamps          │     │
+│   │  • tokens_remaining│   │  • Redis health     │   │  • latency > 10ms  │   │  • response headers    │     │
+│   └────────────────────┘   └─────────────────────┘   └────────────────────┘   └─────────────────────────┘     │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Component Summary:**
+
+| Layer | Component | Responsibility |
+|---|---|---|
+| **Admin** | Admin UI | CRUD operations on rate limiting rules |
+| **Admin** | ZooKeeper / etcd | Source of truth for rules; pushes changes to gateways via watches |
+| **Gateway** | API Gateway (N instances) | Receives requests, identifies clients, matches rules, calls Redis, routes traffic |
+| **Gateway** | Local Memory Cache | Caches rules + Lua SHA + connection pool for zero-latency lookups |
+| **Data** | Redis Cluster (3+ shards) | Stores per-user per-rule state (`tokens`, `last_refill`); executes Lua script atomically |
+| **Data** | Lua Script | Token Bucket algorithm: read → refill → decide → update → return (runs inside Redis) |
+| **Backend** | Microservices | Business logic services; only receive requests that pass rate limiting |
+| **Ops** | Prometheus + Grafana | Metrics collection, dashboards, trend analysis |
+| **Ops** | PagerDuty | Alerting on anomalies (429 spikes, Redis failures, latency degradation) |
+| **Ops** | ELK / Loki | Structured logs for audit trail and debugging |
+
+**Data Flow Summary (Happy Path):**
+
+```
+1.  Client sends request → API Gateway
+2.  Gateway extracts client_id (from JWT / API key / IP)
+3.  Gateway finds matching rules (from local memory — 0 network cost)
+4.  For each rule:
+      Gateway calls → EVALSHA sha keys=[bucket:{clientId}:{ruleId}] args=[max, rate, now]
+      Redis Lua script runs atomically:
+        → Reads current state (tokens, last_refill)
+        → Calculates token refill based on elapsed time
+        → Checks if tokens >= 1
+        → YES: decrements token, updates state, returns {1, remaining}
+        → NO: updates state, returns {0, 0}
+5.  If ALL rules return allowed → forward request to backend service
+6.  If ANY rule returns rejected → return HTTP 429 with rate limit headers
+7.  Metrics emitted to Prometheus; logs to ELK
 ```
 
 ---
@@ -1275,135 +2532,23 @@ Total mobile-perceived latency: ~140 ms
 
 | Term | Definition |
 |---|---|
-| **API Gateway** | Reverse proxy with policy enforcement; single entry point for a microservices backend |
-| **BFF (Backend-for-Frontend)** | A gateway-like service tailored to one specific client type |
-| **Circuit Breaker** | Pattern that fails fast for a known-unhealthy backend to prevent cascade failure |
-| **Control Plane** | The management layer that pushes config to gateway instances |
-| **Data Plane** | The request-handling layer (the gateway instances themselves) |
-| **Edge** | The network boundary closest to clients (CDN, edge locations) |
-| **gRPC** | High-performance RPC protocol over HTTP/2 using Protobuf |
-| **Hot Reload** | Update configuration without restarting the process |
-| **JWT** | JSON Web Token — a signed, self-describing auth token |
-| **mTLS** | Mutual TLS — both client and server present certificates |
-| **Reverse Proxy** | Server that forwards client requests to one or more backends |
-| **Route** | A rule mapping incoming requests to a backend service |
-| **Service Discovery** | Mechanism for finding live backend instances (Consul, Eureka, K8s DNS) |
-| **Service Mesh** | Infrastructure layer for service-to-service communication, usually via sidecars (Istio, Linkerd) |
-| **Sidecar** | A co-deployed proxy that handles networking for a service (Envoy sidecar in Istio) |
-| **SSL/TLS Termination** | Decrypting HTTPS at the edge so internal traffic is plain HTTP |
-| **Throttling** | Slowing down (vs. outright rejecting) over-quota traffic |
-| **xDS** | Envoy's family of dynamic configuration APIs (LDS, RDS, CDS, EDS) |
+| **Rate Limiter** | A system component that controls the rate of incoming requests to protect services |
+| **Token Bucket** | Algorithm using a metaphorical bucket of tokens; each request consumes a token; tokens refill at a steady rate |
+| **Leaky Bucket** | Algorithm using a metaphorical leaking bucket; requests enter a queue that drains at a constant rate |
+| **Sliding Window** | A time-based window that moves continuously rather than resetting at fixed intervals |
+| **Consistent Hashing** | A distributed hashing scheme that minimizes key redistribution when nodes are added/removed |
+| **Hash Slot** | Redis Cluster divides the key space into 16,384 hash slots for data distribution |
+| **Fail-Closed** | When a dependency fails, reject all requests (prioritize safety over availability) |
+| **Fail-Open** | When a dependency fails, allow all requests (prioritize availability over safety) |
+| **Circuit Breaker** | A pattern that stops calling a failing service after repeated failures, preventing cascade |
+| **Connection Pooling** | Reusing a pool of persistent connections rather than creating new ones per request |
+| **Lua Script (Redis)** | Server-side scripting in Redis that executes atomically, preventing race conditions |
+| **HTTP 429** | Standard HTTP status code for "Too Many Requests" |
+| **Backpressure** | A mechanism for signaling upstream components to reduce their request rate |
+| **GCRA** | Generic Cell Rate Algorithm — a sophisticated rate limiting algorithm used in networking |
+| **CRDT** | Conflict-free Replicated Data Type — data structures that can be replicated across nodes with eventual consistency |
+| **NAT** | Network Address Translation — causes multiple users to share a single public IP address |
 
 ---
 
----
-
-## 14. Putting It All Together — Final Diagram & Request Flow
-
-This single diagram consolidates every component from sections 1–13 — DNS, CDN, the **two load balancers** (public LB before gateway + gateway-internal LB to backends), the gateway pipeline, control plane, service registry, Redis, and the backend microservices — with a numbered request flow overlaid.
-
-```mermaid
-flowchart TB
-    Client[("📱 Client<br/>(mobile / web / partner)")]
-
-    subgraph EDGE [" "]
-        direction TB
-        DNS["①  GeoDNS<br/>Route 53"]
-        CDN["②  CDN + WAF<br/>CloudFront · Cloudflare<br/>(cache + DDoS + OWASP)"]
-    end
-
-    subgraph REGION ["Region: us-east-1"]
-        direction TB
-        LB1["③  Public Load Balancer #1<br/>NLB / ALB<br/>(picks gateway instance — TCP/TLS)"]
-
-        subgraph GWFLEET ["API Gateway Fleet (stateless · autoscaled)"]
-            direction LR
-            GWA["Gateway-A"]
-            GWB["Gateway-B"]
-            GWC["Gateway-C"]
-        end
-
-        subgraph PIPELINE ["④  Pipeline inside the chosen gateway"]
-            direction TB
-            P1["④a Validate<br/>(URL, body, size)"]
-            P2["④b Middleware<br/>IP allow · Auth(JWT) · Rate-limit · CORS"]
-            P3["④c Route lookup<br/>(in-mem trie)"]
-            P4["④d Service discovery<br/>(in-mem endpoint cache)"]
-            P5["④e Internal LB #2<br/>pick backend pod<br/>(round-robin / least-conn)"]
-            P6["④f Protocol xlate<br/>HTTP → gRPC"]
-            P7["④g Cache check<br/>(optional)"]
-            P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7
-        end
-
-        subgraph BACKENDS ["⑤  Backend microservices"]
-            direction LR
-            US["user-service<br/>pods: 10.0.1.5–7"]
-            OS["order-service<br/>pods: 10.0.2.5–7"]
-            PS["payment-service<br/>pods: 10.0.3.5–7"]
-        end
-    end
-
-    subgraph CTRL ["Control Plane (shared, per region)"]
-        direction TB
-        CFG[("Config Store<br/>etcd / Consul KV<br/>route rules")]
-        REG[("Service Registry<br/>Consul / Eureka / K8s<br/>live pod IPs")]
-        REDIS[("Redis Cluster<br/>rate-limit counters<br/>+ response cache")]
-        TRACE[("OTel · Jaeger<br/>logs · metrics · traces")]
-    end
-
-    Client -->|HTTPS| DNS
-    DNS -->|nearest IP| CDN
-    CDN -->|cache miss| LB1
-    LB1 --> GWA
-    LB1 -.also distributes to.-> GWB
-    LB1 -.also distributes to.-> GWC
-
-    GWA --> PIPELINE
-    P7 -->|forward<br/>gRPC / HTTP| US
-    US -->|response| P7
-
-    PIPELINE -.watch routes.-> CFG
-    PIPELINE -.poll endpoints.-> REG
-    PIPELINE -.rate-limit + cache.-> REDIS
-    PIPELINE -.emit spans.-> TRACE
-
-    P7 -.response<br/>back to client.-> Client
-
-    classDef edge fill:#FFF4E6,stroke:#F59E0B,color:#000
-    classDef gw fill:#E0F2FE,stroke:#0284C7,color:#000
-    classDef ctrl fill:#F3E8FF,stroke:#9333EA,color:#000
-    classDef be fill:#DCFCE7,stroke:#16A34A,color:#000
-    class DNS,CDN edge
-    class LB1,GWA,GWB,GWC,P1,P2,P3,P4,P5,P6,P7 gw
-    class CFG,REG,REDIS,TRACE ctrl
-    class US,OS,PS be
-```
-
-### The Numbered Request Flow
-
-Concrete example: a logged-in user in Berlin sends `POST /orders` with a JWT.
-
-| # | Step | What happens | Latency budget |
-|---|------|--------------|----------------|
-| **①** | **GeoDNS resolves `api.example.com`** | Route 53 returns the IP of the nearest region's public LB (e.g., `eu-west-1`). Cached on device. | ~5 ms (1st call) / 0 ms (cached) |
-| **②** | **CDN / WAF check** | CloudFront / Cloudflare first runs WAF rules (OWASP, bot detection, geo-block) and checks if a cached response exists for the URL+method. For `POST /orders` → cache miss → forward to origin. | ~5 ms |
-| **③** | **Public LB #1 picks a gateway instance** | The L4/L7 load balancer (ALB/NLB) terminates TLS and picks one healthy gateway from the pool — e.g., `Gateway-B` — using round-robin or least-connections. **It does NOT read the URL or know about `order-service`.** | ~1 ms |
-| **④** | **Inside the chosen gateway — 7-step pipeline** | This is where all the L7 work happens, in order: | **5–10 ms total** |
-| ④a | Validate | URL well-formed, JSON parses, body < 1 MB, method allowed | ~0.1 ms |
-| ④b | Middleware | Check IP not denylisted → decode JWT signature → look up rate-limit counter in **Redis** (`429` if over quota) → add CORS headers, trace ID | ~2 ms |
-| ④c | Route lookup | Match `/orders/*` → `order-service` via in-memory trie (loaded from **etcd**) | ~0.01 ms |
-| ④d | Service discovery | Look up `order-service` in the in-memory endpoint cache (refreshed in background from **Consul / K8s**) → `[10.0.2.5, 10.0.2.6, 10.0.2.7]` | ~0.05 ms |
-| ④e | **Internal LB #2** picks a backend pod | The gateway's built-in load balancer picks **one pod** from the live list — e.g., `10.0.2.6` — using least-connections, consistent-hash, or latency-aware EWMA | ~0.05 ms |
-| ④f | Protocol translation + backend call | Translate HTTP/JSON → gRPC/Protobuf, attach `X-Request-Id` + propagated user identity, send to `10.0.2.6` (with circuit breaker + retry budget) | gRPC call: 10–50 ms |
-| ④g | Response transform + cache | gRPC response → JSON, inject `X-RateLimit-Remaining`, compress (gzip). Skip cache for `POST`. | ~1 ms |
-| **⑤** | **Backend service** | `order-service` processes the order, persists to DB, returns `201 Created` | 10–50 ms |
-| **↩** | **Response path** | Response flows back: pod → gateway → LB → CDN (skipped for `POST`) → client. Trace span finalized in Jaeger. | ~30 ms (network only) |
-
-**The two key load-balancing decisions in one sentence:**
-> **LB #1** (public, before the gateway) picks **which gateway instance** handles the call. **LB #2** (built into the gateway itself, step ④e) picks **which backend pod** receives the forwarded request. Both are needed because both tiers are horizontally scaled.
-
-**Total perceived latency for the client:** typically **80–150 ms** end-to-end — most of which is network (mobile RTT + TLS handshake), not the gateway itself (~5–10 ms).
-
----
-
-> **Final Reminder:** In a real system design interview, an API Gateway is a **box on the diagram and a sentence of explanation**. This document exists so you *understand* what's in that box — not so you can recite it for 20 minutes. Get it down, label it correctly, move on to the interesting parts of your design.
+*Source: [Hello Interview — Distributed Rate Limiter](https://www.hellointerview.com/learn/system-design/problem-breakdowns/distributed-rate-limiter) with additional content on multi-region, observability, cost analysis, abuse patterns, real-world implementations, end-to-end flows, interview Q&A, and architecture decision records.*
