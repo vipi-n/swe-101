@@ -122,13 +122,10 @@ As monoliths were broken down, the **N×M coupling problem** appeared: N clients
 |---|---|
 | FR-1 | The gateway should expose a **single public endpoint** that all clients call |
 | FR-2 | The gateway should **route** each request to the correct backend service based on path, method, headers, or query params |
-| FR-3 | The gateway should **validate** incoming requests (URL well-formed, required headers/body present, payload size within limits) |
-| FR-4 | The gateway should **authenticate** clients (JWT, API key, OAuth) and **authorize** access to specific routes |
-| FR-5 | The gateway should **rate limit** and **throttle** abusive clients |
-| FR-6 | The gateway should **transform** requests/responses between protocols (HTTP↔gRPC) and formats (JSON↔Protobuf) when needed |
-| FR-7 | The gateway should optionally **cache** responses for cacheable GETs to reduce backend load |
-| FR-8 | The gateway should **terminate SSL/TLS** so backends can speak plain HTTP internally |
-| FR-9 | The gateway should **log, trace, and emit metrics** for every request |
+| FR-3 | The gateway should **authenticate** clients (JWT, API key, OAuth) and **authorize** access to specific routes |
+| FR-4 | The gateway should **rate limit** and **throttle** abusive clients |
+
+> **Beyond these four**, the gateway runs a pluggable **middleware pipeline** for cross-cutting concerns — request validation, TLS termination, protocol/format transformation (HTTP↔gRPC, JSON↔Protobuf), response caching for cacheable GETs, and observability (logging, tracing, metrics). These are policies plugged into the pipeline rather than separate design drivers, so we treat them as extensions of the core four.
 
 **Out of scope (intentionally):**
 - Business logic — the gateway should be thin
@@ -205,7 +202,7 @@ GET    /admin/metrics                   # observability
 
 ## 3. Core Responsibilities — Tracing a Request
 
-This is the heart of the deep dive. Every request flows through these six steps **in order**.
+This is the heart of the deep dive. Every request flows through these six steps **in order**. Together they fulfill the **functional requirements** from [Section 1.4](#14-functional-requirements): the single entry point (FR-1), routing (FR-2), auth (FR-3), and rate limiting (FR-4), plus the pluggable pipeline concerns (validation, transformation, caching). Each step below is tagged with the FR it satisfies.
 
 ```mermaid
 flowchart LR
@@ -224,7 +221,7 @@ flowchart LR
     Backend --> P
 ```
 
-### 3.1 Step 1 — Request Validation
+### 3.1 Step 1 — Request Validation *(pluggable pipeline)*
 
 Before the gateway does anything expensive (auth, routing, cache lookup), it sanity-checks the request shape. This is **cheap rejection** — fail fast on garbage.
 
@@ -257,7 +254,7 @@ public ValidationResult validate(HttpRequest req) {
 }
 ```
 
-### 3.2 Step 2 — Middleware Pipeline
+### 3.2 Step 2 — Middleware Pipeline *(FR-3 auth · FR-4 rate limit + pluggable)*
 
 Middleware is the gateway's superpower. It's a chain of pluggable processors that run **before** the request is forwarded.
 
@@ -309,7 +306,7 @@ public Response handle(HttpRequest req) {
 }
 ```
 
-### 3.3 Step 3 — Routing
+### 3.3 Step 3 — Routing *(FR-1 single endpoint · FR-2 routing)*
 
 The **routing table** is the heart of the gateway. It maps an incoming request to exactly one backend service.
 
@@ -477,7 +474,7 @@ void refreshServiceCache() {
 
 See [Section 5.4](#54-service-discovery-integration) for the service registry deep dive and [Section 5.7](#57-configuration-management) for how route config gets pushed safely.
 
-### 3.4 Step 4 — Backend Communication & Protocol Translation
+### 3.4 Step 4 — Backend Communication *(FR-2)* & Protocol Translation *(pluggable)*
 
 The gateway speaks **HTTP/1.1, HTTP/2, HTTP/3, gRPC, and WebSocket** outward to clients, and **whatever your services use** inward.
 
@@ -521,7 +518,7 @@ return jsonResponse(200, Map.of(
 - **Message queue publish** — convert HTTP POST to Kafka/SQS message ("async API")
 - **Service mesh handoff** — forward to a sidecar that handles mTLS + retries
 
-### 3.5 Step 5 — Response Transformation
+### 3.5 Step 5 — Response Transformation *(pluggable pipeline)*
 
 The response that comes back from the backend rarely goes to the client unchanged. The gateway applies:
 
@@ -552,7 +549,7 @@ userService.getProfile({ userId: "123" })
 }
 ```
 
-### 3.6 Step 6 — Caching
+### 3.6 Step 6 — Caching *(pluggable pipeline)*
 
 The final (and **optional**) step. If a response is deterministic and not user-specific, cache it.
 
@@ -666,7 +663,9 @@ flowchart TB
 
 ## 5. Deep Dives
 
-### 5.1 Scaling — Horizontal Scaling
+> **From FRs to NFRs:** Sections 3–4 satisfy the **functional requirements** (single entry point, routing, auth, rate limiting). The deep dives below address each **non-functional requirement** from [Section 1.5](#15-non-functional-requirements) in turn — scalability (NFR-3), availability & fault isolation (NFR-2, NFR-4), security (NFR-5), observability (NFR-6), and the low-latency budget (NFR-1) that runs through all of them. Each deep dive is tagged with the NFR it primarily serves.
+
+### 5.1 Scaling — Horizontal Scaling *(NFR-3)*
 
 > *"API Gateways are typically stateless, making them ideal candidates for horizontal scaling. You can add more gateway instances behind a load balancer to distribute incoming requests."* — Hello Interview
 
@@ -708,7 +707,7 @@ A common confusion in interviews:
 
 > **Interview tip:** Don't get bogged down. Draw **one box labeled "API Gateway + LB"** — that's enough for most interviews.
 
-### 5.2 Scaling — Global Distribution
+### 5.2 Scaling — Global Distribution *(NFR-1 latency · NFR-3 scale)*
 
 For globally distributed users, deploy gateways in **multiple regions** like a CDN.
 
@@ -737,7 +736,7 @@ flowchart LR
 
 **Failover:** If `eu-west-1` is down, DNS health checks pull it out of rotation and users get routed to `us-east-1`. Capacity planning must account for one region being able to absorb the load of a peer.
 
-### 5.3 High Availability & Fault Tolerance
+### 5.3 High Availability & Fault Tolerance *(NFR-2 · NFR-4)*
 
 The gateway is on **100 % of the request path**. Its SLO must be **stricter than any backend**.
 
@@ -778,7 +777,7 @@ Response response = breaker.executeSupplier(() ->
    HALF_OPEN ◀──── test request ──── (1 probe)
 ```
 
-### 5.4 Service Discovery Integration
+### 5.4 Service Discovery Integration *(supports FR-2 · NFR-4)*
 
 In dynamic environments (Kubernetes, EC2 autoscaling), backend IPs change constantly. The gateway must integrate with a **service registry**.
 
@@ -809,7 +808,7 @@ public class ServiceResolver {
 }
 ```
 
-### 5.5 Observability — Logging, Metrics, Tracing
+### 5.5 Observability — Logging, Metrics, Tracing *(NFR-6)*
 
 The gateway sees every request — perfect spot for telemetry.
 
@@ -852,7 +851,7 @@ Client request enters →
 - **Never** log full request bodies (PII, credentials)
 - **Never** log `Authorization` headers — redact
 
-### 5.6 Security Hardening
+### 5.6 Security Hardening *(NFR-5)*
 
 The gateway is the **front door**. If it falls, everything falls.
 
@@ -891,7 +890,7 @@ Internet
 [Backend services]         ← Defense-in-depth: own auth checks
 ```
 
-### 5.7 Configuration Management
+### 5.7 Configuration Management *(NFR-2 availability)*
 
 Routes and policies change constantly. How do you push config to 100+ gateway instances without downtime?
 
