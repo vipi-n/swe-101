@@ -131,39 +131,108 @@ erDiagram
     FILE_METADATA ||--o{ SHARED_FILES : "shared via"
 ```
 
+#### Table Definitions (DDL)
+
+```sql
+-- 1) Users of the system
+CREATE TABLE Users (
+    userId  VARCHAR(50)  PRIMARY KEY,
+    email   VARCHAR(255) NOT NULL UNIQUE,
+    name    VARCHAR(255) NOT NULL
+);
+
+-- 2) Metadata for each uploaded file (raw bytes live in S3, not here)
+CREATE TABLE FileMetadata (
+    fileId     VARCHAR(50)  PRIMARY KEY,
+    name       VARCHAR(255) NOT NULL,
+    size       BIGINT       NOT NULL,
+    mimeType   VARCHAR(100),
+    uploadedBy VARCHAR(50)  NOT NULL,
+    status     VARCHAR(20)  NOT NULL DEFAULT 'pending',  -- pending | uploaded
+    s3Url      VARCHAR(512),
+    FOREIGN KEY (uploadedBy) REFERENCES Users(userId)
+);
+
+-- 3) Join table: which users have access to which files (many-to-many)
+CREATE TABLE SharedFiles (
+    userId   VARCHAR(50) NOT NULL,
+    fileId   VARCHAR(50) NOT NULL,
+    sharedAt TIMESTAMP   DEFAULT CURRENT_TIMESTAMP,
+    sharedBy VARCHAR(50),
+    PRIMARY KEY (userId, fileId),                        -- composite: fast "files shared with user X"
+    FOREIGN KEY (userId) REFERENCES Users(userId),
+    FOREIGN KEY (fileId) REFERENCES FileMetadata(fileId)
+);
+
+-- Optional secondary index for the reverse query "who is file Y shared with?"
+CREATE INDEX idx_sharedfiles_fileId ON SharedFiles (fileId);
+```
+
+| Table | Primary Key | Notes |
+|-------|-------------|-------|
+| `Users` | `userId` | `email` is unique. |
+| `FileMetadata` | `fileId` | `status` drives the upload lifecycle (`pending` → `uploaded`); raw bytes live in **S3**. |
+| `SharedFiles` | `(userId, fileId)` composite | One row per share; leading `userId` makes "files shared with X" fast. |
+
 ---
 
 ### API / System Interface
 
 Define an endpoint for each functional requirement. User information is passed in **headers** (session token or JWT) — never in the request body for security reasons.
 
-> **Tip:** Proactively communicate that APIs may evolve: *"I'm going to outline some simple APIs, but may come back and improve them as we delve deeper into the design."*
+> **Interview communication tip:** When you *first* sketch APIs (before settling on details), signal that they may evolve: *"I'll outline some simple APIs now and refine them as we go deeper."* The bodies below are the refined, final versions for this design.
 
 #### 1. Upload a File
 
+Returns a **presigned URL** the client uses to upload bytes directly to S3 (see the "Great Solution" below).
+
 ```
 POST /files
+Headers: Authorization: Bearer <JWT>
+
 Request:
 {
-  File,
-  FileMetadata
+  "name": "file.txt",
+  "size": 1000,
+  "mimeType": "text/plain"
+}
+
+Response: 201 Created
+{
+  "fileId": "123",
+  "status": "pending",
+  "uploadUrl": "https://my-bucket.s3.amazonaws.com/files/123?X-Amz-Signature=..."
 }
 ```
 
 #### 2. Download a File
 
 ```
-GET /files/{fileId} -> File & FileMetadata
+GET /files/{fileId}
+Headers: Authorization: Bearer <JWT>
+
+Response: 200 OK
+{
+  "fileId": "123",
+  "name": "file.txt",
+  "size": 1000,
+  "mimeType": "text/plain",
+  "downloadUrl": "https://my-bucket.s3.amazonaws.com/files/123?X-Amz-Signature=..."
+}
 ```
 
 #### 3. Share a File
 
 ```
 POST /files/{fileId}/share
+Headers: Authorization: Bearer <JWT>
+
 Request:
 {
-  User[]   // The users to share the file with
+  "userIds": ["user2", "user3"]   // users to share the file with
 }
+
+Response: 200 OK
 ```
 
 #### 4. Query Changes for Sync
@@ -202,9 +271,15 @@ Our metadata is loosely structured, with few relations, and the main query patte
   "name": "file.txt",
   "size": 1000,
   "mimeType": "text/plain",
-  "uploadedBy": "user1"
+  "uploadedBy": "user1",
+  "status": "uploaded",
+  "s3Url": "s3://my-bucket/files/123"
 }
 ```
+
+> **About `status` and `s3Url`:** these two columns power the presigned-URL upload flow below.
+> - `status` tracks where the upload is in its lifecycle: `pending` (row created, file not in S3 yet) → `uploaded` (S3 confirmed the file arrived).
+> - `s3Url` is empty at first and gets filled in once S3 notifies us the upload completed.
 
 #### File Storage — Trade-off Analysis
 
@@ -284,6 +359,21 @@ sequenceDiagram
 - Eliminates double bandwidth usage.
 - Offloads upload processing from our servers.
 - Presigned URLs are time-limited and secure.
+
+**What "Update metadata" actually changes in the table:** it updates the `status` and `s3Url` columns of the *same* metadata row created in the first step. The row is created with `status: pending`, then updated to `status: uploaded` once S3 confirms.
+
+| Step | id | name | size | status | s3Url |
+|------|-----|----------|------|-------------|--------------------------------|
+| 1. Row created (presigned URL handed out) | 123 | file.txt | 1000 | `pending`   | _(empty)_ |
+| 2. After S3 "upload complete" event        | 123 | file.txt | 1000 | `uploaded`  | `s3://my-bucket/files/123` |
+
+```sql
+-- The "Update metadata (status: uploaded, s3Url)" step is just:
+UPDATE files
+SET    status = 'uploaded',
+       s3_url = 's3://my-bucket/files/123'
+WHERE  id = '123';
+```
 
 > **Pattern: Handling Large Blobs** — The direct upload approach using presigned URLs is a classic pattern for handling large file transfers efficiently. This pattern of bypassing application servers for data transfer, using signed URLs for security, and implementing chunked uploads for reliability appears across many distributed systems.
 
@@ -408,6 +498,20 @@ sequenceDiagram
 - Lower load on S3.
 - Automatic caching of popular files.
 
+> **Why "presigned" for S3 but "signed" for CDN?** It's just AWS terminology — both are the *same idea*: a normal HTTPS URL with a signature + expiry baked into the query string. There is no separate "presigned CDN URL."
+> - **S3** calls them **presigned URLs** (signed by your AWS credentials / IAM role).
+> - **CloudFront** calls them **signed URLs** (signed by a dedicated CloudFront key pair), and also offers **signed cookies** for protecting many files at once.
+>
+> You use the *CloudFront* signed URL (not the S3 presigned one) for downloads because you want the client to hit the **CDN edge**, not S3 directly. If you handed out an S3 presigned URL, the client would bypass the CDN and lose the caching/latency benefit.
+
+> **What's inside the URL & how it's authorized (brief):** the signature is just query params appended to the URL —
+> - **Resource**: bucket/key (which file).
+> - **Expiry**: `X-Amz-Expires` / `Expires` — when the link stops working.
+> - **Permissions**: the HTTP method allowed (e.g., `PUT` for upload, `GET` for download).
+> - **Signature**: `X-Amz-Signature` — an **HMAC-SHA256** hash of the above, computed with a secret key (IAM secret for S3, CloudFront private key for CDN).
+>
+> **Auth happens at verify time, no DB/login call:** the server (S3 or CloudFront) recomputes the HMAC with its own copy of the key and compares. If it matches **and** it's not expired, the request is allowed. Tamper with any param → hash won't match → `403`.
+
 ---
 
 ### 3) Users should be able to share a file with other users
@@ -440,6 +544,15 @@ Implementation is similar to Google Drive — enter the email of the user you wa
 - Query "Get all files shared with user X" → `WHERE userId = X` — fast because `userId` is the leading column of the PK index.
 - Permission check "Can user X access file Y?" → `WHERE userId = X AND fileId = Y` — O(1) on the full PK.
 - The composite PK also automatically blocks accidental duplicate share rows.
+
+> **Why not `userId` PK + an array of fileIds (`{userId, fileIds:[...]}`)?** It breaks down quickly:
+> - **Unshare/check one file** → read-modify-write the whole array (vs. a single `DELETE`).
+> - **Concurrent shares** → two writers overwrite each other → lost updates.
+> - **Reverse query** ("who is F5 shared with?") → must scan every user's array.
+> - **Row size** → unbounded (DynamoDB has a 400 KB item limit).
+> - **Per-share metadata** (`sharedAt`, `sharedBy`) → awkward to store per item.
+>
+> One row per share (composite PK) avoids all of these — the standard choice for many-to-many.
 
 **Example query** — "list all files shared with user B" in a single round trip (avoids the N+1 problem of fetching metadata one fileId at a time):
 
