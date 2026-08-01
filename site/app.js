@@ -50,6 +50,7 @@ const state = {
   search: "",
   focusMode: false,
   sidebarCollapsed: localStorage.getItem("sidebar-collapsed") === "true",
+  topicsCollapsed: localStorage.getItem("topics-collapsed") === "true",
   tocCollapsed: localStorage.getItem("toc-collapsed") === "true",
   theme: localStorage.getItem("theme") || "light",
 };
@@ -64,10 +65,11 @@ const el = {
   menuToggle: document.querySelector("#menu-toggle"),
   sidebar: document.querySelector("#sidebar"),
   categoryNav: document.querySelector("#category-nav"),
-  recentNav: document.querySelector("#recent-nav"),
   homeView: document.querySelector("#home-view"),
   docView: document.querySelector("#doc-view"),
   categoryGrid: document.querySelector("#category-grid"),
+  topicsTitle: document.querySelector("#topics-title"),
+  topicsToggle: document.querySelector("#topics-toggle"),
   docList: document.querySelector("#doc-list"),
   libraryTitle: document.querySelector("#library-title"),
   clearFilter: document.querySelector("#clear-filter"),
@@ -149,6 +151,12 @@ function bindEvents() {
     applyLayoutState();
   });
 
+  el.topicsToggle.addEventListener("click", () => {
+    state.topicsCollapsed = !state.topicsCollapsed;
+    localStorage.setItem("topics-collapsed", state.topicsCollapsed);
+    applyTopicsState();
+  });
+
   el.focusToggle.addEventListener("click", () => {
     state.focusMode = !state.focusMode;
     applyLayoutState();
@@ -159,6 +167,7 @@ function bindEvents() {
     state.activeTier = "";
     state.search = "";
     el.search.value = "";
+    renderCategoryGrid();
     renderDocList();
     updateActiveNav();
   });
@@ -191,7 +200,6 @@ function bindEvents() {
         state.activeTier = "";
       }
       showHome({ updateHash: false });
-      renderDocList();
       updateActiveNav();
       document.body.classList.remove("nav-open");
       return;
@@ -201,7 +209,6 @@ function bindEvents() {
       state.activeCategory = "hld";
       state.activeTier = tierButton.dataset.tier || "";
       showHome({ updateHash: false });
-      renderDocList();
       updateActiveNav();
       return;
     }
@@ -244,17 +251,16 @@ function renderShell() {
     }),
   ].join("");
 
-  el.recentNav.innerHTML = [
-    `<p class="sidebar-section-title">Quick open</p>`,
-    ...state.docs.slice(0, 8).map((doc) => `
-      <button class="doc-link" data-doc="${escapeHtml(doc.id)}">
-        <i data-lucide="file-text"></i>
-        <span>${escapeHtml(doc.title)}</span>
-      </button>
-    `),
-  ].join("");
+  renderCategoryGrid();
+  renderDocList();
+}
 
-  el.categoryGrid.innerHTML = state.categories.map((category) => {
+function renderCategoryGrid() {
+  const docsByCategory = groupDocsByCategory();
+  const visibleCategories = state.activeCategory ? [state.activeCategory] : state.categories;
+  el.topicsTitle.textContent = state.activeCategory ? categoryMeta(state.activeCategory).label : "Topics";
+
+  el.categoryGrid.innerHTML = visibleCategories.map((category) => {
     const meta = categoryMeta(category);
     const count = docsByCategory.get(category)?.length || 0;
     return `
@@ -269,7 +275,8 @@ function renderShell() {
     `;
   }).join("");
 
-  renderDocList();
+  applyTopicsState();
+  refreshIcons();
 }
 
 function renderDocList() {
@@ -348,6 +355,10 @@ function showHome(options = {}) {
   el.homeView.classList.remove("hidden");
   document.body.classList.remove("nav-open");
   applyLayoutState();
+  if (state.docs.length) {
+    renderCategoryGrid();
+    renderDocList();
+  }
   updateActiveNav();
   updateProgress();
   if (options.updateHash !== false) {
@@ -618,6 +629,15 @@ function updateTierFilter() {
   el.tierFilter.querySelectorAll("[data-tier]").forEach((button) => {
     button.classList.toggle("active", (button.dataset.tier || "") === state.activeTier);
   });
+}
+
+function applyTopicsState() {
+  el.categoryGrid.classList.toggle("hidden", state.topicsCollapsed);
+  el.topicsToggle.innerHTML = state.topicsCollapsed
+    ? `<i data-lucide="eye"></i> Show topics`
+    : `<i data-lucide="eye-off"></i> Hide topics`;
+  el.topicsToggle.setAttribute("aria-pressed", String(state.topicsCollapsed));
+  refreshIcons();
 }
 
 function groupDocsByCategory() {

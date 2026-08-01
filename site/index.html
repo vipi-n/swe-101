@@ -54,7 +54,6 @@
           </button>
         </div>
         <div class="sidebar-section" id="category-nav"></div>
-        <div class="sidebar-section compact" id="recent-nav"></div>
       </aside>
 
       <main class="main">
@@ -84,9 +83,12 @@
           </div>
 
           <section class="content-band">
-            <div class="section-heading">
-              <p class="eyebrow">Browse</p>
-              <h2>Topics</h2>
+            <div class="section-heading with-action">
+              <h2 id="topics-title">Topics</h2>
+              <button class="text-button" id="topics-toggle" type="button">
+                <i data-lucide="eye-off"></i>
+                Hide topics
+              </button>
             </div>
             <div class="category-grid" id="category-grid"></div>
           </section>
