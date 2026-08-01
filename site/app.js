@@ -100,6 +100,7 @@ const el = {
   tocLinks: document.querySelector("#toc-links"),
   tocToggle: document.querySelector("#toc-toggle"),
   focusToggle: document.querySelector("#focus-toggle"),
+  resetDocProgress: document.querySelector("#reset-doc-progress"),
   sourceLink: document.querySelector("#source-link"),
 };
 
@@ -179,6 +180,20 @@ function bindEvents() {
   el.focusToggle.addEventListener("click", () => {
     state.focusMode = !state.focusMode;
     applyLayoutState();
+  });
+
+  el.resetDocProgress.addEventListener("click", () => {
+    if (!state.activeDoc) return;
+
+    const doc = state.docs.find((item) => item.id === state.activeDoc);
+    const label = doc ? shortDocTitle(doc) : "this note";
+    const shouldReset = confirm(`Reset reading progress for ${label}?`);
+    if (!shouldReset) return;
+
+    delete state.progress[state.activeDoc];
+    localStorage.setItem("doc-progress", JSON.stringify(state.progress));
+    updateProgressDisplays(state.activeDoc);
+    el.progress.style.width = "0";
   });
 
   el.clearFilter.addEventListener("click", () => {
