@@ -47,6 +47,9 @@ const state = {
   activeCategory: "",
   activeTier: "",
   activeDoc: "",
+  expandedCategory: localStorage.getItem("expanded-category") || "",
+  expandedTiers: loadExpandedTiers(),
+  progress: loadProgress(),
   search: "",
   focusMode: false,
   sidebarCollapsed: localStorage.getItem("sidebar-collapsed") === "true",
@@ -56,11 +59,27 @@ const state = {
 };
 let mermaidRenderId = 0;
 
+function loadProgress() {
+  try {
+    return JSON.parse(localStorage.getItem("doc-progress") || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function loadExpandedTiers() {
+  try {
+    return JSON.parse(localStorage.getItem("expanded-tiers") || "{}");
+  } catch {
+    return {};
+  }
+}
+
 const el = {
   root: document.documentElement,
   progress: document.querySelector("#reading-progress"),
   search: document.querySelector("#global-search"),
-  sidebarToggle: document.querySelector("#sidebar-toggle"),
+  sidebarToggles: document.querySelectorAll("[data-sidebar-toggle]"),
   themeToggle: document.querySelector("#theme-toggle"),
   menuToggle: document.querySelector("#menu-toggle"),
   sidebar: document.querySelector("#sidebar"),
@@ -68,15 +87,11 @@ const el = {
   homeView: document.querySelector("#home-view"),
   docView: document.querySelector("#doc-view"),
   categoryGrid: document.querySelector("#category-grid"),
-  topicsTitle: document.querySelector("#topics-title"),
   topicsToggle: document.querySelector("#topics-toggle"),
   docList: document.querySelector("#doc-list"),
   libraryTitle: document.querySelector("#library-title"),
   clearFilter: document.querySelector("#clear-filter"),
   tierFilter: document.querySelector("#tier-filter"),
-  statDocs: document.querySelector("#stat-docs"),
-  statCategories: document.querySelector("#stat-categories"),
-  statHld: document.querySelector("#stat-hld"),
   docCategory: document.querySelector("#doc-category"),
   docTitle: document.querySelector("#doc-title"),
   docDescription: document.querySelector("#doc-description"),
@@ -119,6 +134,7 @@ function bindEvents() {
   el.search.addEventListener("input", () => {
     state.search = el.search.value.trim().toLowerCase();
     if (state.activeDoc) showHome({ updateHash: false });
+    renderCategoryNav();
     renderDocList();
   });
 
@@ -139,10 +155,12 @@ function bindEvents() {
     document.body.classList.toggle("nav-open");
   });
 
-  el.sidebarToggle.addEventListener("click", () => {
-    state.sidebarCollapsed = !state.sidebarCollapsed;
-    localStorage.setItem("sidebar-collapsed", state.sidebarCollapsed);
-    applyLayoutState();
+  el.sidebarToggles.forEach((toggle) => {
+    toggle.addEventListener("click", () => {
+      state.sidebarCollapsed = !state.sidebarCollapsed;
+      localStorage.setItem("sidebar-collapsed", state.sidebarCollapsed);
+      applyLayoutState();
+    });
   });
 
   el.tocToggle.addEventListener("click", () => {
@@ -165,8 +183,11 @@ function bindEvents() {
   el.clearFilter.addEventListener("click", () => {
     state.activeCategory = "";
     state.activeTier = "";
+    state.expandedCategory = "";
+    localStorage.removeItem("expanded-category");
     state.search = "";
     el.search.value = "";
+    renderCategoryNav();
     renderCategoryGrid();
     renderDocList();
     updateActiveNav();
@@ -175,6 +196,7 @@ function bindEvents() {
   document.addEventListener("click", (event) => {
     const homeButton = event.target.closest("[data-home]");
     const categoryButton = event.target.closest("[data-category]");
+    const tierGroupButton = event.target.closest("[data-tier-group]");
     const tierButton = event.target.closest("[data-tier]");
     const docButton = event.target.closest("[data-doc]");
     const pageAnchor = event.target.closest(".article a[href^='#'], .toc a[href^='#']");
@@ -190,25 +212,52 @@ function bindEvents() {
       event.preventDefault();
       state.activeCategory = "";
       state.activeTier = "";
+      state.expandedCategory = "";
+      localStorage.removeItem("expanded-category");
       showHome();
       return;
     }
 
     if (categoryButton) {
-      state.activeCategory = categoryButton.dataset.category;
+      const category = categoryButton.dataset.category;
+      const alreadyOpen = state.expandedCategory === category && state.activeCategory === category;
+      state.activeCategory = alreadyOpen ? "" : category;
+      state.expandedCategory = alreadyOpen ? "" : category;
+      if (state.expandedCategory) {
+        localStorage.setItem("expanded-category", state.expandedCategory);
+      } else {
+        localStorage.removeItem("expanded-category");
+      }
       if (state.activeCategory !== "hld") {
         state.activeTier = "";
       }
       showHome({ updateHash: false });
+      renderCategoryNav();
       updateActiveNav();
       document.body.classList.remove("nav-open");
       return;
     }
 
+    if (tierGroupButton) {
+      const tierKey = tierGroupButton.dataset.tierGroup;
+      state.activeCategory = "hld";
+      state.expandedCategory = "hld";
+      state.expandedTiers[tierKey] = !isTierExpanded(tierKey);
+      localStorage.setItem("expanded-category", "hld");
+      localStorage.setItem("expanded-tiers", JSON.stringify(state.expandedTiers));
+      showHome({ updateHash: false });
+      renderCategoryNav();
+      updateActiveNav();
+      return;
+    }
+
     if (tierButton) {
       state.activeCategory = "hld";
+      state.expandedCategory = "hld";
       state.activeTier = tierButton.dataset.tier || "";
+      localStorage.setItem("expanded-category", "hld");
       showHome({ updateHash: false });
+      renderCategoryNav();
       updateActiveNav();
       return;
     }
@@ -231,34 +280,121 @@ function bindEvents() {
 }
 
 function renderShell() {
+  if (state.expandedCategory && !state.categories.includes(state.expandedCategory)) {
+    state.expandedCategory = "";
+  }
+
+  renderCategoryNav();
+  renderCategoryGrid();
+  renderDocList();
+}
+
+function renderCategoryNav() {
   const docsByCategory = groupDocsByCategory();
-  el.statDocs.textContent = state.docs.length;
-  el.statCategories.textContent = state.categories.length;
-  el.statHld.textContent = docsByCategory.get("hld")?.length || 0;
 
   el.categoryNav.innerHTML = [
     `<p class="sidebar-section-title">Topics</p>`,
     ...state.categories.map((category) => {
       const meta = categoryMeta(category);
       const count = docsByCategory.get(category)?.length || 0;
+      const expanded = state.expandedCategory === category;
+      const docs = sidebarDocsForCategory(category);
       return `
-        <button class="category-link" data-category="${escapeHtml(category)}">
-          <i data-lucide="${meta.icon}"></i>
-          <span>${escapeHtml(meta.label)}</span>
-          <small>${count}</small>
-        </button>
+        <div class="category-group">
+          <button class="category-link" data-category="${escapeHtml(category)}" aria-expanded="${expanded}">
+            <i data-lucide="${meta.icon}"></i>
+            <span>${escapeHtml(meta.label)}</span>
+            <small>${count}</small>
+            <i class="category-chevron" data-lucide="${expanded ? "chevron-down" : "chevron-right"}"></i>
+          </button>
+          ${expanded ? renderSidebarDocList(docs, category) : ""}
+        </div>
       `;
     }),
   ].join("");
 
-  renderCategoryGrid();
-  renderDocList();
+  refreshIcons();
+}
+
+function renderSidebarDocList(docs, category) {
+  if (!docs.length) {
+    return `<div class="nav-doc-empty">No notes</div>`;
+  }
+
+  if (category === "hld") {
+    return renderHldTierDocList(docs);
+  }
+
+  return `
+    <div class="nav-doc-list">
+      ${renderSidebarDocItems(docs)}
+    </div>
+  `;
+}
+
+function renderHldTierDocList(docs) {
+  const tiers = [
+    { key: "overview", label: "Overview", value: "" },
+    { key: "tier-1", label: "Tier 1", value: "tier-1" },
+    { key: "tier-2", label: "Tier 2", value: "tier-2" },
+    { key: "tier-3", label: "Tier 3", value: "tier-3" },
+  ];
+
+  return `
+    <div class="tier-tree">
+      ${tiers.map((tier) => {
+        const tierDocs = docs.filter((doc) => (doc.tier || "") === tier.value);
+        if (!tierDocs.length) return "";
+        const expanded = isTierExpanded(tier.key);
+        return `
+          <div class="tier-tree-group">
+            <button class="tier-tree-button" type="button" data-tier-group="${escapeHtml(tier.key)}" aria-expanded="${expanded}">
+              <i data-lucide="${expanded ? "chevron-down" : "chevron-right"}"></i>
+              <span>${escapeHtml(tier.label)}</span>
+              <small>${tierDocs.length}</small>
+            </button>
+            ${expanded ? `<div class="nav-doc-list tier-doc-list">${renderSidebarDocItems(tierDocs)}</div>` : ""}
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderSidebarDocItems(docs) {
+  return docs.map((doc) => {
+    const progress = docProgress(doc.id);
+    return `
+      <button class="nav-doc-item" data-doc="${escapeHtml(doc.id)}">
+        <span class="nav-doc-title">${escapeHtml(shortDocTitle(doc))}</span>
+        <span class="doc-progress-row">
+          <span>${escapeHtml(progress.status)}</span>
+          <span>${progress.percent}%</span>
+        </span>
+        <span class="doc-progress-track" aria-hidden="true">
+          <span style="width: ${progress.percent}%"></span>
+        </span>
+      </button>
+    `;
+  }).join("");
+}
+
+function isTierExpanded(tierKey) {
+  return state.expandedTiers[tierKey] !== false;
+}
+
+function sidebarDocsForCategory(category) {
+  return state.docs.filter((doc) => {
+    if (doc.category !== category) return false;
+    if (category === "hld" && state.activeTier && doc.tier !== state.activeTier) return false;
+    if (!state.search) return true;
+    return docSearchText(doc).includes(state.search);
+  });
 }
 
 function renderCategoryGrid() {
   const docsByCategory = groupDocsByCategory();
   const visibleCategories = state.activeCategory ? [state.activeCategory] : state.categories;
-  el.topicsTitle.textContent = state.activeCategory ? categoryMeta(state.activeCategory).label : "Topics";
 
   el.categoryGrid.innerHTML = visibleCategories.map((category) => {
     const meta = categoryMeta(category);
@@ -288,6 +424,14 @@ function renderDocList() {
   el.clearFilter.classList.toggle("hidden", !state.activeCategory && !state.activeTier && !state.search);
   el.tierFilter.classList.toggle("hidden", state.activeCategory !== "hld");
   updateTierFilter();
+  el.homeView.classList.toggle("topic-mode", Boolean(state.activeCategory));
+  document.body.classList.toggle("topic-selected", Boolean(state.activeCategory));
+
+  if (state.activeCategory && !state.search) {
+    el.docList.innerHTML = "";
+    refreshIcons();
+    return;
+  }
 
   if (!docs.length) {
     el.docList.innerHTML = `<div class="empty-state">No notes match this view.</div>`;
@@ -297,11 +441,11 @@ function renderDocList() {
 
   el.docList.innerHTML = docs.map((doc) => `
     <button class="doc-item" data-doc="${escapeHtml(doc.id)}">
-      <span>
-        <h3>${escapeHtml(doc.title)}</h3>
-        <p>${escapeHtml(doc.description || categoryMeta(doc.category).description)}</p>
+      <span class="doc-title-only">
+        <h3>${escapeHtml(shortDocTitle(doc))}</h3>
+        <span class="doc-topic-label">${escapeHtml(categoryMeta(doc.category).label)}</span>
       </span>
-      <span class="path">${escapeHtml(doc.path)}</span>
+      ${renderProgressBadge(doc)}
     </button>
   `).join("");
 
@@ -317,16 +461,19 @@ async function openDoc(id, options = {}) {
 
   state.activeDoc = id;
   state.activeCategory = doc.category;
-  state.activeTier = "";
+  state.expandedCategory = doc.category;
+  localStorage.setItem("expanded-category", doc.category);
   el.homeView.classList.add("hidden");
   el.docView.classList.remove("hidden");
   el.docCategory.textContent = categoryMeta(doc.category).label;
   el.docTitle.textContent = doc.title;
-  el.docDescription.textContent = doc.description || categoryMeta(doc.category).description;
+  el.docDescription.textContent = "";
   el.sourceLink.href = `https://github.com/vipi-n/swe-101/blob/main/${doc.path}`;
   el.article.innerHTML = `<div class="empty-state">Loading note...</div>`;
   el.tocLinks.innerHTML = "";
   document.body.classList.remove("nav-open");
+  saveDocProgress(id, Math.max(docProgress(id).percent, 1));
+  renderCategoryNav();
   updateActiveNav();
 
   if (options.updateHash !== false) {
@@ -356,6 +503,7 @@ function showHome(options = {}) {
   document.body.classList.remove("nav-open");
   applyLayoutState();
   if (state.docs.length) {
+    renderCategoryNav();
     renderCategoryGrid();
     renderDocList();
   }
@@ -379,12 +527,18 @@ async function renderMarkdown(markdown, doc) {
     ADD_ATTR: ["target", "rel"],
   });
 
+  removeArticleTitle();
   normalizeHeadings();
   rewriteLinks(doc);
   await renderMermaidBlocks();
   enhanceCodeBlocks();
   buildToc();
   refreshIcons();
+}
+
+function removeArticleTitle() {
+  const firstHeading = el.article.querySelector("h1");
+  firstHeading?.remove();
 }
 
 function normalizeHeadings() {
@@ -619,9 +773,92 @@ function filteredDocs() {
   return state.docs.filter((doc) => {
     const categoryMatch = !state.activeCategory || doc.category === state.activeCategory;
     const tierMatch = !state.activeTier || doc.tier === state.activeTier;
-    const query = `${doc.title} ${doc.description} ${doc.path} ${doc.category}`.toLowerCase();
-    const searchMatch = !state.search || query.includes(state.search);
+    const searchMatch = !state.search || docSearchText(doc).includes(state.search);
     return categoryMatch && tierMatch && searchMatch;
+  });
+}
+
+function docSearchText(doc) {
+  return `${doc.title} ${doc.description} ${doc.path} ${doc.category}`.toLowerCase();
+}
+
+function shortDocTitle(doc) {
+  const explicitNames = {
+    "hld/hld.md": "System Design Basics",
+    "hld/tier-1/fb-newsfeed.md": "Facebook News Feed",
+    "hld/tier-1/rate_limitter.md": "Rate Limiter",
+    "hld/tier-1/ratelimitter.md": "Rate Limiter",
+    "hld/tier-1/url_shortener.md": "URL Shortener",
+    "hld/tier-2/apigateway.md": "API Gateway",
+    "hld/tier-2/localDeliveryService.md": "Local Delivery Service",
+    "lld/base/design-patterns.md": "Design Patterns",
+    "lld/base/microservices.md": "Microservices",
+    "docker-k8s/docker-k8s-deployment.md": "Kubernetes Deployment",
+    "networking/key-technologies.md": "Key Technologies",
+  };
+
+  if (explicitNames[doc.path]) {
+    return explicitNames[doc.path];
+  }
+
+  return doc.title
+    .replace(/\s+[—-]\s+System Design(?:\s+Deep Dive)?$/i, "")
+    .replace(/\s+[—-]\s+Low Level Design(?:\s+\(Java\))?$/i, "")
+    .replace(/\s+\(Low-Level Design\)$/i, "")
+    .replace(/\s+\(Java\)$/i, "")
+    .replace(/\s+-\s+Comprehensive Guide$/i, "")
+    .replace(/\s+[—-]\s+Complete Guide$/i, "")
+    .replace(/\s+[—-]\s+Complete Interview Guide$/i, "")
+    .replace(/^System Design:\s*/i, "")
+    .trim();
+}
+
+function renderProgressBadge(doc) {
+  const progress = docProgress(doc.id);
+  return `
+    <span class="doc-progress-summary">
+      <span class="doc-status">${escapeHtml(progress.status)}</span>
+      <span class="doc-percent">${progress.percent}%</span>
+      <span class="doc-progress-track" aria-hidden="true">
+        <span style="width: ${progress.percent}%"></span>
+      </span>
+    </span>
+  `;
+}
+
+function docProgress(id) {
+  const percent = Math.min(100, Math.max(0, Number(state.progress[id] || 0)));
+  if (percent >= 95) {
+    return { percent: 100, status: "Complete" };
+  }
+  if (percent > 0) {
+    return { percent, status: "In progress" };
+  }
+  return { percent: 0, status: "Not started" };
+}
+
+function saveDocProgress(id, percent) {
+  const normalized = percent >= 95 ? 100 : Math.min(100, Math.max(0, Math.round(percent)));
+  const current = Number(state.progress[id] || 0);
+  if (normalized <= current) return;
+
+  state.progress[id] = normalized;
+  localStorage.setItem("doc-progress", JSON.stringify(state.progress));
+  updateProgressDisplays(id);
+}
+
+function updateProgressDisplays(id) {
+  const progress = docProgress(id);
+  document.querySelectorAll(`[data-doc="${CSS.escape(id)}"]`).forEach((node) => {
+    node.querySelectorAll(".doc-status").forEach((status) => {
+      status.textContent = progress.status;
+    });
+    node.querySelectorAll(".doc-percent").forEach((percent) => {
+      percent.textContent = `${progress.percent}%`;
+    });
+    node.querySelectorAll(".doc-progress-track span").forEach((bar) => {
+      bar.style.width = `${progress.percent}%`;
+    });
   });
 }
 
@@ -670,12 +907,15 @@ function updateActiveNav() {
 function updateProgress() {
   if (!state.activeDoc) {
     el.progress.style.width = "0";
+    document.body.classList.toggle("topic-selected", Boolean(state.activeCategory));
     return;
   }
 
   const total = document.documentElement.scrollHeight - window.innerHeight;
   const current = total > 0 ? (window.scrollY / total) * 100 : 0;
-  el.progress.style.width = `${Math.min(100, Math.max(0, current))}%`;
+  const percent = Math.min(100, Math.max(0, current));
+  el.progress.style.width = `${percent}%`;
+  saveDocProgress(state.activeDoc, percent);
 }
 
 function applyTheme() {
@@ -693,10 +933,11 @@ function applyLayoutState() {
   document.body.classList.toggle("toc-collapsed", hideToc);
   document.body.classList.toggle("reading-focus", state.focusMode);
 
-  el.sidebarToggle.innerHTML = hideSidebar
-    ? `<i data-lucide="panel-left-open"></i>`
-    : `<i data-lucide="panel-left-close"></i>`;
-  el.sidebarToggle.setAttribute("aria-label", hideSidebar ? "Show navigation" : "Hide navigation");
+  el.sidebarToggles.forEach((toggle) => {
+    const icon = hideSidebar ? "panel-left-open" : "panel-left-close";
+    toggle.innerHTML = `<i data-lucide="${icon}"></i>`;
+    toggle.setAttribute("aria-label", hideSidebar ? "Show navigation" : "Hide navigation");
+  });
 
   el.tocToggle.innerHTML = hideToc
     ? `<i data-lucide="panel-right-open"></i> Outline`

@@ -8,12 +8,13 @@
       content="A clean, searchable system design and interview prep notebook built from the swe-101 Markdown files."
     />
     <title>swe-101</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
     <link rel="preconnect" href="https://cdn.jsdelivr.net" />
     <link
       rel="stylesheet"
       href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github.min.css"
     />
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="styles.css?v=14" />
   </head>
   <body>
     <div class="reading-progress" id="reading-progress"></div>
@@ -27,13 +28,12 @@
         <span class="brand-mark">101</span>
         <span>
           <span class="brand-title">swe-101</span>
-          <span class="brand-subtitle">System design notes</span>
         </span>
       </a>
 
       <div class="topbar-actions">
-        <button class="icon-button" id="sidebar-toggle" aria-label="Hide navigation">
-          <i data-lucide="panel-left-close"></i>
+        <button class="icon-button sidebar-toggle-top" data-sidebar-toggle aria-label="Show navigation">
+          <i data-lucide="panel-left-open"></i>
         </button>
         <label class="search-box" for="global-search">
           <i data-lucide="search"></i>
@@ -47,10 +47,13 @@
 
     <div class="shell">
       <aside class="sidebar" id="sidebar" aria-label="Documentation navigation">
-        <div class="sidebar-section">
+        <div class="sidebar-section sidebar-primary">
           <button class="nav-home active" data-home>
             <i data-lucide="layout-dashboard"></i>
             Overview
+          </button>
+          <button class="icon-button sidebar-hide-button" data-sidebar-toggle aria-label="Hide navigation">
+            <i data-lucide="panel-left-close"></i>
           </button>
         </div>
         <div class="sidebar-section" id="category-nav"></div>
@@ -58,33 +61,14 @@
 
       <main class="main">
         <section class="home-view" id="home-view">
-          <div class="overview">
-            <div class="overview-copy">
-              <p class="eyebrow">Technical interview notebook</p>
-              <h1>System design notes</h1>
-              <p class="overview-text">
-                Search, filter, and read all notes in one place.
-              </p>
-            </div>
-            <div class="overview-panel" aria-label="Site stats">
-              <div>
-                <span id="stat-docs">0</span>
-                <small>docs</small>
-              </div>
-              <div>
-                <span id="stat-categories">0</span>
-                <small>topics</small>
-              </div>
-              <div>
-                <span id="stat-hld">0</span>
-                <small>HLD guides</small>
-              </div>
-            </div>
+          <div class="home-intro">
+            <p class="eyebrow">Study library</p>
+            <h1>Pick a topic. Open a note.</h1>
           </div>
 
           <section class="content-band">
             <div class="section-heading with-action">
-              <h2 id="topics-title">Topics</h2>
+              <span></span>
               <button class="text-button" id="topics-toggle" type="button">
                 <i data-lucide="eye-off"></i>
                 Hide topics
@@ -161,6 +145,6 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/languages/java.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11.6.0/dist/mermaid.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js"></script>
-    <script src="app.js"></script>
+    <script src="app.js?v=14"></script>
   </body>
 </html>
