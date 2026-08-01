@@ -91,6 +91,7 @@ const el = {
   docList: document.querySelector("#doc-list"),
   libraryTitle: document.querySelector("#library-title"),
   clearFilter: document.querySelector("#clear-filter"),
+  resetProgress: document.querySelector("#reset-progress"),
   tierFilter: document.querySelector("#tier-filter"),
   docCategory: document.querySelector("#doc-category"),
   docTitle: document.querySelector("#doc-title"),
@@ -190,6 +191,18 @@ function bindEvents() {
     renderCategoryNav();
     renderCategoryGrid();
     renderDocList();
+    updateActiveNav();
+  });
+
+  el.resetProgress.addEventListener("click", () => {
+    const shouldReset = confirm("Reset reading progress for all notes?");
+    if (!shouldReset) return;
+
+    state.progress = {};
+    localStorage.removeItem("doc-progress");
+    renderCategoryNav();
+    renderDocList();
+    updateProgress();
     updateActiveNav();
   });
 
@@ -544,7 +557,7 @@ function removeArticleTitle() {
 function normalizeHeadings() {
   const seen = new Map();
   el.article.querySelectorAll("h1, h2, h3, h4").forEach((heading) => {
-    const base = slugify(heading.textContent || "section");
+    const base = githubSlugify(heading.textContent || "section");
     const count = seen.get(base) || 0;
     seen.set(base, count + 1);
     heading.id = count ? `${base}-${count + 1}` : base;
@@ -568,10 +581,12 @@ function findPageAnchorTarget(anchor) {
     rawAnchor,
     decodedAnchor,
     anchorText,
+    githubSlugify(decodedAnchor),
+    githubSlugify(anchorText),
     slugify(decodedAnchor),
     slugify(anchorText),
-    slugify(decodedAnchor.replace(/^\d+(?:\.\d+)*\s+/, "")),
-    slugify(anchorText.replace(/^\d+(?:\.\d+)*\s+/, "")),
+    githubSlugify(decodedAnchor.replace(/^\d+(?:\.\d+)*\s+/, "")),
+    githubSlugify(anchorText.replace(/^\d+(?:\.\d+)*\s+/, "")),
   ].filter(Boolean);
 
   for (const candidate of candidates) {
@@ -579,9 +594,13 @@ function findPageAnchorTarget(anchor) {
     if (directMatch) return directMatch;
   }
 
-  const normalizedCandidates = new Set(candidates.map(slugify));
+  const normalizedCandidates = new Set([
+    ...candidates.map(githubSlugify),
+    ...candidates.map(slugify),
+  ]);
   return Array.from(el.article.querySelectorAll("h1, h2, h3, h4")).find((heading) => {
-    return normalizedCandidates.has(slugify(heading.textContent || ""));
+    return normalizedCandidates.has(githubSlugify(heading.textContent || ""))
+      || normalizedCandidates.has(slugify(heading.textContent || ""));
   }) || null;
 }
 
@@ -1102,6 +1121,17 @@ function slugify(value) {
     .toLowerCase()
     .trim()
     .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "section";
+}
+
+function githubSlugify(value) {
+  const slug = String(value || "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^\p{Letter}\p{Number}\s-]/gu, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
     .replace(/^-+|-+$/g, "");
   return slug || "section";
 }

@@ -14,7 +14,7 @@
       rel="stylesheet"
       href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github.min.css"
     />
-    <link rel="stylesheet" href="styles.css?v=17" />
+    <link rel="stylesheet" href="styles.css?v=19" />
   </head>
   <body>
     <div class="reading-progress" id="reading-progress"></div>
@@ -83,10 +83,16 @@
                 <p class="eyebrow">Library</p>
                 <h2 id="library-title">All notes</h2>
               </div>
-              <button class="text-button hidden" id="clear-filter">
-                <i data-lucide="x"></i>
-                Clear
-              </button>
+              <div class="library-actions">
+                <button class="text-button hidden" id="clear-filter">
+                  <i data-lucide="x"></i>
+                  Clear
+                </button>
+                <button class="text-button" id="reset-progress" type="button">
+                  <i data-lucide="rotate-ccw"></i>
+                  Reset progress
+                </button>
+              </div>
             </div>
             <div class="tier-filter hidden" id="tier-filter" aria-label="High-level design tier filter">
               <button class="tier-chip active" type="button" data-tier="">All</button>
@@ -145,6 +151,6 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/languages/java.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11.6.0/dist/mermaid.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js"></script>
-    <script src="app.js?v=17"></script>
+    <script src="app.js?v=19"></script>
   </body>
 </html>
