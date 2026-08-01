@@ -203,7 +203,7 @@ function bindEvents() {
 
     if (pageAnchor && !pageAnchor.dataset.doc) {
       event.preventDefault();
-      const target = document.querySelector(pageAnchor.getAttribute("href"));
+      const target = findPageAnchorTarget(pageAnchor);
       target?.scrollIntoView({ behavior: "smooth", block: "start" });
       return;
     }
@@ -549,6 +549,40 @@ function normalizeHeadings() {
     seen.set(base, count + 1);
     heading.id = count ? `${base}-${count + 1}` : base;
   });
+}
+
+function findPageAnchorTarget(anchor) {
+  const href = anchor?.getAttribute("href") || "";
+  if (!href || !href.startsWith("#")) return null;
+
+  const rawAnchor = href.slice(1);
+  const anchorText = anchor.textContent || "";
+  let decodedAnchor = rawAnchor;
+  try {
+    decodedAnchor = decodeURIComponent(rawAnchor);
+  } catch {
+    decodedAnchor = rawAnchor;
+  }
+
+  const candidates = [
+    rawAnchor,
+    decodedAnchor,
+    anchorText,
+    slugify(decodedAnchor),
+    slugify(anchorText),
+    slugify(decodedAnchor.replace(/^\d+(?:\.\d+)*\s+/, "")),
+    slugify(anchorText.replace(/^\d+(?:\.\d+)*\s+/, "")),
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    const directMatch = document.getElementById(candidate);
+    if (directMatch) return directMatch;
+  }
+
+  const normalizedCandidates = new Set(candidates.map(slugify));
+  return Array.from(el.article.querySelectorAll("h1, h2, h3, h4")).find((heading) => {
+    return normalizedCandidates.has(slugify(heading.textContent || ""));
+  }) || null;
 }
 
 function rewriteLinks(doc) {
@@ -958,15 +992,33 @@ function initializeMermaid() {
   const mermaidColors = state.theme === "dark"
     ? {
         background: "#20262e",
-        primaryColor: "#2e343c",
-        primaryTextColor: "#f2f4f6",
-        primaryBorderColor: "#5b6572",
-        lineColor: "#a8b3c2",
-        secondaryColor: "#28374f",
-        tertiaryColor: "#252a31",
-        edgeLabelBackground: "#252a31",
-        clusterBkg: "#252a31",
+        darkMode: true,
+        mainBkg: "#17231e",
+        nodeBkg: "#17231e",
+        nodeBorder: "#80cda7",
+        primaryColor: "#17231e",
+        primaryTextColor: "#e8eee9",
+        primaryBorderColor: "#80cda7",
+        lineColor: "#9fb0a8",
+        secondaryColor: "#19382c",
+        secondaryTextColor: "#e8eee9",
+        tertiaryColor: "#20262e",
+        tertiaryTextColor: "#e8eee9",
+        textColor: "#e8eee9",
+        labelTextColor: "#e8eee9",
+        edgeLabelBackground: "#17231e",
+        clusterBkg: "#20262e",
         clusterBorder: "#5b6572",
+        titleColor: "#e8eee9",
+        actorBkg: "#17231e",
+        actorBorder: "#80cda7",
+        actorTextColor: "#e8eee9",
+        actorLineColor: "#9fb0a8",
+        signalColor: "#9fb0a8",
+        signalTextColor: "#e8eee9",
+        noteBkgColor: "#19382c",
+        noteTextColor: "#e8eee9",
+        noteBorderColor: "#80cda7",
       }
     : {
         background: "#f6f8fa",

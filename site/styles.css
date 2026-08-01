@@ -1007,6 +1007,57 @@ body.topic-selected .overview {
   max-width: none;
 }
 
+[data-theme="dark"] .mermaid-canvas svg {
+  color: #e8eee9;
+}
+
+[data-theme="dark"] .mermaid-canvas svg text,
+[data-theme="dark"] .mermaid-canvas svg .label,
+[data-theme="dark"] .mermaid-canvas svg .label text,
+[data-theme="dark"] .mermaid-canvas svg .nodeLabel,
+[data-theme="dark"] .mermaid-canvas svg .edgeLabel,
+[data-theme="dark"] .mermaid-canvas svg .edgeLabel span,
+[data-theme="dark"] .mermaid-canvas svg foreignObject,
+[data-theme="dark"] .mermaid-canvas svg foreignObject div,
+[data-theme="dark"] .mermaid-canvas svg foreignObject span {
+  color: #e8eee9 !important;
+  fill: #e8eee9 !important;
+}
+
+[data-theme="dark"] .mermaid-canvas svg .node rect,
+[data-theme="dark"] .mermaid-canvas svg .node circle,
+[data-theme="dark"] .mermaid-canvas svg .node ellipse,
+[data-theme="dark"] .mermaid-canvas svg .node polygon,
+[data-theme="dark"] .mermaid-canvas svg .node path {
+  fill: #17231e !important;
+  stroke: #80cda7 !important;
+}
+
+[data-theme="dark"] .mermaid-canvas svg .cluster rect,
+[data-theme="dark"] .mermaid-canvas svg .cluster polygon,
+[data-theme="dark"] .mermaid-canvas svg .cluster path {
+  fill: #20262e !important;
+  stroke: #5b6572 !important;
+}
+
+[data-theme="dark"] .mermaid-canvas svg .edgeLabel,
+[data-theme="dark"] .mermaid-canvas svg .edgeLabel rect,
+[data-theme="dark"] .mermaid-canvas svg .edgeLabel div,
+[data-theme="dark"] .mermaid-canvas svg .labelBkg {
+  background: #17231e !important;
+  fill: #17231e !important;
+}
+
+[data-theme="dark"] .mermaid-canvas svg .flowchart-link,
+[data-theme="dark"] .mermaid-canvas svg .messageLine0,
+[data-theme="dark"] .mermaid-canvas svg .messageLine1,
+[data-theme="dark"] .mermaid-canvas svg .relationshipLine,
+[data-theme="dark"] .mermaid-canvas svg .edge-thickness-normal,
+[data-theme="dark"] .mermaid-canvas svg path.path,
+[data-theme="dark"] .mermaid-canvas svg marker path {
+  stroke: #9fb0a8 !important;
+}
+
 .mermaid-error .mermaid-canvas {
   padding: 0;
   background: var(--code-bg);
