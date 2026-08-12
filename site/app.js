@@ -767,6 +767,7 @@ async function renderMermaidBlocks() {
 
   for (const block of blocks) {
     const source = (block.textContent || "").trim();
+    const renderSource = prepareMermaidSource(source);
     const pre = block.closest("pre");
     if (!source || !pre) continue;
 
@@ -793,7 +794,7 @@ async function renderMermaidBlocks() {
     pre.replaceWith(panel);
 
     try {
-      const result = await window.mermaid.render(`mermaid-${Date.now()}-${mermaidRenderId++}`, source);
+      const result = await window.mermaid.render(`mermaid-${Date.now()}-${mermaidRenderId++}`, renderSource);
       canvas.innerHTML = result.svg;
     } catch (error) {
       console.warn(error);
@@ -802,6 +803,19 @@ async function renderMermaidBlocks() {
       panel.querySelector(".mermaid-header span").textContent = "Diagram source";
     }
   }
+}
+
+function prepareMermaidSource(source) {
+  return source
+    // Mermaid treats Markdown list markers inside labels as unsupported lists.
+    // Convert common ordered/bullet list label markers into plain readable text.
+    .replace(/(\[|\(|\{|<br\s*\/?>)\s*(\d+)\.\s+/gi, "$1Step $2: ")
+    .replace(/(\|\s*"?)(\d+)\.\s+/g, "$1Step $2: ")
+    .replace(/(--\s*)(\d+)\.\s+/g, "$1Step $2: ")
+    .replace(/(:\s*)(\d+)\.\s+/g, "$1Step $2: ")
+    .replace(/(<br\s*\/?>)\s*[-*]\s+/gi, "$1• ")
+    .replace(/(:\s*)[-*]\s+/g, "$1• ")
+    .replace(/(\[|\(|\{)\s*[-*]\s+/g, "$1• ");
 }
 
 function isMermaidBlock(block) {
