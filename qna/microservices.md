@@ -63,14 +63,13 @@ sequenceDiagram
     GW-->>UI: Safe error + correlation ID T1
 ```
 
-#### 1. Instrument the complete call path
+#### 1. Trace the full call path
 
-- Use **OpenTelemetry** agents/SDKs in the gateway and every service, and export spans through an OpenTelemetry Collector to a tracing backend such as Jaeger, Tempo, or Zipkin.
-- Propagate the W3C Trace Context `traceparent` header on every HTTP call. It carries the trace ID, the current parent span ID, and trace flags. Each service creates a child span, records its duration/status, and forwards an updated header to the next dependency.
-- Instrument the HTTP client, server, database driver, and message client—not just controller methods. Add useful attributes such as service name, route template, status code, dependency, deployment version, and exception type. Do not attach credentials or sensitive payloads.
-- Keep a separate request/correlation ID only if it helps support teams or clients; include it alongside the trace and span IDs rather than using it as a replacement for tracing.
+- Use **OpenTelemetry** in the gateway and every service, exporting spans to a backend like Jaeger, Tempo, or Zipkin.
+- Propagate the W3C `traceparent` header on every HTTP call. Each service creates a child span and forwards the header to the next dependency.
+- Instrument the HTTP client/server, DB driver, and message client — not just controllers. Never attach credentials or sensitive payloads.
 
-With this setup, the trace waterfall immediately shows that Gateway, A, and B completed, while the `A → C` span failed and C's database span timed out. The **first failed or unusually slow child span** is usually where investigation starts, although it may expose a deeper dependency rather than prove that the service itself is defective.
+The trace waterfall then shows Gateway, A, and B completed while the `A → C` span failed and C's DB span timed out. The **first failed or slow span** is where you start — though it may point to a deeper dependency rather than prove the service itself is broken.
 
 #### 2. Correlate the trace with structured logs
 
@@ -90,7 +89,7 @@ Every service should write structured JSON logs containing at least:
 }
 ```
 
-Searching by `trace_id` reconstructs logs across Gateway, A, B, and C; filtering by `span_id` isolates one operation. Logs should explain the error with stable error codes and relevant identifiers, while excluding tokens, personal data, and full request bodies.
+Searching by `trace_id` reconstructs logs across all services; filtering by `span_id` isolates one operation. Use stable error codes and exclude tokens, personal data, and full request bodies.
 
 #### 3. Use metrics to confirm scope and impact
 
@@ -100,7 +99,7 @@ Tracing explains one request; metrics show whether it is an incident. I check **
 - **Errors** — 5xx, timeouts, rejected calls, and circuit-breaker openings.
 - **Duration** — p50/p95/p99 latency, separated by route and dependency.
 
-A dependency dashboard should show `A → B`, `A → C`, and `C → PostgreSQL` health, plus pod CPU/memory/restarts, connection-pool saturation, database locks/slow queries, and queue lag where relevant. Alerts should identify the affected service and dependency, not only report that the gateway is returning 5xx.
+A dependency dashboard should show `A → B`, `A → C`, and `C → PostgreSQL` health, plus pod CPU/memory, pool saturation, DB locks, and queue lag. Alerts should name the affected service and dependency, not just "gateway returning 5xx".
 
 #### 4. Distinguish where the failure occurred
 
@@ -114,24 +113,14 @@ A dependency dashboard should show `A → B`, `A → C`, and `C → PostgreSQL` 
 | C is healthy but its database span is slow/failing | Database, query, lock, connection pool, or credentials issue |
 | REST request succeeds but later work is missing | Asynchronous producer, broker, consumer, dead-letter queue, or event-processing failure |
 
-For Kafka or another broker, inject trace context into **message headers** and also carry an immutable event/correlation ID. The consumer creates a linked or child span and logs both IDs. Because asynchronous work may happen much later or be retried, I also inspect consumer lag, retry topics, dead-letter queues, and processing state.
+For Kafka or another broker, inject trace context into **message headers** and carry an immutable event ID. The consumer creates a linked span and logs both IDs. Because async work may happen later or be retried, also inspect consumer lag, retry topics, and dead-letter queues.
 
-#### 5. Investigate a concrete incident step by step
+#### 5. Fail safely and return a useful client response
 
-1. **Capture the evidence** — obtain the failing endpoint, UTC time window, response status, deployment/environment, and correlation ID from the client or gateway.
-2. **Open the trace** — search by trace ID and inspect the critical path. In this example, `Gateway → A` takes 1.6 seconds, B returns in 35 ms, and `A → C` ends with `503` after 1.5 seconds.
-3. **Follow the failed span** — C has a matching server span, so basic routing worked. Its child PostgreSQL span reports a connection timeout; this rules out B and narrows the failure below C's REST layer.
-4. **Correlate logs** — search C's logs using the trace/span IDs. Confirm the stable error code and exception without relying on a single stack trace.
-5. **Check metrics and changes** — verify whether C's error rate and database pool wait time increased, check database availability/locks, pod health, recent deployments, configuration changes, and whether all instances or only one zone/version are affected.
-6. **Mitigate safely** — stop or roll back the bad change, restore the dependency or pool capacity, or temporarily degrade the optional feature. Validate recovery through RED metrics and fresh end-to-end traces.
-7. **Prevent recurrence** — fix the root cause, add the missing alert/SLO and runbook, retain a regression test, and review whether timeout budgets and resilience settings are correct.
-
-#### 6. Fail safely and return a useful client response
-
-- Give each downstream call a timeout shorter than the caller's remaining deadline; propagate cancellation/deadline so abandoned work stops.
-- Retry only transient failures, only when the operation is idempotent (or protected by an idempotency key), with a small bounded count, exponential backoff, and jitter. Never blindly retry validation errors, non-idempotent writes, or an already overloaded dependency.
-- Use a **circuit breaker** to fail fast when C is unhealthy and a **bulkhead** to prevent C's exhausted threads/connections from consuming all of A's capacity. These controls limit blast radius; they do not replace diagnosis.
-- If C is optional, return a documented partial/fallback response. If it is required, the gateway can return `503 Service Unavailable` (or an appropriate `504` for an upstream timeout) with a stable public error code and correlation ID—never C's stack trace or internal topology.
+- Give each downstream call a timeout shorter than the caller's remaining deadline.
+- Retry only transient failures on idempotent operations, with a bounded count, exponential backoff, and jitter. Never retry validation errors or non-idempotent writes.
+- Use a **circuit breaker** to fail fast when C is unhealthy and a **bulkhead** so C's exhaustion doesn't consume all of A's capacity.
+- If C is optional, return a fallback. If required, return `503` (or `504` on upstream timeout) with a stable error code and correlation ID — never C's stack trace or internal topology.
 
 Example response:
 
@@ -143,15 +132,18 @@ Example response:
 }
 ```
 
-#### Practical limitations and best practices
+<details>
+<summary><strong>Gotchas to mention if asked</strong></summary>
 
-- **Sampling:** Head sampling can discard the one failing trace. Prefer always retaining errors and very slow traces with tail-based sampling, while controlling cost for successful traffic.
-- **Clock skew:** Synchronise hosts with NTP and trust parent/child span relationships and monotonic durations more than raw cross-host timestamps.
-- **Broken propagation:** A missing `traceparent` creates disconnected traces. Test propagation across gateways, HTTP clients, queues, scheduled jobs, and third-party calls.
-- **High-cardinality data:** Keep trace IDs in logs and exemplars, not as ordinary metric labels. Avoid user IDs and raw URLs in labels.
-- **Observability failure:** Tracing backends can be delayed or unavailable, so retain metrics, structured logs, health endpoints, deployment markers, and runbooks as independent signals.
+- **Sampling:** head sampling can drop the one failing trace — use tail-based sampling that always keeps errors and slow traces.
+- **Clock skew:** trust parent/child span relationships and durations over raw cross-host timestamps.
+- **Broken propagation:** a missing `traceparent` creates disconnected traces; test propagation across gateways, queues, and jobs.
+- **High-cardinality data:** keep trace IDs in logs, not as metric labels.
+- **Observability failure:** keep metrics, logs, health endpoints, and runbooks as independent signals in case the tracing backend is down.
 
-**Interview summary:** I locate the failing service by following a propagated trace to the first failed/slow span, use trace-correlated logs to explain the error, and use RED/dependency metrics to confirm impact. Then I inspect the deeper dependency—network, database, or broker—mitigate with bounded resilience controls, and return the client a safe error plus a correlation ID.
+</details>
+
+**Interview summary:** I follow a propagated trace to the first failed/slow span, use trace-correlated logs to explain the error, and use RED/dependency metrics to confirm impact. Then I inspect the deeper dependency — network, database, or broker — mitigate with bounded resilience controls, and return a safe error plus a correlation ID.
 
 ### TLDR
 
@@ -167,10 +159,10 @@ Use distributed tracing first, then correlate the same trace ID with logs and RE
 ### Answer (STAR Format)
 
 **Situation:**
-I was working on **order-service** — a Java Spring Boot microservice that processes order events from Kafka. The platform handles millions of transactions, and every order placement, status update, and payment confirmation produces Kafka messages. During scale testing at higher traffic volumes, we noticed the **Kafka consumer lag was growing continuously** — messages were piling up faster than the consumer could process them.
+**order-service** (Java/Spring Boot) processes order events from Kafka. During scale testing, **Kafka consumer lag grew continuously** — messages piled up faster than the consumer could process them.
 
 **Task:**
-I was assigned to investigate and fix the consumer lag issue. The SLA required that order events be processed within **seconds**, but we were seeing lag of **tens of thousands of messages**, meaning some events were delayed by minutes. This was critical because if an order event is delayed, a customer might see stale order status, or a payment confirmation might not trigger shipment on time.
+Fix the lag. The SLA required processing within **seconds**, but lag reached **tens of thousands of messages**, delaying some events by minutes — risking stale order status and delayed shipments.
 
 **Action:**
 
@@ -776,6 +768,12 @@ sequenceDiagram
 
 Even if both admins click at almost the same time, the database update is atomic. Only the first update can change the row from `PENDING` to a final status. The second update sees that the status is no longer `PENDING`, so it updates zero rows.
 
+**Where does the atomicity come from?** We are not adding anything extra — it comes from the single conditional `UPDATE` statement itself:
+
+- **A single UPDATE is atomic by definition in the DB.** The database runs one `UPDATE` as an indivisible unit and takes a **row-level write lock** on the matching row for the duration of the statement. Two updates to the same row cannot run simultaneously — the engine serializes them: one acquires the lock and completes, then the other proceeds.
+- **The `WHERE ... AND status = 'PENDING'` is re-checked while the lock is held**, not against a value the app read earlier. So Admin A's update flips `PENDING → APPROVED` (1 row), and when Admin B's update finally runs it sees `APPROVED`, matches nothing, and updates 0 rows.
+- The check and the write happen inside the same statement, so there is no gap for the second admin to slip through. This is why a plain read-then-check-then-write in application code is unsafe — see [Why Not Just Check Status First?](#why-not-just-check-status-first) below.
+
 ### Database Design
 
 Example approval request table:
@@ -880,29 +878,9 @@ This is called a **race condition**. The fix is to make the database update cond
 
 ### Optimistic Locking Alternative
 
-Another valid approach is optimistic locking using a `version` column.
+A `version` column works too: both admins load `version = 3`, and each update includes `AND version = :oldVersion`. The first update wins and bumps the version to `4`; the second affects zero rows, so the API tells that admin to refresh.
 
-Admin A and Admin B both load:
-
-```text
-request_id = R1
-status = PENDING
-version = 3
-```
-
-Admin A approves with:
-
-```sql
-UPDATE user_approval_request
-SET status = 'APPROVED',
-    version = version + 1
-WHERE request_id = :requestId
-  AND version = :oldVersion;
-```
-
-Admin A succeeds and version becomes `4`. Admin B tries to reject using old version `3`, so the update affects zero rows. The API then tells Admin B that the request has already changed and should be refreshed.
-
-For this exact use case, checking `status = 'PENDING'` is usually enough. A version column is useful if there are more editable fields and you want to detect any concurrent modification.
+For this exact use case, checking `status = 'PENDING'` is usually enough. A version column helps when there are more editable fields and you want to detect any concurrent modification.
 
 ### API Response
 
@@ -1087,22 +1065,9 @@ We normally do not manually write `SELECT FOR UPDATE` or manually lock a row. Sh
 
 ### What Happens If the Running Pod Crashes?
 
-That is why `lockAtMostFor` is important.
+That is why `lockAtMostFor` matters. If Pod 3 acquires the lock, starts the job, then crashes before releasing it, the lock does not stay forever — once `lock_until` passes, another pod can acquire it on the next schedule. This prevents permanent blocking.
 
-Suppose Pod 3 gets the lock and starts the job, then crashes before releasing the lock. The lock will not stay forever. Once `lock_until` time passes, another pod can acquire the lock in the next schedule.
-
-This prevents permanent blocking.
-
-### Choosing `lockAtMostFor`
-
-Set `lockAtMostFor` longer than the maximum expected job duration.
-
-Example:
-
-- If the job normally takes 2 minutes, use `lockAtMostFor = "10m"`.
-- If the job may take 30 minutes, use `lockAtMostFor = "45m"` or more.
-
-If `lockAtMostFor` is too short, another pod may acquire the lock while the first pod is still running, causing duplicate execution.
+Set `lockAtMostFor` longer than the maximum expected job duration (e.g. a 2-minute job → `10m`; a 30-minute job → `45m`). If it is too short, another pod may acquire the lock while the first is still running, causing duplicate execution.
 
 ### For One-Time Startup Tasks
 
@@ -1267,81 +1232,28 @@ These approaches are useful when one active instance must continuously act as a 
 
 ### Spring Boot Implementation With ShedLock
 
-For Spring Boot scheduled jobs, the common practical library is **ShedLock**. It is simple because we keep using Spring's `@Scheduled`, and ShedLock adds a distributed lock around the method.
+For Spring Boot scheduled jobs, the common practical library is **ShedLock** — keep `@Scheduled` and let ShedLock wrap a distributed lock around the method.
 
-Create the lock table once in the shared database:
+ShedLock needs its **own** table. By default it must be named `shedlock` with these exact columns:
 
 ```sql
 CREATE TABLE shedlock (
-    name VARCHAR(64) PRIMARY KEY,
+    name       VARCHAR(64) PRIMARY KEY,
     lock_until TIMESTAMP NOT NULL,
-    locked_at TIMESTAMP NOT NULL,
-    locked_by VARCHAR(255) NOT NULL
+    locked_at  TIMESTAMP NOT NULL,
+    locked_by  VARCHAR(255) NOT NULL
 );
 ```
 
-Configure ShedLock:
-
-```java
-@Configuration
-@EnableScheduling
-@EnableSchedulerLock(defaultLockAtMostFor = "10m")
-public class SchedulerConfig {
-
-    @Bean
-    public LockProvider lockProvider(DataSource dataSource) {
-        return new JdbcTemplateLockProvider(
-            JdbcTemplateLockProvider.Configuration.builder()
-                .withJdbcTemplate(new JdbcTemplate(dataSource))
-                .usingDbTime()
-                .build()
-        );
-    }
-}
-```
-
-Use it on the scheduled method:
-
 ```java
 @Scheduled(cron = "0 */5 * * * *")
-@SchedulerLock(
-    name = "userApprovalReconciliationJob",
-    lockAtMostFor = "10m",
-    lockAtLeastFor = "1m"
-)
+@SchedulerLock(name = "userApprovalReconciliationJob", lockAtMostFor = "10m", lockAtLeastFor = "1m")
 public void reconcileApprovedUsers() {
     // Only one pod runs this method at a time.
 }
 ```
 
-Here:
-
-- `@Scheduled` decides when the method should run.
-- `@SchedulerLock` says this method must acquire a distributed lock first.
-- `name` is the lock key shared by all pods.
-- `lockAtMostFor` releases the lock automatically if the pod crashes.
-- `lockAtLeastFor` keeps the lock for a minimum time to avoid duplicate quick executions.
-
-The code declares the lock, but the actual lock state is stored in the shared DB table.
-
-### How It Works Internally
-
-At the scheduled time, every pod calls the same method. Before running the method body, ShedLock tries to update or insert the row for the lock name.
-
-Conceptually:
-
-```sql
-UPDATE shedlock
-SET lock_until = :newLockUntil,
-    locked_at = now(),
-    locked_by = :podName
-WHERE name = :lockName
-  AND lock_until <= now();
-```
-
-If the update succeeds, that pod owns the lock and runs the task. If the update affects zero rows, another pod already owns the lock, so this pod skips the task.
-
-ShedLock handles these details internally. We normally do not manually write this SQL in application code.
+At the scheduled time every pod calls the method, but ShedLock lets only the pod that atomically claims the shared `shedlock` row execute; the rest skip. The annotation's `name` becomes the value of the `name` primary-key column all pods contend for. `lockAtMostFor` auto-releases the lock if the pod crashes. See **Q16** for the `LockProvider` config and the internal acquire SQL.
 
 ### When Not to Use a Distributed Lock
 
