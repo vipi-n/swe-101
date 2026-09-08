@@ -11,10 +11,11 @@
 1. [What Is a Database Join? How Many Types of Joins Are There?](#1-what-is-a-database-join-how-many-types-of-joins-are-there)
 2. [What Is an Index and Why Do We Need It?](#2-what-is-an-index-and-why-do-we-need-it)
 3. [What Are Optimistic and Pessimistic Locking?](#3-what-are-optimistic-and-pessimistic-locking)
+4. [What Is the Difference Between Primary Key and Unique Key?](#4-what-is-the-difference-between-primary-key-and-unique-key)
 
 ### Interview Q&A
 
-4. [How Do You Optimize a Slow Query on a Large Table?](#4-how-do-you-optimize-a-slow-query-on-a-large-table)
+5. [How Do You Optimize a Slow Query on a Large Table?](#5-how-do-you-optimize-a-slow-query-on-a-large-table)
 
 ---
 
@@ -381,9 +382,135 @@ Optimistic locking uses a version check and fails if someone changed the row fir
 
 ---
 
+## 4. What Is the Difference Between Primary Key and Unique Key?
+
+### The Question
+
+> *"What is the difference between a primary key and a unique key? Can you explain with an example?"*
+
+### Answer
+
+A **primary key** uniquely identifies each row in a table. A **unique key** also prevents duplicate values, but it is used for additional columns that must be unique.
+
+Simple way to remember:
+
+- **Primary key**: main identity of the row.
+- **Unique key**: another business value that should not be duplicated.
+
+Example:
+
+```sql
+CREATE TABLE users (
+    user_id UUID PRIMARY KEY,
+    email VARCHAR(255) UNIQUE,
+    mobile_number VARCHAR(20) UNIQUE,
+    name VARCHAR(255) NOT NULL
+);
+```
+
+Here:
+
+- `user_id` is the primary key because it uniquely identifies the user row.
+- `email` is unique because two users should not have the same email.
+- `mobile_number` is unique because two users should not share the same mobile number.
+
+### Main Differences
+
+| Point | Primary Key | Unique Key |
+|---|---|---|
+| Purpose | Main identifier for a row | Prevents duplicate values in a column |
+| Number per table | Usually one primary key | Can have multiple unique keys |
+| Null value | Cannot be `NULL` | May allow `NULL` depending on database |
+| Default indexing | Automatically indexed | Automatically indexed in most databases |
+| Foreign key reference | Commonly referenced by foreign keys | Can also be referenced, but less common |
+
+### Primary Key Example
+
+```sql
+CREATE TABLE orders (
+    order_id UUID PRIMARY KEY,
+    user_id UUID NOT NULL,
+    amount DECIMAL(10, 2) NOT NULL
+);
+```
+
+`order_id` uniquely identifies each order.
+
+### Unique Key Example
+
+```sql
+CREATE TABLE users (
+    user_id UUID PRIMARY KEY,
+    email VARCHAR(255) NOT NULL,
+    CONSTRAINT uk_users_email UNIQUE (email)
+);
+```
+
+`email` is not the main row identity, but it must still be unique.
+
+### Composite Primary Key
+
+A primary key can also be made from multiple columns.
+
+```sql
+CREATE TABLE order_items (
+    order_id UUID NOT NULL,
+    product_id UUID NOT NULL,
+    quantity INT NOT NULL,
+    PRIMARY KEY (order_id, product_id)
+);
+```
+
+This means the same product can appear only once per order.
+
+### Composite Unique Key
+
+A unique key can also be made from multiple columns.
+
+```sql
+CREATE TABLE user_roles (
+    user_id UUID NOT NULL,
+    role_name VARCHAR(50) NOT NULL,
+    CONSTRAINT uk_user_roles_user_role UNIQUE (user_id, role_name)
+);
+```
+
+This prevents assigning the same role to the same user multiple times.
+
+### Relationship Example
+
+```mermaid
+erDiagram
+    USERS ||--o{ ORDERS : places
+    USERS {
+        UUID user_id PK
+        string email UK
+        string name
+    }
+    ORDERS {
+        UUID order_id PK
+        UUID user_id FK
+        decimal amount
+    }
+```
+
+In this example, `users.user_id` is the primary key and `users.email` is a unique key. The `orders.user_id` column is a foreign key pointing to the user.
+
+### Interview Summary
+
+I would explain it like this:
+
+> A primary key is the main identifier of a row and cannot be null. A unique key also enforces uniqueness, but it is used for additional business columns like email, mobile number, or username. A table usually has one primary key, but it can have multiple unique keys. For example, in a `users` table, `user_id` can be the primary key, while `email` and `mobile_number` can be unique keys.
+
+### TLDR
+
+A primary key uniquely identifies the row, while a unique key prevents duplicate values in other important columns. Use primary key for row identity, and unique key for business fields like email, username, or mobile number.
+
+---
+
 ## Interview Q&A
 
-## 4. How Do You Optimize a Slow Query on a Large Table?
+## 5. How Do You Optimize a Slow Query on a Large Table?
 
 ### The Question
 
