@@ -90,6 +90,75 @@ Kafka also needs cluster metadata management. Older Kafka clusters use **ZooKeep
                                   └──────────┘
 ```
 
+### Broker Leadership vs Partition Leadership
+
+The diagram does **not** mean that Kafka elects all three brokers as leaders for the entire cluster. Kafka elects a leader **for each partition**. A broker can therefore be the leader for some partitions while also storing follower replicas of other partitions.
+
+In the diagram, Topic A has three partitions and a replication factor of three. Every partition has one leader and two follower replicas:
+
+| Partition | Leader | Followers |
+|-----------|--------|-----------|
+| Topic A - P0 | Broker 1 | Brokers 2 and 3 |
+| Topic A - P1 | Broker 2 | Brokers 1 and 3 |
+| Topic A - P2 | Broker 3 | Brokers 1 and 2 |
+| Topic B - P0 | Broker 2 | Brokers 1 and 3 |
+
+All three brokers have a leadership role in this example, but they lead **different partitions**. Broker 1 leads Topic A partition 0, Broker 2 leads Topic A partition 1 and Topic B partition 0, and Broker 3 leads Topic A partition 2. Distributing partition leaders across brokers balances producer and consumer traffic instead of sending all traffic through one machine.
+
+#### How a Message Flows
+
+Suppose a producer sends a record to Topic A partition 0:
+
+```text
+Producer
+   |
+   | 1. Write record to Topic A - P0
+   v
+Broker 1: P0 Leader
+   |
+   | 2. Followers fetch and replicate the record
+   +--------------------------+
+   v                          v
+Broker 2: P0 Follower    Broker 3: P0 Follower
+   ^
+   |
+   | 3. Consumer normally reads P0 from its leader, Broker 1
+Consumer
+```
+
+The producer first requests Kafka metadata to discover which broker currently leads the target partition. It then sends the record directly to that broker. The leader appends the record to its partition log, and follower replicas copy the record from the leader.
+
+Consumers also normally fetch records from the partition leader. Therefore, messages for Topic A partition 0 go through Broker 1, while messages for Topic A partition 2 go through Broker 3. There is no single broker through which every topic and partition must pass.
+
+When the producer uses `acks=all`, the leader waits until the required in-sync replicas have stored the record before acknowledging success. The setting `min.insync.replicas` controls how many in-sync replicas must be available for the write to be accepted.
+
+#### What Happens If a Leader Broker Fails?
+
+If Broker 1 fails, Topic A partition 0 temporarily loses its leader. Kafka selects an eligible in-sync follower, such as the P0 replica on Broker 2, and makes it the new leader. Producers and consumers refresh their metadata and start communicating with Broker 2 for that partition.
+
+```text
+Before failure: Topic A - P0 leader = Broker 1
+Broker 1 fails
+Kafka elects an in-sync replica
+After election: Topic A - P0 leader = Broker 2 or Broker 3
+```
+
+Only the affected partitions require a new leader. Partitions whose leaders are on healthy brokers continue working normally.
+
+#### Partition Leader vs Cluster Controller
+
+Do not confuse a **partition leader** with the Kafka **controller**:
+
+| Role | Responsibility |
+|------|----------------|
+| Partition leader | Handles writes and normally reads for one specific partition |
+| Follower replica | Copies partition data and can become the new leader after a failure |
+| Active controller | Manages cluster metadata, broker changes, and partition leader elections |
+
+In a KRaft cluster, one controller node is the active metadata controller at a time. That does not mean every application message passes through it. Message traffic goes directly between clients and the appropriate partition leaders.
+
+> **TLDR:** Leadership in Kafka is per partition, not per broker or per cluster. All three brokers in this diagram lead different partitions while holding follower replicas for other partitions. Producers and consumers communicate with the relevant partition leader, and an in-sync follower can take over if that leader fails.
+
 ### Components Overview
 
 | Component | Description |
